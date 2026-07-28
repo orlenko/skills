@@ -1,0 +1,33 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  agent-pair:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Validate JSON manifests
+        run: |
+          python -m json.tool .agents/plugins/marketplace.json >/dev/null
+          python -m json.tool .claude-plugin/marketplace.json >/dev/null
+          python -m json.tool plugins/agent-pair/.codex-plugin/plugin.json >/dev/null
+          python -m json.tool plugins/agent-pair/.claude-plugin/plugin.json >/dev/null
+          python -m json.tool plugins/agent-pair/hooks/hooks.json >/dev/null
+          python -m json.tool plugins/agent-pair/hooks/claude-hooks.json >/dev/null
+      - name: Run tests
+        run: python -W error::ResourceWarning -m unittest discover -s plugins/agent-pair/tests -v

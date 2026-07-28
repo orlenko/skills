@@ -1,0 +1,7 @@
+interface:
+  display_name: "Agent Pair"
+  short_description: "Connect two coding agents directly"
+  default_prompt: "Use $pair to connect this coding agent with a peer."
+
+policy:
+  allow_implicit_invocation: true
