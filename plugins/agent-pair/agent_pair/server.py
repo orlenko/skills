@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socketserver
 import ssl
 import threading
 import time
@@ -232,6 +233,15 @@ class PairHTTPServer(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], store: PairStore):
         super().__init__(address, PairHandler)
         self.store = store
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind() resolves the bind address with
+        # socket.getfqdn(), whose reverse-DNS lookup can block for tens of
+        # seconds on macOS and stall startup past the client's ready deadline.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
 
 
 class PairHandler(BaseHTTPRequestHandler):
