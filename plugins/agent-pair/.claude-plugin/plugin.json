@@ -1,0 +1,16 @@
+{
+  "name": "agent-pair",
+  "displayName": "Agent Pair",
+  "version": "0.1.0",
+  "description": "Direct, durable two-agent messaging across one machine or a reachable LAN.",
+  "author": {
+    "name": "Vlad Orlenko",
+    "url": "https://github.com/orlenko"
+  },
+  "homepage": "https://github.com/orlenko/skills/tree/main/plugins/agent-pair",
+  "repository": "https://github.com/orlenko/skills",
+  "license": "MIT",
+  "keywords": ["agents", "collaboration", "pairing", "codex", "claude"],
+  "skills": "./skills/",
+  "hooks": "./hooks/claude-hooks.json"
+}

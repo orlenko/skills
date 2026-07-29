@@ -1,0 +1,48 @@
+{
+  "description": "Surface Agent Pair mail and reawaken an idle Claude session when new mail arrives.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/agent-pair",
+            "args": ["hook-context", "--provider", "claude"],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/agent-pair",
+            "args": ["hook-context", "--provider", "claude"],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/agent-pair",
+            "args": ["hook-stop", "--provider", "claude"],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/agent-pair",
+            "args": ["hook-wait", "--provider", "claude"],
+            "asyncRewake": true,
+            "timeout": 86400
+          }
+        ]
+      }
+    ]
+  }
+}

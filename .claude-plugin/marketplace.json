@@ -1,0 +1,23 @@
+{
+  "name": "orlenko-skills",
+  "owner": {
+    "name": "Vlad Orlenko",
+    "url": "https://github.com/orlenko"
+  },
+  "description": "Cross-agent skills and plugins for Codex and Claude Code.",
+  "plugins": [
+    {
+      "name": "agent-pair",
+      "displayName": "Agent Pair",
+      "source": "./plugins/agent-pair",
+      "description": "Direct, durable two-agent messaging across one machine or a reachable LAN.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Vlad Orlenko",
+        "url": "https://github.com/orlenko"
+      },
+      "category": "productivity",
+      "tags": ["agents", "collaboration", "pairing"]
+    }
+  ]
+}

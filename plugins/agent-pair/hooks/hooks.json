@@ -1,0 +1,40 @@
+{
+  "description": "Surface Agent Pair inbox metadata to Codex without exposing message bodies.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agent-pair hook-context --provider codex",
+            "timeout": 5,
+            "additionalContextLimit": 500
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agent-pair hook-context --provider codex",
+            "timeout": 5,
+            "additionalContextLimit": 500
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agent-pair hook-stop --provider codex",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
