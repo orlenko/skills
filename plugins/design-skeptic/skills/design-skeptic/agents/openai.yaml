@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design Skeptic"
+  short_description: "Pressure-test designs before implementation"
+  default_prompt: "Use $design-skeptic to pressure-test this proposal before implementation."

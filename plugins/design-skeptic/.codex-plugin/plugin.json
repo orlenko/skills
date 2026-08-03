@@ -1,0 +1,28 @@
+{
+  "name": "design-skeptic",
+  "version": "0.1.0",
+  "description": "Pressure-test designs before implementation through skepticism and simplicity lenses.",
+  "author": {
+    "name": "Vlad Orlenko",
+    "url": "https://github.com/orlenko"
+  },
+  "homepage": "https://github.com/orlenko/skills/tree/main/plugins/design-skeptic",
+  "repository": "https://github.com/orlenko/skills",
+  "license": "MIT",
+  "keywords": ["design", "architecture", "skeptic", "codex", "claude"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Design Skeptic",
+    "shortDescription": "Pressure-test designs before implementation.",
+    "longDescription": "An advisory pre-code review that exposes hidden assumptions, failure modes, and unnecessary complexity, then proposes the smallest viable path.",
+    "developerName": "Vlad Orlenko",
+    "category": "Productivity",
+    "capabilities": ["Interactive"],
+    "websiteURL": "https://github.com/orlenko/skills",
+    "defaultPrompt": [
+      "Pressure-test this design before I implement it.",
+      "Find the smallest version of this architecture.",
+      "Run a pre-mortem on this proposal."
+    ]
+  }
+}

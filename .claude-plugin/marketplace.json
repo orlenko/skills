@@ -18,6 +18,19 @@
       },
       "category": "productivity",
       "tags": ["agents", "collaboration", "pairing"]
+    },
+    {
+      "name": "design-skeptic",
+      "displayName": "Design Skeptic",
+      "source": "./plugins/design-skeptic",
+      "description": "Pressure-test designs before implementation through skepticism and simplicity lenses.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Vlad Orlenko",
+        "url": "https://github.com/orlenko"
+      },
+      "category": "productivity",
+      "tags": ["design", "architecture", "skeptic", "agents"]
     }
   ]
 }
