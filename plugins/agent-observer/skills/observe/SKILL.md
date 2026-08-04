@@ -38,6 +38,10 @@ database. The workspace itself must never be watched.
   supervisor invocation already starts the dedicated ingest listener.
 - `invite`: run `--json remote-invite` and return the complete single-use `ao1.`
   key. Never shorten it.
+- `connect AO1_KEY`: run `--json remote-connect AO1_KEY --provider PROVIDER
+  --allow-cross-provider`.
+  This is the reverse transport: the watched peer listens and this dashboard
+  pulls its already-collected and analyzed bounded snapshots.
 - `nodes`: run `--json remote-nodes`.
 - `revoke NODE_ID`: run `--json remote-revoke NODE_ID`. Explain that cached
   remote findings remain visible while future uploads are rejected.
@@ -85,6 +89,21 @@ short-lived single-use credential intended to be pasted into
 `$agent-observer:remote` or `/agent-observer:remote` on a directly reachable LAN
 or Tailscale machine. The dashboard remains bound to loopback; only the separate
 ingest listener accepts remote traffic.
+
+Remote transport is symmetric even though there is one combined dashboard:
+
+- When this dashboard host can accept inbound TLS, use its normal enrollment
+  key; the other Observer connects and pushes snapshots.
+- When the other host can accept inbound TLS, run `remote listen` in that
+  host's `$agent-observer:remote` or `/agent-observer:remote` session, then pass
+  its returned key to `observe connect AO1_KEY` here. This dashboard connects
+  outward and pulls snapshots.
+
+Both peers remain full Observer instances capable of deterministic collection
+and subscription-backed analysis. Transport direction never moves analysis.
+Either physical machine may be chosen as the dashboard host. In both modes the
+dashboard HTTP server stays loopback-only, and only the dedicated snapshot
+listener is reachable over LAN or Tailscale.
 
 The command is complete once the collector, dashboard, ingest listener, and
 analyzer sidecar are healthy. End the interactive turn normally. On a later

@@ -24,6 +24,8 @@ REMOTE_PROTOCOL = 1
 SNAPSHOT_SCHEMA = "agent-observer-remote-snapshot-v1"
 MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
 DEFAULT_INVITE_TTL = 60 * 60
+PUSH_TRANSPORT = "dashboard-listens"
+PULL_TRANSPORT = "node-listens"
 
 
 class RemoteError(ValueError):
@@ -49,6 +51,17 @@ def home_config_path(config: ObserverConfig) -> Path:
 
 def connection_path(config: ObserverConfig) -> Path:
     return remote_dir(config) / "connection.json"
+
+
+def listener_config_path(config: ObserverConfig) -> Path:
+    return remote_dir(config) / "listener.json"
+
+
+def pull_connections_dir(config: ObserverConfig) -> Path:
+    path = remote_dir(config) / "pulls"
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
+    return path
 
 
 def _atomic_json(path: Path, value: dict[str, Any]) -> None:
@@ -78,6 +91,21 @@ def load_home_config(config: ObserverConfig) -> dict[str, Any] | None:
 
 def load_connection(config: ObserverConfig) -> dict[str, Any] | None:
     return _read_json(connection_path(config))
+
+
+def load_listener_config(config: ObserverConfig) -> dict[str, Any] | None:
+    value = _read_json(listener_config_path(config))
+    return value if value and value.get("enabled") is True else None
+
+
+def load_pull_connections(config: ObserverConfig) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for path in sorted(pull_connections_dir(config).glob("node_*.json")):
+        value = _read_json(path)
+        if value:
+            value["_path"] = str(path)
+            result.append(value)
+    return result
 
 
 def _certificate_fingerprint(path: Path) -> str:
@@ -202,6 +230,41 @@ def enable_home_remote(
     return value
 
 
+def enable_remote_listener(
+    config: ObserverConfig,
+    *,
+    bind: str = "0.0.0.0",
+    port: int | None = None,
+    advertise: list[str] | None = None,
+    display_name: str | None = None,
+) -> dict[str, Any]:
+    if not 0 <= (port or 0) <= 65535:
+        raise RemoteError("remote listener port must be between 0 and 65535")
+    directory = remote_dir(config) / "listener"
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    cert, key, fingerprint = _ensure_certificate(directory)
+    existing = load_listener_config(config) or {}
+    chosen_port = int(port or existing.get("port") or _allocate_port(bind))
+    addresses = discover_addresses(bind, advertise or existing.get("advertise"))
+    label = str(display_name or existing.get("display_name") or socket.gethostname())
+    label = "".join(character for character in label if character.isprintable()).strip()
+    if not label:
+        raise RemoteError("remote listener display name is invalid")
+    value = {
+        "enabled": True,
+        "bind": bind,
+        "port": chosen_port,
+        "advertise": addresses,
+        "cert": str(cert),
+        "key": str(key),
+        "fingerprint": fingerprint,
+        "display_name": label[:160],
+        "updated_at": time.time(),
+    }
+    _atomic_json(listener_config_path(config), value)
+    return value
+
+
 def encode_invite(value: dict[str, Any]) -> str:
     document = {"v": REMOTE_PROTOCOL, **value}
     raw = json.dumps(document, separators=(",", ":"), sort_keys=True).encode("utf-8")
@@ -223,9 +286,20 @@ def decode_invite(invite: str) -> dict[str, Any]:
         raise RemoteError("remote enrollment key is missing required fields")
     if payload.get("v") != REMOTE_PROTOCOL:
         raise RemoteError("remote enrollment protocol version is unsupported")
+    if payload.get("transport", PUSH_TRANSPORT) not in {
+        PUSH_TRANSPORT,
+        PULL_TRANSPORT,
+    }:
+        raise RemoteError("remote enrollment transport is unsupported")
     if not isinstance(payload["endpoints"], list) or not payload["endpoints"]:
         raise RemoteError("remote enrollment key has no endpoints")
-    if float(payload["expires_at"]) <= time.time():
+    if len(payload["endpoints"]) > 16:
+        raise RemoteError("remote enrollment key has too many endpoints")
+    try:
+        expires_at = float(payload["expires_at"])
+    except (TypeError, ValueError) as exc:
+        raise RemoteError("remote enrollment key has an invalid expiry") from exc
+    if expires_at <= time.time():
         raise RemoteError("remote enrollment key has expired")
     fingerprint = payload["fingerprint"]
     if (
@@ -265,6 +339,7 @@ def issue_invite(
     ]
     invite = encode_invite(
         {
+            "transport": PUSH_TRANSPORT,
             "endpoints": endpoints,
             "fingerprint": home["fingerprint"],
             "secret": secret,
@@ -273,6 +348,41 @@ def issue_invite(
         }
     )
     return {"invite": invite, "endpoints": endpoints, "expires_at": expires_at}
+
+
+def issue_listener_invite(
+    observer: Observer,
+    listener: dict[str, Any],
+    *,
+    ttl_seconds: int = DEFAULT_INVITE_TTL,
+) -> dict[str, Any]:
+    if not 300 <= ttl_seconds <= 24 * 60 * 60:
+        raise RemoteError(
+            "remote enrollment key TTL must be between 5 minutes and 24 hours"
+        )
+    secret = secrets.token_urlsafe(32)
+    expires_at = time.time() + ttl_seconds
+    observer.db.create_remote_invite(secret, expires_at)
+    endpoints = [
+        f"https://{address}:{int(listener['port'])}"
+        for address in listener["advertise"]
+    ]
+    invite = encode_invite(
+        {
+            "transport": PULL_TRANSPORT,
+            "endpoints": endpoints,
+            "fingerprint": listener["fingerprint"],
+            "secret": secret,
+            "expires_at": expires_at,
+            "node": {"name": listener["display_name"]},
+        }
+    )
+    return {
+        "invite": invite,
+        "transport": PULL_TRANSPORT,
+        "endpoints": endpoints,
+        "expires_at": expires_at,
+    }
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
@@ -300,6 +410,7 @@ def _request(
     *,
     authenticated: bool = True,
     timeout: float = 10,
+    response_limit: int = 256 * 1024,
 ) -> dict[str, Any]:
     body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     if len(body) > MAX_SNAPSHOT_BYTES:
@@ -322,7 +433,9 @@ def _request(
         try:
             client.request("POST", path, body=body, headers=headers)
             response = client.getresponse()
-            raw = response.read(256 * 1024)
+            raw = response.read(response_limit + 1)
+            if len(raw) > response_limit:
+                raise RemoteError("remote Observer response exceeds its size limit")
             try:
                 result = json.loads(raw.decode("utf-8")) if raw else {}
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -364,6 +477,10 @@ def accept_invite(
     display_name: str | None = None,
 ) -> dict[str, Any]:
     decoded = decode_invite(invite)
+    if decoded.get("transport", PUSH_TRANSPORT) != PUSH_TRANSPORT:
+        raise RemoteError(
+            "this key is for a listening node; connect it from the dashboard Observer"
+        )
     temporary = {
         "endpoints": decoded["endpoints"],
         "fingerprint": decoded["fingerprint"],
@@ -395,6 +512,66 @@ def accept_invite(
         "last_error": None,
     }
     _atomic_json(connection_path(config), connection)
+    return connection
+
+
+def accept_listener_invite(
+    config: ObserverConfig,
+    invite: str,
+    *,
+    provider: str,
+    display_name: str | None = None,
+) -> dict[str, Any]:
+    decoded = decode_invite(invite)
+    if decoded.get("transport") != PULL_TRANSPORT:
+        raise RemoteError(
+            "this key expects the node to connect to a listening dashboard"
+        )
+    temporary = {
+        "endpoints": decoded["endpoints"],
+        "fingerprint": decoded["fingerprint"],
+    }
+    accepted = _request(
+        temporary,
+        "/v1/accept",
+        {
+            "secret": decoded["secret"],
+            "display_name": display_name or socket.gethostname(),
+            "provider": provider,
+        },
+        authenticated=False,
+    )
+    connection = {
+        "protocol": REMOTE_PROTOCOL,
+        "transport": PULL_TRANSPORT,
+        "node_id": accepted["node_id"],
+        "display_name": accepted.get("display_name")
+        or decoded.get("node", {}).get("name")
+        or "remote observer",
+        "provider": accepted.get("provider"),
+        "endpoints": decoded["endpoints"],
+        "fingerprint": decoded["fingerprint"],
+        "token": accepted["token"],
+        "upload_epoch": int(accepted["upload_epoch"]),
+        "last_revision": 0,
+        "accepted_at": time.time(),
+        "last_received_at": None,
+        "last_error": None,
+    }
+    claimed = _request(connection, "/v1/claim", {})
+    connection["upload_epoch"] = int(claimed["upload_epoch"])
+    connection["claimed_at"] = time.time()
+    node_id = str(connection["node_id"])
+    with Observer(config) as observer:
+        observer.db.register_remote_pull(
+            node_id=node_id,
+            token=str(connection["token"]),
+            display_name=str(connection["display_name"]),
+            provider=connection.get("provider"),
+            upload_epoch=int(connection["upload_epoch"]),
+        )
+    path = pull_connections_dir(config) / f"{node_id}.json"
+    _atomic_json(path, connection)
     return connection
 
 
@@ -552,7 +729,12 @@ def snapshot_projection(observer: Observer) -> dict[str, Any]:
     return {"generated_at": raw["generated_at"], "projects": projects}
 
 
-def build_snapshot(observer: Observer, connection: dict[str, Any]) -> dict[str, Any]:
+def build_snapshot(
+    observer: Observer,
+    connection: dict[str, Any],
+    *,
+    revision: int | None = None,
+) -> dict[str, Any]:
     supervisor = observer.db.supervisor_status()
     return {
         "schema_version": SNAPSHOT_SCHEMA,
@@ -560,7 +742,9 @@ def build_snapshot(observer: Observer, connection: dict[str, Any]) -> dict[str, 
         "display_name": connection.get("display_name") or socket.gethostname(),
         "provider": supervisor.get("provider") or connection.get("provider"),
         "upload_epoch": int(connection["upload_epoch"]),
-        "revision": int(connection.get("last_revision") or 0) + 1,
+        "revision": revision
+        if revision is not None
+        else int(connection.get("last_revision") or 0) + 1,
         "generated_at": time.time(),
         "projection": snapshot_projection(observer),
         "analyzer": supervisor,
@@ -591,8 +775,10 @@ def validate_snapshot(value: dict[str, Any]) -> tuple[str, str]:
         raise RemoteError("remote snapshot contains unsupported top-level fields")
     if value["schema_version"] != SNAPSHOT_SCHEMA:
         raise RemoteError("remote snapshot schema version is unsupported")
-    if not isinstance(value["node_id"], str) or not value["node_id"].startswith(
-        "node_"
+    node_id = value["node_id"]
+    suffix = node_id.removeprefix("node_") if isinstance(node_id, str) else ""
+    if len(suffix) != 20 or any(
+        character not in "0123456789abcdef" for character in suffix
     ):
         raise RemoteError("remote snapshot has an invalid node identity")
     if not isinstance(value["display_name"], str) or not value["display_name"].strip():
@@ -705,6 +891,60 @@ def push_snapshot(config: ObserverConfig) -> dict[str, Any]:
         return {"state": "disconnected", "error": str(exc)}
 
 
+def pull_snapshot(config: ObserverConfig, connection: dict[str, Any]) -> dict[str, Any]:
+    node_id = str(connection.get("node_id") or "")
+    if not node_id:
+        return {"state": "disconnected", "error": "pull connection has no node ID"}
+    path = pull_connections_dir(config) / f"{node_id}.json"
+    connection = {key: value for key, value in connection.items() if key != "_path"}
+    try:
+        snapshot = _request(
+            connection,
+            "/v1/snapshot",
+            {"after_revision": int(connection.get("last_revision") or 0)},
+            response_limit=MAX_SNAPSHOT_BYTES,
+        )
+        canonical, digest = validate_snapshot(snapshot)
+        with Observer(config) as observer:
+            result = observer.db.import_remote_snapshot(
+                str(connection["token"]),
+                snapshot,
+                canonical_json=canonical,
+                snapshot_hash=digest,
+            )
+        connection["last_revision"] = int(result["revision"])
+        connection["last_received_at"] = float(result["received_at"])
+        connection["last_attempt_at"] = time.time()
+        connection["last_error"] = None
+        _atomic_json(path, connection)
+        return {"state": "received", **result}
+    except (OSError, RemoteError, ValueError, KeyError) as exc:
+        connection["last_error"] = str(exc)
+        connection["last_attempt_at"] = time.time()
+        _atomic_json(path, connection)
+        return {"state": "disconnected", "node_id": node_id, "error": str(exc)}
+
+
+def pull_all_snapshots(config: ObserverConfig) -> list[dict[str, Any]]:
+    return [pull_snapshot(config, connection) for connection in load_pull_connections(config)]
+
+
+def revoke_pull_connection(config: ObserverConfig, node_id: str) -> dict[str, Any]:
+    path = pull_connections_dir(config) / f"{node_id}.json"
+    connection = _read_json(path)
+    remote_result: dict[str, Any] | None = None
+    if connection:
+        try:
+            remote_result = _request(connection, "/v1/revoke", {})
+        except (OSError, RemoteError, ValueError) as exc:
+            remote_result = {"state": "unreachable", "error": str(exc)}
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    return {"connection_removed": connection is not None, "remote": remote_result}
+
+
 def remote_connection_status(config: ObserverConfig) -> dict[str, Any]:
     connection = load_connection(config)
     if connection is None:
@@ -728,4 +968,31 @@ def remote_connection_status(config: ObserverConfig) -> dict[str, Any]:
     result["state"] = (
         "connected" if not connection.get("last_error") else "disconnected"
     )
+    return result
+
+
+def remote_pull_status(config: ObserverConfig) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for connection in load_pull_connections(config):
+        public = {
+            key: connection.get(key)
+            for key in (
+                "node_id",
+                "display_name",
+                "provider",
+                "transport",
+                "endpoints",
+                "upload_epoch",
+                "last_revision",
+                "accepted_at",
+                "claimed_at",
+                "last_received_at",
+                "last_attempt_at",
+                "last_error",
+            )
+        }
+        public["state"] = (
+            "connected" if not connection.get("last_error") else "disconnected"
+        )
+        result.append(public)
     return result

@@ -1,9 +1,9 @@
 ---
 name: remote
-description: Connect a dedicated Claude or Codex session on a remote LAN or Tailscale machine to an existing home Agent Observer dashboard. Use when the user supplies an ao1 enrollment key, wants to resume the remote Observer collector/analyzer, manage that remote workspace's project watchlist, inspect remote connection status, or disconnect the remote node.
+description: Connect a full Claude or Codex Observer peer to a combined dashboard over LAN or Tailscale, in either transport direction. Use when the user supplies an ao1 enrollment key, wants this peer to listen for a pulling dashboard, resumes its collector/analyzer, manages its watchlist, inspects connection status, or disconnects it.
 ---
 
-# Connect a remote Observer node
+# Connect an Observer peer
 
 Use the bundled `bin/agent-observer` executable. Resolve its absolute path from
 this skill: the plugin root is two directories above this skill directory. Pass
@@ -21,7 +21,11 @@ the `ao1.` key. It has no relay, NAT traversal, or public discovery behavior.
 ## Route the request
 
 - An argument beginning with `ao1.`: enroll this workspace and start its remote
-  collector and dormant subscription-backed analyzer.
+  collector and dormant subscription-backed analyzer. The supplied key means
+  the dashboard is listening, so this peer pushes snapshots.
+- `listen`: enable this peer's dedicated pinned-TLS snapshot listener, start
+  its collector and analyzer, and return a complete single-use `ao1.` key. The
+  dashboard consumes that key and pulls snapshots from this peer.
 - No argument, `start`, or `resume`: resume the stored remote connection and
   safely take over its uploader and analyzer.
 - `add PROJECT`: run `--json add PROJECT`. The remote daemon uploads the new
@@ -62,6 +66,24 @@ the current session ID is known but not exported, pass
 
 Report the returned node name, home endpoint, snapshot state, and analyzer
 state. Do not expect or invent a dashboard URL on this machine.
+
+## Listen for the dashboard
+
+Use this direction when this peer can accept inbound LAN/Tailscale TLS and the
+chosen dashboard host cannot:
+
+```sh
+/absolute/plugin/bin/agent-observer --workspace "$PWD" --json remote-listen \
+  --provider PROVIDER --allow-cross-provider
+```
+
+Return the entire generated `ao1.` key. On the chosen dashboard host, the user
+passes it to `$agent-observer:observe connect AO1_KEY` or
+`/agent-observer:observe connect AO1_KEY`. The dashboard then makes the outbound
+connection and durably pulls bounded snapshots. This peer still performs its
+own collection and analysis; only connection direction changes. Either machine
+may be the dashboard host, but only one combined dashboard is selected for a
+given connection.
 
 ## Dormant analyzer behavior
 

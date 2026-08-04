@@ -10,16 +10,23 @@ from typing import Any
 
 from . import __version__
 from .analyzer import run_analyzer
+from .exporter import run_exporter
 from .ingest import run_ingest
 from .remote import (
     DEFAULT_INVITE_TTL,
     accept_invite,
+    accept_listener_invite,
     claim_uploader,
     enable_home_remote,
+    enable_remote_listener,
     issue_invite,
+    issue_listener_invite,
     load_home_config,
+    pull_snapshot,
     push_snapshot,
     remote_connection_status,
+    remote_pull_status,
+    revoke_pull_connection,
 )
 from .reviews import next_review, prepare_review, submit_review
 from .runtime import (
@@ -161,6 +168,29 @@ def build_parser() -> argparse.ArgumentParser:
     remote_begin.add_argument("--analyzer-session-id")
     remote_begin.add_argument("--display-name")
     remote_begin.add_argument("--allow-cross-provider", action="store_true")
+    remote_listen = commands.add_parser(
+        "remote-listen",
+        help="Listen for a dashboard peer that will pull this node's snapshots",
+    )
+    remote_listen.add_argument("--provider", choices=("claude", "codex"), required=True)
+    remote_listen.add_argument("--model")
+    remote_listen.add_argument("--analyzer-session-id")
+    remote_listen.add_argument("--display-name")
+    remote_listen.add_argument("--allow-cross-provider", action="store_true")
+    remote_listen.add_argument("--bind", default="0.0.0.0")
+    remote_listen.add_argument("--port", type=int)
+    remote_listen.add_argument("--advertise", action="append")
+    remote_listen.add_argument("--ttl", type=int, default=DEFAULT_INVITE_TTL)
+    remote_connect = commands.add_parser(
+        "remote-connect",
+        help="Connect this dashboard to a listening Observer peer",
+    )
+    remote_connect.add_argument("invite")
+    remote_connect.add_argument("--provider", choices=("claude", "codex"), required=True)
+    remote_connect.add_argument("--model")
+    remote_connect.add_argument("--analyzer-session-id")
+    remote_connect.add_argument("--display-name")
+    remote_connect.add_argument("--allow-cross-provider", action="store_true")
     commands.add_parser("remote-status", help="Show this remote node connection state")
     commands.add_parser(
         "remote-stop", help="Detach the remote analyzer and stop its collector"
@@ -180,6 +210,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ingest.add_argument("--bind", required=True)
     ingest.add_argument("--port", type=int, required=True)
+    exporter = commands.add_parser(
+        "export", help="Run the dedicated remote snapshot export server"
+    )
+    exporter.add_argument("--bind", required=True)
+    exporter.add_argument("--port", type=int, required=True)
     analyzer = commands.add_parser(
         "analyzer", help="Run the dormant subscription-backed analyzer sidecar"
     )
@@ -279,6 +314,8 @@ def run(args: argparse.Namespace) -> int:
         )
     if args.command == "ingest":
         return run_ingest(config, bind=args.bind, port=args.port)
+    if args.command == "export":
+        return run_exporter(config, bind=args.bind, port=args.port)
     if args.command == "analyzer":
         return run_analyzer(
             config,
@@ -329,12 +366,15 @@ def run(args: argparse.Namespace) -> int:
     if args.command == "remote-status":
         with Observer(config) as observer:
             supervisor = observer.db.supervisor_status()
+            listening_peers = observer.db.remote_nodes()
         _print(
             {
                 "state_dir": str(config.state_dir),
                 "services": service_status(config),
                 "supervisor": supervisor,
                 "remote": remote_connection_status(config),
+                "pulls": remote_pull_status(config),
+                "listening_peers": listening_peers,
             },
             args.as_json,
         )
@@ -410,6 +450,90 @@ def run(args: argparse.Namespace) -> int:
             args.as_json,
         )
         return 0
+    if args.command == "remote-listen":
+        analyzer_session_id = args.analyzer_session_id or os.environ.get(
+            "CODEX_THREAD_ID" if args.provider == "codex" else "CLAUDE_SESSION_ID"
+        )
+        listener = enable_remote_listener(
+            config,
+            bind=args.bind,
+            port=args.port,
+            advertise=args.advertise,
+            display_name=args.display_name,
+        )
+        instance = claim_active_instance(config)
+        services = start_remote_services(config)
+        with Observer(config) as observer:
+            if analyzer_session_id:
+                observer.db.exclude_session(
+                    args.provider,
+                    analyzer_session_id,
+                    "invoking remote Observer controller session",
+                )
+        analyzer = start_analyzer_service(
+            config,
+            provider=args.provider,
+            model=args.model,
+            allow_cross_provider=args.allow_cross_provider,
+        )
+        with Observer(config) as observer:
+            enrollment = issue_listener_invite(
+                observer, listener, ttl_seconds=args.ttl
+            )
+            supervisor = observer.db.supervisor_status()
+        _print(
+            {
+                "state_dir": str(config.state_dir),
+                "services": service_status(config),
+                "supervisor": supervisor,
+                "analyzer": analyzer,
+                "instance": instance,
+                "remote_enrollment": enrollment,
+            },
+            args.as_json,
+        )
+        return 0
+    if args.command == "remote-connect":
+        analyzer_session_id = args.analyzer_session_id or os.environ.get(
+            "CODEX_THREAD_ID" if args.provider == "codex" else "CLAUDE_SESSION_ID"
+        )
+        connection = accept_listener_invite(
+            config,
+            args.invite,
+            provider=args.provider,
+            display_name=args.display_name,
+        )
+        instance = claim_active_instance(config)
+        start_services(config)
+        with Observer(config) as observer:
+            if analyzer_session_id:
+                observer.db.exclude_session(
+                    args.provider,
+                    analyzer_session_id,
+                    "invoking Observer controller session",
+                )
+        analyzer = start_analyzer_service(
+            config,
+            provider=args.provider,
+            model=args.model,
+            allow_cross_provider=args.allow_cross_provider,
+        )
+        synced = pull_snapshot(config, connection)
+        with Observer(config) as observer:
+            supervisor = observer.db.supervisor_status()
+        _print(
+            {
+                "state_dir": str(config.state_dir),
+                "services": service_status(config),
+                "supervisor": supervisor,
+                "analyzer": analyzer,
+                "instance": instance,
+                "remote": remote_pull_status(config),
+                "sync": synced,
+            },
+            args.as_json,
+        )
+        return 0
 
     with Observer(config) as observer:
         if args.command == "add":
@@ -432,6 +556,7 @@ def run(args: argparse.Namespace) -> int:
                 "state_dir": str(config.state_dir),
                 "services": services,
                 "supervisor": observer.db.supervisor_status(),
+                "remote_pulls": remote_pull_status(config),
             }
         elif args.command == "supervisor-begin":
             analyzer_session_id = args.analyzer_session_id or os.environ.get(
@@ -467,7 +592,11 @@ def run(args: argparse.Namespace) -> int:
         elif args.command == "remote-nodes":
             result = {"nodes": observer.db.remote_nodes()}
         elif args.command == "remote-revoke":
-            result = observer.db.revoke_remote_node(args.node_id)
+            transport = revoke_pull_connection(config, args.node_id)
+            result = {
+                **observer.db.revoke_remote_node(args.node_id),
+                "transport": transport,
+            }
         elif args.command == "review-next":
             result = next_review(
                 observer, args.lease_token, wait_seconds=args.wait

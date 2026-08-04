@@ -169,16 +169,18 @@ def _spawn(config: ObserverConfig, kind: str, extra: list[str]) -> int:
 
 
 def service_status(config: ObserverConfig) -> dict[str, Any]:
-    from .remote import load_home_config
+    from .remote import load_home_config, load_listener_config
 
     runtime = _runtime_dir(config)
     server = _read_json(runtime / "server.json") or {}
     daemon = _read_json(runtime / "daemon.json") or {}
     ingest = _read_json(runtime / "ingest.json") or {}
+    listener = _read_json(runtime / "listener.json") or {}
     analyzer = _read_json(runtime / "analyzer.json") or {}
     server_running = _alive(server.get("pid"))
     daemon_running = _alive(daemon.get("pid"))
     ingest_running = _alive(ingest.get("pid"))
+    listener_running = _alive(listener.get("pid"))
     analyzer_running = _alive(analyzer.get("pid"))
     result: dict[str, Any] = {
         "server": {
@@ -196,12 +198,18 @@ def service_status(config: ObserverConfig) -> dict[str, Any]:
             "running": ingest_running,
             "compatible": ingest_running and _runtime_compatible(ingest),
         },
+        "listener": {
+            **listener,
+            "running": listener_running,
+            "compatible": listener_running and _runtime_compatible(listener),
+        },
         "analyzer": {
             **analyzer,
             "running": analyzer_running,
             "compatible": analyzer_running and _runtime_compatible(analyzer),
         },
         "remote_ingest_enabled": load_home_config(config) is not None,
+        "remote_listener_enabled": load_listener_config(config) is not None,
     }
     if server_running and server.get("port"):
         result["dashboard_url"] = f"http://127.0.0.1:{int(server['port'])}/"
@@ -220,6 +228,7 @@ def _stop_service(config: ObserverConfig, kind: str) -> tuple[bool, bool]:
         "server": "serve",
         "daemon": "daemon",
         "ingest": "ingest",
+        "listener": "export",
         "analyzer": "analyzer",
     }[kind]
     if pid and _alive(pid):
@@ -305,12 +314,12 @@ def start_analyzer_service(
 
 
 def start_services(config: ObserverConfig) -> dict[str, Any]:
-    from .remote import load_home_config
+    from .remote import load_home_config, load_listener_config
 
     runtime = _runtime_dir(config)
     ensure_auth_token(config)
     status = service_status(config)
-    for kind in ("daemon", "server", "ingest"):
+    for kind in ("daemon", "server", "ingest", "listener"):
         if status[kind]["running"] and not status[kind]["compatible"]:
             _stop_service(config, kind)
     status = service_status(config)
@@ -337,6 +346,17 @@ def start_services(config: ObserverConfig) -> dict[str, Any]:
             "ingest",
             ["--bind", str(home["bind"]), "--port", str(home["port"])],
         )
+    listener = load_listener_config(config)
+    if listener and not status["listener"]["running"]:
+        try:
+            (runtime / "listener.json").unlink()
+        except OSError:
+            pass
+        _spawn(
+            config,
+            "export",
+            ["--bind", str(listener["bind"]), "--port", str(listener["port"])],
+        )
 
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
@@ -344,12 +364,16 @@ def start_services(config: ObserverConfig) -> dict[str, Any]:
         ingest_ready = not home or (
             status["ingest"]["running"] and status["ingest"]["compatible"]
         )
+        listener_ready = not listener or (
+            status["listener"]["running"] and status["listener"]["compatible"]
+        )
         if (
             status["server"]["running"]
             and status["server"]["compatible"]
             and status["daemon"]["running"]
             and status["daemon"]["compatible"]
             and ingest_ready
+            and listener_ready
         ):
             port = int(status["server"]["port"])
             bootstrap = issue_bootstrap_token(config)
@@ -363,9 +387,11 @@ def start_services(config: ObserverConfig) -> dict[str, Any]:
 
 
 def start_remote_services(config: ObserverConfig) -> dict[str, Any]:
+    from .remote import load_listener_config
+
     runtime = _runtime_dir(config)
     status = service_status(config)
-    for kind in ("daemon", "server", "ingest"):
+    for kind in ("daemon", "server", "ingest", "listener"):
         if status[kind]["running"] and not status[kind]["compatible"]:
             _stop_service(config, kind)
     status = service_status(config)
@@ -375,10 +401,28 @@ def start_remote_services(config: ObserverConfig) -> dict[str, Any]:
         except OSError:
             pass
         _spawn(config, "daemon", [])
+    listener = load_listener_config(config)
+    if listener and not status["listener"]["running"]:
+        try:
+            (runtime / "listener.json").unlink()
+        except OSError:
+            pass
+        _spawn(
+            config,
+            "export",
+            ["--bind", str(listener["bind"]), "--port", str(listener["port"])],
+        )
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         status = service_status(config)
-        if status["daemon"]["running"] and status["daemon"]["compatible"]:
+        listener_ready = not listener or (
+            status["listener"]["running"] and status["listener"]["compatible"]
+        )
+        if (
+            status["daemon"]["running"]
+            and status["daemon"]["compatible"]
+            and listener_ready
+        ):
             return status
         time.sleep(0.05)
     stop_services(config)
@@ -455,7 +499,7 @@ def _owned_process(pid: int, kind: str) -> bool:
 def stop_services(config: ObserverConfig) -> dict[str, Any]:
     stopped: list[str] = []
     refused: list[str] = []
-    for kind in ("analyzer", "server", "daemon", "ingest"):
+    for kind in ("analyzer", "server", "daemon", "ingest", "listener"):
         did_stop, did_refuse = _stop_service(config, kind)
         if did_refuse:
             refused.append(kind)
@@ -499,10 +543,17 @@ def run_daemon(
             except (OSError, ValueError, KeyError) as exc:
                 error = f"{type(exc).__name__}: {exc}"
             if time.monotonic() >= next_remote_sync:
-                from .remote import load_connection, push_snapshot
+                from .remote import (
+                    load_connection,
+                    pull_all_snapshots,
+                    push_snapshot,
+                )
 
                 if load_connection(config):
                     remote = push_snapshot(config)
+                pulled = pull_all_snapshots(config)
+                if pulled:
+                    remote = {"push": remote, "pull": pulled}
                 next_remote_sync = time.monotonic() + 5
             _atomic_json(
                 info_path,
@@ -536,6 +587,21 @@ def write_server_info(config: ObserverConfig, *, port: int) -> Path:
 
 def write_ingest_info(config: ObserverConfig, *, bind: str, port: int) -> Path:
     path = _runtime_dir(config) / "ingest.json"
+    _atomic_json(
+        path,
+        {
+            "pid": os.getpid(),
+            **_runtime_stamp(),
+            "started_at": time.time(),
+            "bind": bind,
+            "port": port,
+        },
+    )
+    return path
+
+
+def write_listener_info(config: ObserverConfig, *, bind: str, port: int) -> Path:
+    path = _runtime_dir(config) / "listener.json"
     _atomic_json(
         path,
         {

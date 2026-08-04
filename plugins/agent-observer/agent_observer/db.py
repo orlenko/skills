@@ -326,6 +326,63 @@ class ObserverDB:
             "accepted_at": now,
         }
 
+    def register_remote_pull(
+        self,
+        *,
+        node_id: str,
+        token: str,
+        display_name: str,
+        provider: str | None,
+        upload_epoch: int,
+    ) -> dict[str, Any]:
+        """Mirror an authenticated listening peer in the dashboard ledger."""
+        suffix = node_id.removeprefix("node_")
+        if (
+            len(suffix) != 20
+            or any(character not in "0123456789abcdef" for character in suffix)
+        ):
+            raise ValueError("remote node identity is invalid")
+        if upload_epoch < 1:
+            raise ValueError("remote node uploader epoch is invalid")
+        now = time.time()
+        digest = self._secret_hash(token)
+        with self.connection:
+            existing = self.connection.execute(
+                "SELECT token_hash FROM remote_nodes WHERE node_id = ?", (node_id,)
+            ).fetchone()
+            if existing is not None and not hmac.compare_digest(
+                str(existing["token_hash"]), digest
+            ):
+                raise ValueError("remote node identity already has another credential")
+            self.connection.execute(
+                """
+                INSERT INTO remote_nodes(
+                    node_id, display_name, provider, token_hash, created_at,
+                    last_seen_at, upload_epoch
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(node_id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    provider = excluded.provider,
+                    last_seen_at = excluded.last_seen_at,
+                    revoked_at = NULL,
+                    upload_epoch = excluded.upload_epoch
+                """,
+                (
+                    node_id,
+                    display_name.strip()[:160] or "remote observer",
+                    provider,
+                    digest,
+                    now,
+                    now,
+                    upload_epoch,
+                ),
+            )
+        row = self.connection.execute(
+            "SELECT * FROM remote_nodes WHERE node_id = ?", (node_id,)
+        ).fetchone()
+        assert row is not None
+        return dict(row)
+
     def authenticate_remote_node(self, token: str) -> dict[str, Any]:
         digest = self._secret_hash(token)
         row = self.connection.execute(
@@ -363,6 +420,27 @@ class ObserverDB:
             "upload_epoch": int(claimed["upload_epoch"]),
             "claimed_at": now,
         }
+
+    def reserve_remote_snapshot(self, token: str) -> dict[str, Any]:
+        """Fence and number one snapshot served to an authenticated puller."""
+        node = self.authenticate_remote_node(token)
+        now = time.time()
+        with self.connection:
+            updated = self.connection.execute(
+                """
+                UPDATE remote_nodes
+                SET last_revision = last_revision + 1, last_seen_at = ?
+                WHERE node_id = ? AND revoked_at IS NULL
+                """,
+                (now, node["node_id"]),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("remote node credential is invalid or revoked")
+        row = self.connection.execute(
+            "SELECT * FROM remote_nodes WHERE node_id = ?", (node["node_id"],)
+        ).fetchone()
+        assert row is not None
+        return dict(row)
 
     def import_remote_snapshot(
         self,

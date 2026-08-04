@@ -1562,7 +1562,8 @@ machines without adding worker communication. The first one-home, one-Ubuntu
 snapshot slice is implemented; the requirements below remain its behavioral and
 security boundary.
 
-The home machine runs the canonical dashboard and coordinator. Invoking
+One selected peer runs the combined dashboard and coordinator; it may be the
+macOS or Ubuntu machine. Invoking
 `$agent-observer:observe` in Codex or `/agent-observer:observe` in Claude starts
 or takes over the local Observer as today and also prints a fresh, time-limited
 remote-enrollment key and the exact advertised endpoints. It opens a separate
@@ -1573,7 +1574,16 @@ dedicated Observer workspace on a remote machine, the operator invokes
 starts or reconciles that machine's deterministic collector, outbound proxy,
 and dormant activity-gated analyzer used locally.
 
-The enrollment key should reuse the proven Agent Pair *bootstrap shape*, not its
+Connection direction is independent of those roles. If the dashboard peer can
+accept inbound TLS, the watched peer redeems the dashboard's key and pushes
+snapshots as above. If the watched peer can accept inbound TLS instead, its
+Observer session runs `remote listen`, returns a single-use pinned key, and the
+dashboard session runs `observe connect KEY`; the dashboard then pulls the same
+snapshots. Both sides remain full Observer instances capable of collection and
+analysis. Reversing transport never relocates or duplicates semantic analysis.
+Only one combined dashboard is selected for a connection.
+
+Each listener's enrollment key should reuse the proven Agent Pair *bootstrap shape*, not its
 mailbox protocol: a versioned `ao1.` payload containing reachable home endpoints,
 a short-lived single-use secret, an expiry, and the home server's TLS certificate
 fingerprint. Successful redemption creates a revocable durable remote-node
@@ -1583,16 +1593,17 @@ is reachable, enrollment fails visibly; a hosted relay is not implied. Loss of
 the remote credential creates a new node in the first release; hostname matching
 must never reclaim an old identity implicitly.
 
-The remote ingress is a dedicated authenticated protocol endpoint, not the
-loopback dashboard server exposed on another interface. Its certificate identity
-and enrolled-node credentials live in the home Observer workspace and survive
-normal sidecar restart; certificate rotation either preserves a separately
-pinned node identity or requires explicit re-enrollment. Endpoint advertisement
-is configurable for direct LAN or Tailscale reachability and never claims relay
-or NAT-traversal support.
+The network listener is a dedicated authenticated protocol endpoint, never the
+loopback dashboard server exposed on another interface. Its certificate
+identity and enrolled-peer credentials live in the listening Observer workspace
+and survive normal sidecar restart; certificate rotation either preserves a
+separately pinned peer identity or requires explicit re-enrollment. Endpoint
+advertisement is configurable for direct LAN or Tailscale reachability and
+never claims relay or NAT-traversal support.
 
-After enrollment, the remote proxy makes outbound pinned-TLS connections to the
-home coordinator. It uploads only Observer's normalized, policy-filtered current
+After enrollment, the connecting peer makes outbound pinned-TLS connections to
+the listener. Depending on enrollment direction, the watched peer pushes or the
+dashboard peer pulls Observer's normalized, policy-filtered current
 projection: node and source health, source checkpoints, factual observations,
 exact cited snippets with stable remote source references, and semantic-review
 results. It does not mirror raw provider logs, deep conversation replay,
@@ -1608,12 +1619,12 @@ and `remove` operations used locally. The home candidate combobox must not imply
 that it can discover or enroll arbitrary remote paths. Remote watchlist changes
 are replicated back as facts.
 
-The first remote delivery protocol sends bounded, versioned snapshots of the
+The first remote delivery protocol transfers bounded, versioned snapshots of the
 node's current normalized projection, not a general event stream. Each snapshot
 has a node connection epoch, monotonically increasing revision, content hash,
-source and analysis cutoffs, generated-at time, stable remote IDs, and a home
-acknowledgement. The remote outbox retains the newest unacknowledged snapshot
-across network loss and process restart. The home imports facts, cited evidence,
+source and analysis cutoffs, generated-at time, stable remote IDs, and a
+dashboard acknowledgement. The durable connection retains its acknowledged
+revision across network loss and process restart. The dashboard imports facts, cited evidence,
 and referencing semantic results together in one staging transaction, repeats
 schema, bound, citation, and reference validation, then atomically replaces that
 node's current projection. Retrying the same revision is idempotent; an older
@@ -1636,14 +1647,14 @@ presentation boundary. At minimum, remote project identity is
 source activity time, home receipt time, and detected clock skew separate; a
 future-dated source clock cannot silently float a row above correctly timed work.
 
-The home dashboard merges local and remote projections into the same attention
+The selected dashboard merges local and remote projections into the same attention
 views. Each remote project and session prominently shows its host. A dedicated
 host filter remains a dashboard follow-up. Host connection health, collector
 health, and analyzer attachment are independent; an unreachable remote host must
 not be described as a worker failure. Removal or credential revocation stops
 future replication but does not silently erase already received findings or
 local dispositions.
-The ingest boundary enforces per-node payload-size, item-count, rate, retention,
+The snapshot boundary enforces per-node payload-size, item-count, rate, retention,
 and schema-version limits so a broken or compromised node cannot consume
 unbounded home resources.
 
@@ -1662,9 +1673,9 @@ Ubuntu machine demonstrate all of the following:
 9. unchanged read-only treatment of every watched Claude and Codex worker.
 
 The implemented smallest viable Milestone E supports directly reachable LAN or
-Tailscale endpoints, one Ubuntu node, remote-session watchlist management,
-batched polling of bounded snapshots with acknowledgements, and no
-home-to-remote command channel. Relays, automatic NAT traversal, delta/event
+Tailscale endpoints, one Ubuntu node, either peer listening, remote-session
+watchlist management, bounded snapshot revisions, and no worker command
+channel. Relays, automatic NAT traversal, delta/event
 replication, certificate rotation without re-enrollment, transparent identity
 recovery, remote project enrollment from the home UI, deep remote replay, and
 multi-home federation

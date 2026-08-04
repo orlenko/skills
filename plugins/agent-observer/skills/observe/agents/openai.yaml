@@ -1,4 +1,4 @@
 interface:
   display_name: "Agent Observer"
   short_description: "Watch Claude and Codex work without waking idle models"
-  default_prompt: "Start Agent Observer here, report the dashboard and remote enrollment key, and leave deterministic activity-gated analysis running."
+  default_prompt: "Use $agent-observer:observe to start the combined dashboard or connect it to a listening Observer peer, then report transport and analyzer health."

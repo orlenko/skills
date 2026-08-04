@@ -27,8 +27,9 @@ vertical slice provides:
   model batches, bounded review packets, deterministic evidence-block
   references, and exact evidence validation before dashboard publication;
 - crash-safe accepted cutoffs and takeover by a replacement Observer session;
-- a dedicated pinned-TLS LAN/Tailscale ingest listener, single-use `ao1.`
-  enrollment, and revocable durable remote-node credentials;
+- symmetric pinned-TLS LAN/Tailscale snapshot transport: either the dashboard
+  listens for pushes or the watched peer listens for dashboard pulls, using
+  single-use `ao1.` enrollment and revocable durable credentials;
 - remote collectors and dormant subscription analyzers with no remote web UI;
 - bounded node-scoped snapshot projection, uploader-epoch fencing, and
   host-labeled local/remote projects in one dashboard.
@@ -97,11 +98,27 @@ Observer session. To advertise a specific Tailscale or LAN address from the
 home session, invoke `enable-remote ADDRESS` once; future `observe` invocations
 reuse it and issue a fresh key.
 
+If the dashboard host cannot accept inbound TLS, reverse only the connection
+direction. On the watched peer run:
+
+```text
+Codex: $agent-observer:remote listen
+Claude: /agent-observer:remote listen
+```
+
+It returns a single-use `ao1.` key for its dedicated snapshot listener. On the
+chosen dashboard host run `observe connect ao1.KEY_FROM_PEER`; that dashboard
+then pulls the same bounded projections. Collection and analysis remain on the
+watched peer in both modes. Either physical machine may host the dashboard;
+whichever side can accept direct LAN or Tailscale TLS can be the listener.
+
 Run directly from a checkout:
 
 ```sh
 plugins/agent-observer/bin/agent-observer --workspace ~/personal/dash --json supervisor-begin --provider codex --allow-cross-provider
 plugins/agent-observer/bin/agent-observer --workspace ~/personal/dash --json remote-enable --advertise 100.64.0.10
+plugins/agent-observer/bin/agent-observer --workspace ~/personal/dash --json remote-listen --provider codex --allow-cross-provider --advertise 100.64.0.10
+plugins/agent-observer/bin/agent-observer --workspace ~/personal/dash --json remote-connect ao1.KEY_FROM_PEER --provider codex --allow-cross-provider
 plugins/agent-observer/bin/agent-observer --workspace ~/personal/dash supervisor-status
 plugins/agent-observer/bin/agent-observer --workspace ~/personal/dash add ~/code/ops2
 plugins/agent-observer/bin/agent-observer --workspace ~/personal/dash supervisor-stop

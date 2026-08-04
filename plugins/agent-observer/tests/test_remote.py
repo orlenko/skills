@@ -13,14 +13,21 @@ from agent_observer.reviews import PACKET_VERSION, prepare_review, submit_review
 from agent_observer.remote import (  # noqa: E402
     RemoteError,
     accept_invite,
+    accept_listener_invite,
     claim_uploader,
     decode_invite,
     enable_home_remote,
+    enable_remote_listener,
     encode_invite,
     issue_invite,
+    issue_listener_invite,
     load_connection,
+    load_pull_connections,
+    pull_snapshot,
     push_snapshot,
     remote_connection_status,
+    remote_pull_status,
+    revoke_pull_connection,
     snapshot_projection,
 )
 from agent_observer.runtime import (  # noqa: E402
@@ -185,6 +192,83 @@ class RemoteObserverTests(unittest.TestCase):
         result = push_snapshot(stale_config)
         self.assertEqual(result["state"], "disconnected")
         self.assertIn("superseded", result["error"])
+
+    def test_dashboard_pulls_from_a_listening_full_observer_peer(self):
+        sid = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+        session = self.remote.codex_roots[0] / f"rollout-{sid}.jsonl"
+        append_jsonl(
+            session,
+            {
+                "type": "session_meta",
+                "timestamp": "2026-08-04T15:00:00Z",
+                "payload": {"id": sid, "cwd": str(self.project)},
+            },
+            {
+                "type": "event_msg",
+                "timestamp": "2026-08-04T15:00:01Z",
+                "payload": {
+                    "type": "agent_message",
+                    "phase": "final_answer",
+                    "message": "The listening peer finished its local analysis.",
+                },
+            },
+            {
+                "type": "event_msg",
+                "timestamp": "2026-08-04T15:00:02Z",
+                "payload": {"type": "task_complete"},
+            },
+        )
+        with Observer(self.remote) as observer:
+            observer.add_project(str(self.project))
+            listener = enable_remote_listener(
+                self.remote,
+                bind="127.0.0.1",
+                advertise=["127.0.0.1"],
+                display_name="ubuntu-observer",
+            )
+            enrollment = issue_listener_invite(observer, listener)
+        remote_services = start_remote_services(self.remote)
+        self.assertTrue(remote_services["listener"]["running"])
+        self.assertFalse(remote_services["server"]["running"])
+
+        connection = accept_listener_invite(
+            self.home, enrollment["invite"], provider="codex"
+        )
+        pulled = pull_snapshot(self.home, connection)
+        self.assertEqual(pulled["state"], "received")
+        self.assertEqual(remote_pull_status(self.home)[0]["state"], "connected")
+
+        with Observer(self.home) as observer:
+            projected = dashboard_projection(observer.status())
+        project = projected["projects"][0]
+        self.assertEqual(project["origin"], "remote")
+        self.assertEqual(project["node"]["display_name"], "ubuntu-observer")
+        self.assertEqual(project["sessions"][0]["provider"], "codex")
+
+        stop_services(self.remote)
+        restarted = start_remote_services(self.remote)
+        self.assertTrue(restarted["listener"]["running"])
+        resumed = pull_snapshot(self.home, load_pull_connections(self.home)[0])
+        self.assertEqual(resumed["state"], "received")
+        self.assertGreater(resumed["revision"], pulled["revision"])
+
+        second_home = ObserverConfig(
+            Path(self.temp.name) / "second-home-state",
+            (Path(self.temp.name) / "second-home-claude",),
+            (Path(self.temp.name) / "second-home-codex",),
+        )
+        with self.assertRaisesRegex(RemoteError, "already used"):
+            accept_listener_invite(
+                second_home, enrollment["invite"], provider="claude"
+            )
+
+        revoked = revoke_pull_connection(self.home, connection["node_id"])
+        self.assertTrue(revoked["connection_removed"])
+        self.assertEqual(load_pull_connections(self.home), [])
+        with Observer(self.home) as observer:
+            observer.db.revoke_remote_node(connection["node_id"])
+            cached = dashboard_projection(observer.status())["projects"][0]
+        self.assertEqual(cached["node"]["transport_state"], "revoked")
 
 
 if __name__ == "__main__":
