@@ -126,7 +126,9 @@ Review only the supplied visible messages and factual findings:
 
 1. Identify an explicit question, decision, requested user action,
    recommendation, agent action, or informational origin only when its exact
-   cited message supports that type.
+   cited message supports that type. Set `intended_party` to `user`, `agent`,
+   or `unknown`; do not treat agent work, rhetorical questions, or ordinary
+   lifecycle output as user attention.
 2. Examine later supplied messages in the same session for handling. Silence,
    elapsed turns, and topic drift are not handling or supersession.
 3. Use `indeterminate` when `coverage.negative_assessment_blocked` is true. A
@@ -155,6 +157,6 @@ the observer-owned draft path, give the evidence-linked review in chat, say it
 was not published to the dashboard, and do not relax filesystem permissions.
 
 When the loop ends, give the authenticated dashboard URL if still valid, a
-concise account of factual attention first, then model-suggested loose ends with
-analyzer and coverage limits. Never describe a model suggestion as observed
-fact.
+concise account of unresolved human input first, distinguishing observed
+structured requests from model-suggested loose ends and including analyzer and
+coverage limits. Never describe a model suggestion as observed fact.

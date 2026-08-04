@@ -113,6 +113,11 @@ V0 may use:
 - `quiet` or `stale`, always accompanied by the last-observation age;
 - `unknown` or `observer degraded`.
 
+`turn completed`, `turn aborted`, and `no completion observed` are lifecycle or
+observer-diagnostic facts. They remain available with provenance, but they do
+not by themselves mean that the human owes a response and therefore do not
+enter the attention queue.
+
 V0 must not claim that a worker is `online`, `offline`, `alive`, `dead`,
 `working`, `blocked`, or `waiting for you`. Those require process or worker
 cooperation that passive log observation does not provide.
@@ -1027,7 +1032,9 @@ request, with at most three prominent groups per project, at most three
 prominent items per group, and each remainder collapsed. A group enters
 `Review suggested` only when it has at least one prominent, unsuppressed item.
 It prioritizes explicit questions, decisions, and requested user actions over
-optional advice.
+optional advice. Only items whose intended party is the user can enter `Needs a
+look`; agent actions, informational output, rhetorical questions, and ordinary
+turn completion remain outside that queue.
 The default wording is:
 
 > Possible loose end — model review. No later handling found in the analyzed
@@ -1056,8 +1063,8 @@ It always shows the number of other known sessions, labels that count with the
 
 Project projection has independent facets:
 
-- **Attention:** none, decision requested, turn completed, turn aborted, or no
-  completion observed.
+- **Attention:** none, observed structured decision requested, or a
+  model-suggested unresolved user decision, question, or requested action.
 - **Activity:** recent, quiet, stale, or unknown.
 - **Health:** healthy, degraded, or unavailable, per provider and in aggregate.
 - **Changes:** the recent factual change list.
@@ -1074,7 +1081,9 @@ continue updating.
 
 The primary view groups watched projects into:
 
-- **Needs a look** — unseen findings;
+- **Needs a look** — unresolved human input: an unseen structured request or a
+  bounded model review identifying a user decision, question, or requested
+  action, always with its truth class and analysis status;
 - **Review suggested** — model-suggested groups with prominent unsuppressed
   items, each labeled with current or stale analysis status;
 - **Recently active** — recent meaningful observations without unseen findings;
@@ -1097,11 +1106,15 @@ Each project card shows:
 - truth class and evidence affordance for every inferred or model-suggested
   claim.
 
-Model-suggested continuity is visually subordinate to factual attention. A
-card may show `Possible loose ends — model review` and a count in `Review
-suggested`, but model output does not move a project into the factual `Needs a
-look` view. `Find loose ends` always shows the selected session, binding
-segment, range, analyzer provider, and disclosure boundary before launch.
+Model-suggested continuity remains epistemically distinct from observed
+structured attention, but an eligible unresolved user-input item may move a
+project into `Needs a look`. The row and detail must say `Model review`, expose
+current or stale analysis status, and retain its evidence and coverage cutoff.
+Observed structured requests win when both mechanisms describe the same need.
+
+Completion, abort, and other lifecycle payloads appear only in progressive
+disclosure as activity history or diagnostics. Serialized tool output is never
+the default human-facing summary.
 
 Project cards do not badge the normal `not analyzed` or `stale` states. They
 surface continuity only when a user-triggered job is active or failed, the

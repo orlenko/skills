@@ -615,6 +615,7 @@ input::placeholder { color: var(--faint); }
 .facet-list dd { overflow-wrap: anywhere; }
 
 .finding,
+.attention-item,
 .review-item,
 .session-row,
 .source-row,
@@ -624,12 +625,18 @@ input::placeholder { color: var(--faint); }
 }
 
 .section-heading + .finding,
+.section-heading + .attention-item,
 .section-heading + .review-item,
 .section-heading + .session-row,
 .section-heading + .source-row,
 .section-heading + .change-row { border-top: 0; padding-top: 0; }
 
 .finding.seen { opacity: 0.78; }
+.attention-section { background: color-mix(in oklch, var(--surface) 94%, var(--accent-soft)); }
+.attention-item { padding: 0.85rem 0; }
+.attention-item.truth-model { border-left: 2px solid var(--model); padding-left: 0.7rem; }
+.attention-item.truth-observed { border-left: 2px solid var(--accent); padding-left: 0.7rem; }
+.attention-count { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 45%, var(--rule)); }
 .item-heading { align-items: flex-start; justify-content: space-between; gap: 0.75rem; }
 .item-heading h4 { overflow-wrap: anywhere; }
 .item-summary { margin-top: 0.35rem; overflow-wrap: anywhere; }
@@ -726,6 +733,26 @@ input::placeholder { color: var(--faint); }
 
 .evidence-quote .message-markdown { color: inherit; }
 
+.attention-evidence,
+.review-notes,
+.raw-payload {
+  margin-top: 0.55rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.attention-evidence > summary,
+.review-notes > summary,
+.raw-payload > summary,
+.diagnostics-summary {
+  cursor: pointer;
+  list-style-position: outside;
+}
+
+.attention-evidence[open] > summary,
+.review-notes[open] > summary,
+.raw-payload[open] > summary { color: var(--ink); }
+
 .provenance,
 .coverage {
   margin-top: 0.46rem;
@@ -754,6 +781,20 @@ input::placeholder { color: var(--faint); }
 
 .review-summary { font-style: italic; }
 .model-review .evidence-quote { background: var(--surface); font-style: normal; }
+
+.activity-diagnostics { padding: 1rem; }
+.diagnostics-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.8rem;
+  color: var(--ink);
+}
+.diagnostics-summary span { color: var(--muted); font-size: 0.75rem; font-weight: 400; }
+.diagnostics-intro { margin-top: 0.7rem; }
+.diagnostic-row { padding: 0.65rem 0; border-top: 1px solid var(--rule); }
+.diagnostic-row .provenance { margin-top: 0; font-size: 0.7rem; }
+.raw-payload .markdown-code-block { max-height: 18rem; font-size: 0.72rem; }
 
 .session-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.8rem; }
 .session-copy { min-width: 0; }

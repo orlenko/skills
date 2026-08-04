@@ -135,6 +135,8 @@ class ReviewAndRuntimeTests(unittest.TestCase):
                 review["items"][0]["evidence_excerpt"],
                 origin["evidence_blocks"][0]["text"],
             )
+            self.assertEqual(review["items"][0]["intended_party"], "user")
+            self.assertIn("needs_a_look", projected["projects"][0]["views"])
             self.assertFalse(Path(prepared["packet_path"]).exists())
 
             rejected = prepare_review(
@@ -155,6 +157,10 @@ class ReviewAndRuntimeTests(unittest.TestCase):
             bad_path.write_text(json.dumps(draft), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "evidence block outside"):
                 submit_review(observer, rejected["job_id"], bad_path)
+            self.assertTrue(observer.dismiss_project_attention(str(self.project)))
+            dismissed = dashboard_projection(observer.status())["projects"][0]
+            self.assertNotIn("needs_a_look", dismissed["views"])
+            self.assertIsNotNone(dismissed["review"]["dismissed_at"])
 
     def test_supervisor_takeover_fences_submission_and_resumes_cursor(self):
         sid = "99999999-aaaa-bbbb-cccc-dddddddddddd"
@@ -604,7 +610,7 @@ with marker.open('a') as handle:
         with opener.open(request, timeout=5) as response:
             added = json.loads(response.read())
         self.assertEqual(len(added["projects"]), 1)
-        self.assertEqual(added["view_counts"]["needs_a_look"], 1)
+        self.assertEqual(added["view_counts"]["needs_a_look"], 0)
 
         dismiss_attention = urllib.request.Request(
             clean_url + "api/projects/dismiss-attention",

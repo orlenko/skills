@@ -135,8 +135,8 @@ Primary moments:
 ### 3.1 Attention before activity
 
 A project that produced many tokens is not necessarily important. Source-backed
-decision requests and unseen completion or abort findings outrank raw recency.
-Model-suggested loose ends are useful but visually subordinate.
+decision requests and model-reviewed unresolved human input outrank raw
+recency. Completion and abort facts are lifecycle diagnostics, not human debt.
 
 ### 3.2 Independent facets
 
@@ -144,7 +144,7 @@ Do not collapse a project into one status color. Each project has independent:
 
 | Facet | Values |
 | --- | --- |
-| Attention | none, decision requested, turn completed, turn aborted, no completion observed |
+| Attention | none, observed decision requested, model-reviewed user decision, question, or requested action |
 | Activity | recent, quiet, stale, unknown |
 | Health | healthy, degraded, unavailable |
 | Continuity | not analyzed, prepared, current, stale, incomplete, failed, disagreement |
@@ -186,7 +186,8 @@ operator drills in. Do not solve density with nested cards or a wall of badges.
 
 The primary view is one project list with overlapping filters:
 
-1. **Needs a look:** unseen source-backed findings.
+1. **Needs a look:** unresolved human input, whether an observed structured
+   request or a clearly labeled bounded model review.
 2. **Review suggested:** prominent unsuppressed model-review items.
 3. **Recently active:** recent evidence without unseen factual attention.
 4. **Quiet.**
@@ -201,12 +202,15 @@ Recommended hierarchy inside a project row:
 
 1. Project identity: display path, branch, provider presence, and host when the
    project is remote.
-2. Highest-priority factual attention, if present.
+2. Highest-priority human attention: observed structured request first,
+   otherwise a model-reviewed user decision, question, or requested action.
 3. Exact age of the newest meaningful observation.
 4. Observer issue indicator, independent of attention.
-5. Model-review summary only when it has a prominent item, is running, or failed.
-6. Selection affordance for a persistent inspector containing sessions,
-   evidence, changes, and analysis detail.
+5. Model-review status and provenance whenever it supplies the primary
+   attention item, is running, or failed.
+6. Selection affordance for a persistent inspector that begins with `Needs
+   your input`, keeps evidence close, and collapses lifecycle/raw payloads under
+   activity diagnostics.
 
 ### 4.1 Host-aware extension
 
@@ -649,7 +653,12 @@ Every major screen or control needs explicit design for:
 - no watched projects;
 - watched project with no discovered sessions;
 - no unseen findings;
-- factual attention plus model review on the same source;
+- observed structured attention plus model review on the same source, without
+  duplicate queue entries;
+- lifecycle-only activity with no human attention;
+- model-reviewed human attention with stale analysis clearly disclosed;
+- dismissed model attention that remains dismissed through later lifecycle
+  events and resurfaces after a newer eligible review;
 - source unavailable;
 - malformed or unknown provider schema;
 - daemon heartbeat stale while server remains available;

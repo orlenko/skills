@@ -146,7 +146,8 @@ CREATE TABLE IF NOT EXISTS review_jobs (
     source_generation INTEGER,
     source_offset INTEGER,
     input_hash TEXT,
-    lease_epoch INTEGER
+    lease_epoch INTEGER,
+    dismissed_at REAL
 );
 
 CREATE INDEX IF NOT EXISTS review_jobs_project_time
@@ -539,20 +540,6 @@ class ObserverDB:
     def _remote_key(node_id: str, value: Any) -> str:
         return f"remote:{node_id}:{value}"
 
-    @staticmethod
-    def _finding_fingerprint(findings: list[dict[str, Any]]) -> str:
-        current = sorted(
-            (
-                str(item.get("finding_id") or ""),
-                float(item.get("updated_at") or 0),
-            )
-            for item in findings
-            if item.get("state") == "open" and not item.get("seen")
-        )
-        return hashlib.sha256(
-            json.dumps(current, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
-
     def remote_status(self, now: float | None = None) -> dict[str, Any]:
         moment = now or time.time()
         rows = self.connection.execute(
@@ -645,7 +632,9 @@ class ObserverDB:
                     )
                 findings = project.get("findings")
                 project["findings"] = findings if isinstance(findings, list) else []
-                fingerprint = self._finding_fingerprint(project["findings"])
+                from .attention import attention_fingerprint
+
+                fingerprint = attention_fingerprint(project)
                 state = self.connection.execute(
                     """
                     SELECT dismissed_fingerprint FROM remote_project_state
@@ -726,10 +715,9 @@ class ObserverDB:
             )
         except (json.JSONDecodeError, KeyError, StopIteration, TypeError):
             return False
-        findings = project.get("findings")
-        if not isinstance(findings, list):
-            findings = []
-        fingerprint = self._finding_fingerprint(findings)
+        from .attention import attention_fingerprint
+
+        fingerprint = attention_fingerprint(project)
         with self.connection:
             self.connection.execute(
                 """
@@ -755,6 +743,7 @@ class ObserverDB:
             "source_offset": "INTEGER",
             "input_hash": "TEXT",
             "lease_epoch": "INTEGER",
+            "dismissed_at": "REAL",
         }
         for name, declaration in additions.items():
             if name not in columns:
@@ -819,6 +808,7 @@ class ObserverDB:
         return bool(cursor.rowcount)
 
     def dismiss_project_findings(self, project_id: str) -> bool:
+        dismissed_at = time.time()
         with self.connection:
             row = self.connection.execute(
                 "SELECT 1 FROM projects WHERE project_id = ?", (project_id,)
@@ -831,6 +821,13 @@ class ObserverDB:
                 WHERE project_id = ? AND state = 'open' AND seen = 0
                 """,
                 (project_id,),
+            )
+            self.connection.execute(
+                """
+                UPDATE review_jobs SET dismissed_at = ?
+                WHERE project_id = ? AND status = 'current' AND dismissed_at IS NULL
+                """,
+                (dismissed_at, project_id),
             )
         return True
 

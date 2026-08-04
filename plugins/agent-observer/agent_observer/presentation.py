@@ -2,18 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from .attention import (
+    actionable_findings,
+    actionable_review_items,
+    suggested_review_items,
+)
 
-ATTENTION_ORDER = {
-    "decision_requested": 0,
-    "turn_aborted": 1,
-    "turn_completed": 2,
-    "no_completion_observed": 3,
-}
-PROMINENT_ASSESSMENTS = {
-    "no_later_handling_observed",
-    "partially_handled",
-    "deferred_by_commitment",
-}
+REVIEW_TYPE_ORDER = {"decision": 0, "question": 1, "requested_user_action": 2}
 
 
 def _activity(project: dict[str, Any]) -> tuple[str, float | None]:
@@ -63,6 +58,7 @@ def _review(project: dict[str, Any]) -> dict[str, Any] | None:
             "items",
             "limitations",
             "error",
+            "dismissed_at",
         )
     }
     checkpoints = {
@@ -85,6 +81,58 @@ def _review(project: dict[str, Any]) -> dict[str, Any] | None:
     return safe
 
 
+def _attention_items(
+    project: dict[str, Any], review: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    observed = [
+        {
+            "attention_id": f"finding:{finding['finding_id']}",
+            "truth": "observed",
+            "type": str(finding["kind"]),
+            "title": str(finding.get("summary") or "Decision requested"),
+            "detail": str(finding.get("summary") or "Decision requested"),
+            "provider": finding.get("provider"),
+            "session_id": finding.get("session_id"),
+            "updated_at": finding.get("updated_at"),
+            "details": finding.get("details") or {},
+            "finding_id": finding.get("finding_id"),
+        }
+        for finding in sorted(
+            actionable_findings(project),
+            key=lambda item: -float(item.get("updated_at") or 0),
+        )
+    ]
+    if project.get("remote_attention_dismissed"):
+        return observed
+    model: list[dict[str, Any]] = []
+    for index, item in enumerate((review or {}).get("items") or []):
+        if item not in actionable_review_items(review):
+            continue
+        model.append(
+            {
+                "attention_id": f"review:{review.get('job_id')}:{index}",
+                "truth": "model",
+                "type": item.get("type"),
+                "title": item.get("title"),
+                "detail": item.get("detail"),
+                "provider": item.get("provider") or review.get("analyzer_provider"),
+                "session_id": item.get("session_id"),
+                "updated_at": item.get("timestamp") or review.get("submitted_at"),
+                "assessment": item.get("assessment"),
+                "intended_party": item.get("intended_party") or "user",
+                "evidence_excerpt": item.get("evidence_excerpt"),
+                "message_ref": item.get("message_ref"),
+                "review_item_index": index,
+                "review_job_id": review.get("job_id"),
+                "review_status": review.get("status"),
+            }
+        )
+    model.sort(
+        key=lambda item: REVIEW_TYPE_ORDER.get(str(item.get("type")), 9)
+    )
+    return observed + model
+
+
 def dashboard_projection(raw: dict[str, Any]) -> dict[str, Any]:
     projects: list[dict[str, Any]] = []
     view_counts = {
@@ -98,25 +146,18 @@ def dashboard_projection(raw: dict[str, Any]) -> dict[str, Any]:
     for project in raw["projects"]:
         activity, activity_age = _activity(project)
         health = _health(project)
-        unseen = [finding for finding in project["findings"] if not finding["seen"]]
-        attention = min(
-            unseen,
-            key=lambda item: (
-                ATTENTION_ORDER.get(str(item["kind"]), 99),
-                -float(item["updated_at"]),
-            ),
-            default=None,
-        )
         review = _review(project)
-        prominent = [
-            item
-            for item in (review or {}).get("items") or []
-            if item.get("assessment") in PROMINENT_ASSESSMENTS
-        ]
+        attention_items = _attention_items(project, review)
+        attention = attention_items[0] if attention_items else None
+        suggested = (
+            []
+            if project.get("remote_attention_dismissed")
+            else suggested_review_items(review)
+        )
         views: list[str] = []
         if attention:
             views.append("needs_a_look")
-        if prominent:
+        if suggested:
             views.append("review_suggested")
         if activity == "recent" and not attention:
             views.append("recently_active")
@@ -132,14 +173,27 @@ def dashboard_projection(raw: dict[str, Any]) -> dict[str, Any]:
             {
                 **project,
                 "facets": {
-                    "attention": attention["kind"] if attention else "none",
+                    "attention": attention["type"] if attention else "none",
                     "activity": activity,
                     "activity_age_seconds": activity_age,
                     "health": health,
                     "continuity": (review or {}).get("status", "not_analyzed"),
-                    "prominent_review_items": len(prominent),
+                    "prominent_review_items": len(actionable_review_items(review)),
+                    "suggested_review_items": len(suggested),
                 },
-                "primary_finding": attention,
+                "primary_attention": attention,
+                "attention_items": attention_items,
+                "primary_finding": (
+                    next(
+                        (
+                            finding
+                            for finding in project["findings"]
+                            if attention
+                            and attention.get("finding_id") == finding.get("finding_id")
+                        ),
+                        None,
+                    )
+                ),
                 "review": review,
                 "views": views,
             }

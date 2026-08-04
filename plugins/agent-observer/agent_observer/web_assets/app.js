@@ -26,13 +26,6 @@ const viewDefinitions = [
   ["observer_issues", "Observer issues"],
 ];
 
-const findingPriorities = {
-  decision_requested: 0,
-  turn_aborted: 1,
-  turn_completed: 2,
-  no_completion_observed: 3,
-};
-
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -256,13 +249,9 @@ const copyText = async (value, successMessage) => {
 
 const badge = (text, kind = "") => el("span", `badge ${kind}`.trim(), text);
 
-const unseenFindings = (project) => project.findings
-  .filter((finding) => !finding.seen)
-  .sort((left, right) => {
-    const leftPriority = findingPriorities[left.kind] ?? 9;
-    const rightPriority = findingPriorities[right.kind] ?? 9;
-    return leftPriority - rightPriority || (right.updated_at || 0) - (left.updated_at || 0);
-  });
+const lifecycleFindings = (project) => project.findings
+  .filter((finding) => finding.kind !== "decision_requested")
+  .sort((left, right) => (right.updated_at || 0) - (left.updated_at || 0));
 
 const latestProjectSession = (project) => project.sessions.reduce((latest, session) => {
   if (!latest) return session;
@@ -488,22 +477,31 @@ const isEmptyUnavailableProject = (project) => (
 );
 
 const projectSignal = (project) => {
-  const finding = unseenFindings(project)[0];
-  if (finding) {
+  const attention = project.primary_attention;
+  if (attention) {
+    const observed = attention.truth === "observed";
     return {
-      kind: "observed",
-      label: "Observed",
-      summary: plainPreview(finding.summary),
-      source: `${finding.provider} · ${finding.session_id.slice(0, 8)}`,
-      finding,
+      kind: observed ? "observed" : "model",
+      label: attention.type === "decision"
+        ? "Decision to make"
+        : attention.type === "question"
+          ? "Question to answer"
+          : attention.type === "requested_user_action"
+            ? "Action requested"
+            : "Input requested",
+      summary: plainPreview(attention.title),
+      source: observed
+        ? `${attention.provider} · ${attention.session_id.slice(0, 8)}`
+        : `Model review · ${humanLabel(attention.review_status)}`,
+      attention,
     };
   }
-  if (project.facets.prominent_review_items > 0 && project.review) {
+  if (project.facets.suggested_review_items > 0 && project.review) {
     return {
       kind: "model",
-      label: "Model review",
-      summary: plainPreview(project.review.summary || "A bounded review suggests another look."),
-      source: `${project.review.analyzer_provider} analysis · ${project.review.status}`,
+      label: "Review suggested",
+      summary: plainPreview(project.review.summary || "Conversation review found a lower-priority loose end."),
+      source: `Model review · ${humanLabel(project.review.status)}`,
     };
   }
   if (project.facets.health !== "healthy") {
@@ -531,9 +529,9 @@ const projectSignal = (project) => {
 };
 
 const sortKey = (project) => {
-  const finding = unseenFindings(project)[0];
-  if (finding) return [findingPriorities[finding.kind] ?? 8, project.facets.activity_age_seconds ?? Infinity];
-  if (project.facets.prominent_review_items > 0) return [10, project.facets.activity_age_seconds ?? Infinity];
+  const attention = project.primary_attention;
+  if (attention) return [attention.truth === "observed" ? 0 : 5, project.facets.activity_age_seconds ?? Infinity];
+  if (project.facets.suggested_review_items > 0) return [10, project.facets.activity_age_seconds ?? Infinity];
   if (project.facets.health !== "healthy") return [20, project.facets.activity_age_seconds ?? Infinity];
   if (project.facets.activity === "recent") return [30, project.facets.activity_age_seconds ?? Infinity];
   if (project.facets.activity === "quiet") return [40, project.facets.activity_age_seconds ?? Infinity];
@@ -658,8 +656,8 @@ const renderProjectRow = (project) => {
   if (project.facets.health !== "healthy") {
     claimMeta.append(badge(`Observer ${project.facets.health}`, "health-issue"));
   }
-  if (signal.kind === "observed" && project.facets.prominent_review_items > 0) {
-    claimMeta.append(badge("Also model review", "truth-model"));
+  if (signal.attention?.truth === "model") {
+    claimMeta.append(badge("Model review", "truth-model"));
   }
   claim.append(claimMeta, el("strong", "claim-summary", signal.summary), el("span", "claim-source", signal.source));
 
@@ -673,7 +671,7 @@ const renderProjectRow = (project) => {
     render();
   });
   row.append(button);
-  if (signal.finding) {
+  if (signal.attention) {
     const dismiss = el("button", "queue-dismiss");
     dismiss.type = "button";
     dismiss.dataset.focusKey = `dismiss:${project.project_id}`;
@@ -697,35 +695,37 @@ const sectionHeading = (title, truth, truthClass = "") => {
   return heading;
 };
 
-const renderFinding = (finding, project) => {
-  const row = el("article", `finding ${finding.seen ? "seen" : "unseen"}`);
-  const heading = el("div", "item-heading");
-  heading.append(el("h4", "", humanLabel(finding.kind)));
-  heading.append(badge(finding.seen ? "Seen locally" : "Unseen", finding.seen ? "local-state" : "truth-observed"));
-  row.append(heading, renderMarkdown(finding.summary, "item-summary"));
-  const evidence = finding.details?.evidence_excerpt;
-  if (evidence) {
-    const quote = el("blockquote", "evidence-quote");
-    quote.append(renderMarkdown(evidence, "evidence-markdown"));
-    row.append(quote);
-  }
-  row.append(el(
-    "p",
-    "provenance",
-    `${finding.provider} · ${finding.session_id.slice(0, 8)} · ${absoluteTime(finding.updated_at)}`,
-  ));
+const attentionTypeLabel = (attention) => {
+  if (attention.type === "decision") return "Decision";
+  if (attention.type === "question") return "Question";
+  if (attention.type === "requested_user_action") return "Requested action";
+  return "Input requested";
+};
 
-  const structured = finding.details?.items;
+const renderAttentionItem = (attention) => {
+  const row = el("article", `attention-item truth-${attention.truth}`);
+  const heading = el("div", "item-heading");
+  heading.append(el("h4", "", attention.title || attentionTypeLabel(attention)));
+  heading.append(badge(
+    attention.truth === "observed" ? "Observed request" : "Model review",
+    attention.truth === "observed" ? "truth-observed" : "truth-model",
+  ));
+  row.append(heading);
+  if (attention.detail && attention.detail !== attention.title) {
+    row.append(renderMarkdown(attention.detail, "item-summary"));
+  }
+
+  const structured = attention.details?.items;
   const items = Array.isArray(structured)
     ? structured
     : (structured && typeof structured === "object" ? Object.values(structured) : []);
   if (items.length) {
     const list = el("div", "structured-questions");
-    for (const item of items) {
+    for (const item of items.filter((value) => value.state !== "resolved")) {
       const question = el("div", "structured-question");
       const questionHead = el("p", "question-heading");
       questionHead.append(el("strong", "", item.question || "Question"));
-      questionHead.append(badge(humanLabel(item.state || "unknown"), "local-state"));
+      questionHead.append(badge(humanLabel(item.state || "open"), "local-state"));
       question.append(questionHead);
       if (Array.isArray(item.options) && item.options.length) {
         const options = el("ul", "option-list");
@@ -742,20 +742,52 @@ const renderFinding = (finding, project) => {
     row.append(list);
   }
 
-  if (!finding.seen) {
-    const seen = el("button", "quiet-button", "Dismiss project attention");
-    seen.type = "button";
-    seen.dataset.focusKey = `seen:${finding.finding_id}`;
-    seen.title = "Dismiss all current attention for this project; newer findings will surface it again";
-    seen.addEventListener("click", () => dismissProjectAttention(project, seen));
-    row.append(seen);
+  const evidence = el("details", "attention-evidence");
+  evidence.append(el("summary", "", "Evidence and provenance"));
+  if (attention.evidence_excerpt) {
+    const quote = el("blockquote", "evidence-quote");
+    quote.append(renderMarkdown(attention.evidence_excerpt, "evidence-markdown"));
+    evidence.append(quote);
   }
+  const source = [
+    attention.provider || "unknown provider",
+    attention.session_id ? attention.session_id.slice(0, 8) : "unknown session",
+    absoluteTime(attention.updated_at),
+  ];
+  if (attention.truth === "model") {
+    source.push(`${humanLabel(attention.review_status)} bounded review`);
+  }
+  evidence.append(el("p", "provenance", source.join(" · ")));
+  row.append(evidence);
   return row;
 };
 
-const renderReview = (review) => {
+const renderAttention = (project) => {
+  const section = el("section", "inspector-section attention-section");
+  const items = project.attention_items || [];
+  section.append(sectionHeading(
+    "Needs your input",
+    items.length ? `${items.length} open` : "Clear",
+    items.length ? "attention-count" : "health-good",
+  ));
+  if (!items.length) {
+    section.append(el("p", "empty-copy", "No unresolved human input is currently identified."));
+    return section;
+  }
+  for (const item of items) section.append(renderAttentionItem(item));
+  const dismiss = el("button", "quiet-button", "Dismiss current attention");
+  dismiss.type = "button";
+  dismiss.dataset.focusKey = `seen:${project.project_id}`;
+  dismiss.title = "Dismiss this attention set; a newer observed request or review will surface it again";
+  dismiss.addEventListener("click", () => dismissProjectAttention(project, dismiss));
+  section.append(dismiss);
+  return section;
+};
+
+const renderReview = (project) => {
+  const review = project.review;
   const section = el("section", "inspector-section model-review");
-  section.append(sectionHeading("Conversation review", "Model review", "truth-model"));
+  section.append(sectionHeading("Analysis context", "Model review", "truth-model"));
   if (!review) {
     section.append(el("p", "empty-copy", "No subscription-backed review has been published for this project."));
     return section;
@@ -776,7 +808,15 @@ const renderReview = (review) => {
   for (const gap of review.coverage?.gaps || []) {
     section.append(el("p", "coverage issue-text", `Coverage gap: ${gap}`));
   }
-  for (const item of review.items || []) {
+  const displayed = new Set(
+    (project.attention_items || [])
+      .filter((item) => item.truth === "model")
+      .map((item) => item.review_item_index),
+  );
+  const otherItems = (review.items || []).filter((_item, index) => !displayed.has(index));
+  const notes = el("details", "review-notes");
+  notes.append(el("summary", "", `Other review notes (${otherItems.length})`));
+  for (const item of otherItems) {
     const row = el("article", "review-item");
     const head = el("div", "item-heading");
     head.append(el("h4", "", item.title));
@@ -792,10 +832,48 @@ const renderReview = (review) => {
       "provenance",
       `${item.provider || review.target_session?.provider || "unknown"} · ${item.session_id.slice(0, 8)} · ${absoluteTime(item.timestamp)}`,
     ));
-    section.append(row);
+    notes.append(row);
   }
+  if (otherItems.length) section.append(notes);
   for (const limitation of review.limitations || []) {
     section.append(el("p", "coverage", `Limit: ${limitation}`));
+  }
+  return section;
+};
+
+const renderActivityDiagnostics = (project) => {
+  const findings = lifecycleFindings(project);
+  if (!findings.length) return null;
+  const section = el("details", "inspector-section activity-diagnostics");
+  const heading = el("summary", "diagnostics-summary");
+  heading.append(
+    el("strong", "", "Activity history and diagnostics"),
+    el("span", "", `${findings.length} lifecycle event${findings.length === 1 ? "" : "s"}`),
+  );
+  section.append(heading);
+  section.append(el(
+    "p",
+    "empty-copy diagnostics-intro",
+    "Turn lifecycle and raw worker output are retained for troubleshooting; they do not imply that you owe a response.",
+  ));
+  for (const finding of findings.slice(0, 50)) {
+    const row = el("article", "diagnostic-row");
+    const head = el("div", "item-heading");
+    head.append(el("h4", "", humanLabel(finding.kind)));
+    head.append(el("span", "provenance", absoluteTime(finding.updated_at)));
+    row.append(head);
+    if (finding.summary && !["Turn completed", "Turn aborted"].includes(finding.summary)) {
+      const raw = el("details", "raw-payload");
+      raw.append(el("summary", "", "Recorded output"));
+      const pre = el("pre", "markdown-code-block");
+      pre.append(el("code", "", finding.summary));
+      raw.append(pre);
+      row.append(raw);
+    }
+    section.append(row);
+  }
+  if (findings.length > 50) {
+    section.append(el("p", "coverage", `${findings.length - 50} older events are not shown.`));
   }
   return section;
 };
@@ -955,14 +1033,17 @@ const renderInspector = (project) => {
     actions.append(rescan, projectRemovalButton(project, "inspector", "Stop watching"));
   }
   header.append(actions);
-  inspector.append(header, renderFacets(project));
-
-  const findings = el("section", "inspector-section");
-  findings.append(sectionHeading("Source-backed attention", "Observed", "truth-observed"));
-  const ordered = [...project.findings].sort((left, right) => Number(left.seen) - Number(right.seen) || (right.updated_at || 0) - (left.updated_at || 0));
-  if (ordered.length) ordered.forEach((finding) => findings.append(renderFinding(finding, project)));
-  else findings.append(el("p", "empty-copy", "No factual findings have been recorded for this project."));
-  inspector.append(findings, renderReview(project.review), renderSessions(project), renderSources(project), renderChanges(project));
+  inspector.append(
+    header,
+    renderAttention(project),
+    renderFacets(project),
+    renderReview(project),
+    renderSessions(project),
+    renderSources(project),
+    renderChanges(project),
+  );
+  const diagnostics = renderActivityDiagnostics(project);
+  if (diagnostics) inspector.append(diagnostics);
 };
 
 const renderServices = () => {

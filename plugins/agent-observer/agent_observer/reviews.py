@@ -48,6 +48,7 @@ ALLOWED_ASSESSMENTS = {
     "indeterminate",
     "not_actionable",
 }
+ALLOWED_INTENDED_PARTIES = {"user", "agent", "unknown"}
 
 
 def _private_directory(path: Path) -> None:
@@ -362,6 +363,7 @@ def prepare_review(
                 {
                     "type": "one allowed item type",
                     "assessment": "one allowed assessment",
+                    "intended_party": "user, agent, or unknown",
                     "title": "short model wording",
                     "detail": "bounded explanation",
                     "session_id": "cited session",
@@ -667,6 +669,18 @@ def submit_review(
             raise ValueError(f"items[{index}].type is not allowed")
         if assessment not in ALLOWED_ASSESSMENTS:
             raise ValueError(f"items[{index}].assessment is not allowed")
+        intended_party = str(
+            item.get("intended_party")
+            or (
+                "user"
+                if item_type in {"question", "decision", "requested_user_action"}
+                else "agent"
+                if item_type == "agent_action"
+                else "unknown"
+            )
+        )
+        if intended_party not in ALLOWED_INTENDED_PARTIES:
+            raise ValueError(f"items[{index}].intended_party is not allowed")
         if incomplete and assessment in {
             "no_later_handling_observed",
             "partially_handled",
@@ -716,6 +730,7 @@ def submit_review(
             {
                 "type": item_type,
                 "assessment": assessment,
+                "intended_party": intended_party,
                 "title": _bounded_string(
                     item.get("title"), f"items[{index}].title", 300, required=True
                 ),

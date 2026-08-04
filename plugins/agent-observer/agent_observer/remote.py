@@ -725,6 +725,8 @@ def snapshot_projection(observer: Observer) -> dict[str, Any]:
         project["review"] = (
             _pick(review, REVIEW_FIELDS) if isinstance(review, dict) else None
         )
+        if isinstance(review, dict) and review.get("dismissed_at"):
+            project["review"]["items"] = []
         projects.append(project)
     return {"generated_at": raw["generated_at"], "projects": projects}
 
