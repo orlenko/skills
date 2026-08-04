@@ -11,6 +11,7 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
+from . import __version__
 from .reviews import (
     ALLOWED_ASSESSMENTS,
     ALLOWED_TYPES,
@@ -26,6 +27,13 @@ ANALYSIS_INTERVAL_SECONDS = 60 * 60
 ANALYZER_POLL_SECONDS = 15.0
 ANALYZER_TIMEOUT_SECONDS = 15 * 60
 MAX_JOBS_PER_CYCLE = 20
+
+
+def _runtime_stamp() -> dict[str, str]:
+    return {
+        "runtime_version": __version__,
+        "runtime_root": str(Path(__file__).resolve().parents[1]),
+    }
 
 
 def _runtime_dir(config: ObserverConfig) -> Path:
@@ -330,6 +338,7 @@ def run_analyzer(
                             info_path,
                             {
                                 "pid": os.getpid(),
+                                **_runtime_stamp(),
                                 "started_at": started_at,
                                 "heartbeat_at": time.time(),
                                 "provider": provider,
@@ -373,6 +382,7 @@ def run_analyzer(
                 info_path,
                 {
                     "pid": os.getpid(),
+                    **_runtime_stamp(),
                     "started_at": started_at,
                     "heartbeat_at": time.time(),
                     "provider": provider,

@@ -15,10 +15,22 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
+from . import __version__
 from .service import Observer, ObserverConfig
 
 
 _BACKGROUND_PROCESSES: list[subprocess.Popen[bytes]] = []
+
+
+def _runtime_stamp() -> dict[str, str]:
+    return {
+        "runtime_version": __version__,
+        "runtime_root": str(Path(__file__).resolve().parents[1]),
+    }
+
+
+def _runtime_compatible(info: dict[str, Any]) -> bool:
+    return all(info.get(key) == value for key, value in _runtime_stamp().items())
 
 
 def _runtime_dir(config: ObserverConfig) -> Path:
@@ -169,10 +181,26 @@ def service_status(config: ObserverConfig) -> dict[str, Any]:
     ingest_running = _alive(ingest.get("pid"))
     analyzer_running = _alive(analyzer.get("pid"))
     result: dict[str, Any] = {
-        "server": {**server, "running": server_running},
-        "daemon": {**daemon, "running": daemon_running},
-        "ingest": {**ingest, "running": ingest_running},
-        "analyzer": {**analyzer, "running": analyzer_running},
+        "server": {
+            **server,
+            "running": server_running,
+            "compatible": server_running and _runtime_compatible(server),
+        },
+        "daemon": {
+            **daemon,
+            "running": daemon_running,
+            "compatible": daemon_running and _runtime_compatible(daemon),
+        },
+        "ingest": {
+            **ingest,
+            "running": ingest_running,
+            "compatible": ingest_running and _runtime_compatible(ingest),
+        },
+        "analyzer": {
+            **analyzer,
+            "running": analyzer_running,
+            "compatible": analyzer_running and _runtime_compatible(analyzer),
+        },
         "remote_ingest_enabled": load_home_config(config) is not None,
     }
     if server_running and server.get("port"):
@@ -232,7 +260,8 @@ def start_analyzer_service(
     status = service_status(config)
     analyzer = status["analyzer"]
     mismatch = analyzer.get("running") and (
-        analyzer.get("provider") != provider
+        not analyzer.get("compatible")
+        or analyzer.get("provider") != provider
         or analyzer.get("model") != model
         or bool(analyzer.get("allow_cross_provider")) != allow_cross_provider
     )
@@ -253,7 +282,11 @@ def start_analyzer_service(
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         analyzer = service_status(config)["analyzer"]
-        if analyzer["running"] and analyzer.get("provider") == provider:
+        if (
+            analyzer["running"]
+            and analyzer["compatible"]
+            and analyzer.get("provider") == provider
+        ):
             return analyzer
         time.sleep(0.05)
     _stop_service(config, "analyzer")
@@ -268,6 +301,10 @@ def start_services(config: ObserverConfig) -> dict[str, Any]:
 
     runtime = _runtime_dir(config)
     ensure_auth_token(config)
+    status = service_status(config)
+    for kind in ("daemon", "server", "ingest"):
+        if status[kind]["running"] and not status[kind]["compatible"]:
+            _stop_service(config, kind)
     status = service_status(config)
     if not status["daemon"]["running"]:
         try:
@@ -296,10 +333,14 @@ def start_services(config: ObserverConfig) -> dict[str, Any]:
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         status = service_status(config)
-        ingest_ready = not home or status["ingest"]["running"]
+        ingest_ready = not home or (
+            status["ingest"]["running"] and status["ingest"]["compatible"]
+        )
         if (
             status["server"]["running"]
+            and status["server"]["compatible"]
             and status["daemon"]["running"]
+            and status["daemon"]["compatible"]
             and ingest_ready
         ):
             port = int(status["server"]["port"])
@@ -316,6 +357,10 @@ def start_services(config: ObserverConfig) -> dict[str, Any]:
 def start_remote_services(config: ObserverConfig) -> dict[str, Any]:
     runtime = _runtime_dir(config)
     status = service_status(config)
+    for kind in ("daemon", "server", "ingest"):
+        if status[kind]["running"] and not status[kind]["compatible"]:
+            _stop_service(config, kind)
+    status = service_status(config)
     if not status["daemon"]["running"]:
         try:
             (runtime / "daemon.json").unlink()
@@ -325,7 +370,7 @@ def start_remote_services(config: ObserverConfig) -> dict[str, Any]:
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         status = service_status(config)
-        if status["daemon"]["running"]:
+        if status["daemon"]["running"] and status["daemon"]["compatible"]:
             return status
         time.sleep(0.05)
     stop_services(config)
@@ -455,6 +500,7 @@ def run_daemon(
                 info_path,
                 {
                     "pid": os.getpid(),
+                    **_runtime_stamp(),
                     "started_at": started_at,
                     "heartbeat_at": time.time(),
                     "last_scan": scan,
@@ -470,7 +516,12 @@ def write_server_info(config: ObserverConfig, *, port: int) -> Path:
     path = _runtime_dir(config) / "server.json"
     _atomic_json(
         path,
-        {"pid": os.getpid(), "started_at": time.time(), "port": port},
+        {
+            "pid": os.getpid(),
+            **_runtime_stamp(),
+            "started_at": time.time(),
+            "port": port,
+        },
     )
     return path
 
@@ -481,6 +532,7 @@ def write_ingest_info(config: ObserverConfig, *, bind: str, port: int) -> Path:
         path,
         {
             "pid": os.getpid(),
+            **_runtime_stamp(),
             "started_at": time.time(),
             "bind": bind,
             "port": port,

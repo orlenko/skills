@@ -377,6 +377,18 @@ with marker.open('a') as handle:
             time.sleep(0.5)
             self.assertEqual(marker.read_text(encoding="utf-8").splitlines(), ["called"])
 
+    def test_service_start_replaces_an_incompatible_running_sidecar(self):
+        first = start_services(self.config)
+        first_pid = first["server"]["pid"]
+        info_path = self.config.state_dir / "runtime" / "server.json"
+        stale = json.loads(info_path.read_text(encoding="utf-8"))
+        stale["runtime_root"] = "/old/agent-observer/plugin"
+        info_path.write_text(json.dumps(stale), encoding="utf-8")
+
+        second = start_services(self.config)
+        self.assertTrue(second["server"]["compatible"])
+        self.assertNotEqual(second["server"]["pid"], first_pid)
+
     def test_review_targets_one_session_and_exclusion_survives_rescan(self):
         older = "11111111-1111-1111-1111-111111111111"
         newer = "22222222-2222-2222-2222-222222222222"
