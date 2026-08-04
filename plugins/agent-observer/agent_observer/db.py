@@ -581,6 +581,12 @@ class ObserverDB:
                 else None
             )
             nodes.append(public_node)
+            # Revocation is an intentional administrative action, not an
+            # operational outage. Keep the credential tombstone in node status
+            # so the old secret remains rejected, but remove its cached projects
+            # from the working dashboard.
+            if transport_state == "revoked":
+                continue
             raw = node.get("snapshot_json")
             if not raw:
                 continue

@@ -237,6 +237,11 @@ hostname labels, disconnected-node notices, cached findings, transport state,
 analyzer state, snapshot revision, and clock-skew disclosure are implemented in
 the dashboard.
 
+Revocation is different from disconnection: it is an intentional administrative
+action. Retain the credential tombstone so the old secret stays invalid, but
+remove that node's cached projects from operational views and do not raise a
+global outage banner for it.
+
 The first remote slice manages its project watchlist from the remote Observer
 session. The home enrollment combobox remains local-only; do not mix remote paths
 into it or offer a home-side `Watch` control until an authenticated command path

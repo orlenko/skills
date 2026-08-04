@@ -1109,11 +1109,11 @@ const renderServices = () => {
     addNotice("Semantic analyzer reported an error", analyzerService.error, "warning");
   }
   for (const node of state.data?.remote_nodes || []) {
-    if (node.transport_state === "connected") continue;
+    if (["connected", "revoked"].includes(node.transport_state)) continue;
     addNotice(
       `${node.display_name || "Remote Observer"} is ${node.transport_state}`,
       "Cached findings remain visible, but new remote snapshots are not arriving. Worker state is unknown.",
-      node.transport_state === "revoked" ? "warning" : "warning",
+      "warning",
     );
   }
   if (healthy && analyzer && !analyzerActive) {

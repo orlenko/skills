@@ -267,8 +267,12 @@ class RemoteObserverTests(unittest.TestCase):
         self.assertEqual(load_pull_connections(self.home), [])
         with Observer(self.home) as observer:
             observer.db.revoke_remote_node(connection["node_id"])
-            cached = dashboard_projection(observer.status())["projects"][0]
-        self.assertEqual(cached["node"]["transport_state"], "revoked")
+            raw = observer.status()
+            projected = dashboard_projection(raw)
+        self.assertEqual(raw["projects"], [])
+        self.assertEqual(projected["projects"], [])
+        self.assertEqual(projected["view_counts"]["observer_issues"], 0)
+        self.assertEqual(projected["remote_nodes"][0]["transport_state"], "revoked")
 
 
 if __name__ == "__main__":

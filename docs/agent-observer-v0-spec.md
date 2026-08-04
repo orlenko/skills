@@ -1651,6 +1651,11 @@ latest remote Claude or Codex Observer invocation, and the home dashboard must
 distinguish `remote collector connected`, `remote collector disconnected`, and
 `remote analyzer detached`.
 
+A disconnected active node retains its cached projection and surfaces stale
+transport status. A revoked node is intentionally absent from operational
+project views and alert banners; only its credential tombstone remains so the
+revoked secret cannot reconnect.
+
 The existing local tables keep their current identity model in the first slice;
 remote snapshots land in a separate node-scoped projection and merge only at the
 presentation boundary. At minimum, remote project identity is

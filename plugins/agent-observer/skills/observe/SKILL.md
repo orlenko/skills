@@ -43,8 +43,10 @@ database. The workspace itself must never be watched.
   This is the reverse transport: the watched peer listens and this dashboard
   pulls its already-collected and analyzed bounded snapshots.
 - `nodes`: run `--json remote-nodes`.
-- `revoke NODE_ID`: run `--json remote-revoke NODE_ID`. Explain that cached
-  remote findings remain visible while future uploads are rejected.
+- `revoke NODE_ID`: run `--json remote-revoke NODE_ID`. Explain that future
+  uploads are rejected, the credential tombstone remains for security, and the
+  intentionally removed node's cached projects leave operational dashboard
+  views.
 - `stop`: run `--json supervisor-stop`.
 
 Keep global flags before the subcommand, for example:

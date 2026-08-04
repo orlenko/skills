@@ -84,6 +84,7 @@ class WebAssetTests(unittest.TestCase):
         self.assertIn('project.origin === "remote"', script)
         self.assertIn("Full context and watchlist controls remain on", script)
         self.assertIn("state.data?.remote_nodes", script)
+        self.assertIn('["connected", "revoked"].includes(node.transport_state)', script)
         self.assertIn("state.data?.services?.analyzer", script)
         self.assertIn("activity-gated review", script)
         self.assertNotIn("const signalSession =", script)
