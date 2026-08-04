@@ -1,3 +1,3 @@
 """Passive local and enrolled-remote observation of agent session traces."""
 
-__version__ = "0.6.1"
+__version__ = "0.6.2"

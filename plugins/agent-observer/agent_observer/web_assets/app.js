@@ -13,6 +13,7 @@ const state = {
   candidates: [],
   candidatesLoading: false,
   candidateActiveIndex: -1,
+  openDetails: new Set(),
   error: null,
 };
 
@@ -248,6 +249,16 @@ const copyText = async (value, successMessage) => {
 };
 
 const badge = (text, kind = "") => el("span", `badge ${kind}`.trim(), text);
+
+const persistentDetails = (className, key) => {
+  const node = el("details", className);
+  node.open = state.openDetails.has(key);
+  node.addEventListener("toggle", () => {
+    if (node.open) state.openDetails.add(key);
+    else state.openDetails.delete(key);
+  });
+  return node;
+};
 
 const lifecycleFindings = (project) => project.findings
   .filter((finding) => finding.kind !== "decision_requested")
@@ -702,7 +713,7 @@ const attentionTypeLabel = (attention) => {
   return "Input requested";
 };
 
-const renderAttentionItem = (attention) => {
+const renderAttentionItem = (attention, project) => {
   const row = el("article", `attention-item truth-${attention.truth}`);
   const heading = el("div", "item-heading");
   heading.append(el("h4", "", attention.title || attentionTypeLabel(attention)));
@@ -742,7 +753,10 @@ const renderAttentionItem = (attention) => {
     row.append(list);
   }
 
-  const evidence = el("details", "attention-evidence");
+  const evidence = persistentDetails(
+    "attention-evidence",
+    `attention-evidence:${project.project_id}:${attention.attention_id}`,
+  );
   evidence.append(el("summary", "", "Evidence and provenance"));
   if (attention.evidence_excerpt) {
     const quote = el("blockquote", "evidence-quote");
@@ -774,7 +788,7 @@ const renderAttention = (project) => {
     section.append(el("p", "empty-copy", "No unresolved human input is currently identified."));
     return section;
   }
-  for (const item of items) section.append(renderAttentionItem(item));
+  for (const item of items) section.append(renderAttentionItem(item, project));
   const dismiss = el("button", "quiet-button", "Dismiss current attention");
   dismiss.type = "button";
   dismiss.dataset.focusKey = `seen:${project.project_id}`;
@@ -814,7 +828,7 @@ const renderReview = (project) => {
       .map((item) => item.review_item_index),
   );
   const otherItems = (review.items || []).filter((_item, index) => !displayed.has(index));
-  const notes = el("details", "review-notes");
+  const notes = persistentDetails("review-notes", `review-notes:${project.project_id}`);
   notes.append(el("summary", "", `Other review notes (${otherItems.length})`));
   for (const item of otherItems) {
     const row = el("article", "review-item");
@@ -844,7 +858,10 @@ const renderReview = (project) => {
 const renderActivityDiagnostics = (project) => {
   const findings = lifecycleFindings(project);
   if (!findings.length) return null;
-  const section = el("details", "inspector-section activity-diagnostics");
+  const section = persistentDetails(
+    "inspector-section activity-diagnostics",
+    `activity-diagnostics:${project.project_id}`,
+  );
   const heading = el("summary", "diagnostics-summary");
   heading.append(
     el("strong", "", "Activity history and diagnostics"),
@@ -863,7 +880,10 @@ const renderActivityDiagnostics = (project) => {
     head.append(el("span", "provenance", absoluteTime(finding.updated_at)));
     row.append(head);
     if (finding.summary && !["Turn completed", "Turn aborted"].includes(finding.summary)) {
-      const raw = el("details", "raw-payload");
+      const raw = persistentDetails(
+        "raw-payload",
+        `raw-payload:${project.project_id}:${finding.finding_id}`,
+      );
       raw.append(el("summary", "", "Recorded output"));
       const pre = el("pre", "markdown-code-block");
       pre.append(el("code", "", finding.summary));
@@ -1002,10 +1022,6 @@ const renderInspector = (project) => {
   const resolved = el("code", "resolved-path selectable", project.resolved_path);
   header.append(resolved);
   const actions = el("div", "inspector-actions");
-  const copyPath = el("button", "quiet-button", "Copy path");
-  copyPath.type = "button";
-  copyPath.dataset.focusKey = `copy-path:${project.project_id}`;
-  copyPath.addEventListener("click", () => copyText(project.resolved_path, "Project path copied"));
   const rescan = el("button", "quiet-button", "Rescan sources");
   rescan.type = "button";
   rescan.dataset.focusKey = `rescan:${project.project_id}`;
@@ -1021,7 +1037,6 @@ const renderInspector = (project) => {
       rescan.disabled = false;
     }
   });
-  actions.append(copyPath);
   if (project.origin === "remote") {
     const remoteNote = el(
       "span",

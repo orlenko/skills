@@ -60,6 +60,10 @@ class WebAssetTests(unittest.TestCase):
             },
         )
         self.assertIn("const renderMarkdown =", script)
+        self.assertIn("openDetails: new Set()", script)
+        self.assertIn("const persistentDetails =", script)
+        self.assertIn('node.addEventListener("toggle"', script)
+        self.assertIn("review-notes:${project.project_id}", script)
         self.assertIn('el("button", "queue-dismiss")', script)
         self.assertIn("const renderProjectOptions =", script)
         self.assertIn('fetch("/api/project-candidates"', script)
@@ -83,6 +87,7 @@ class WebAssetTests(unittest.TestCase):
         self.assertIn("project.node?.display_name", script)
         self.assertIn('project.origin === "remote"', script)
         self.assertIn("Full context and watchlist controls remain on", script)
+        self.assertNotIn('"Copy path"', script)
         self.assertIn("state.data?.remote_nodes", script)
         self.assertIn('["connected", "revoked"].includes(node.transport_state)', script)
         self.assertIn("state.data?.services?.analyzer", script)

@@ -181,6 +181,8 @@ log. Generated paraphrase and exact quoted evidence must look distinct.
 The first screen should remain calm with ten projects. Reveal sessions, findings,
 changes, observer diagnostics, analysis limits, and conversation slices as the
 operator drills in. Do not solve density with nested cards or a wall of badges.
+Disclosure state is local interface state: background data refreshes must not
+collapse sections the operator has opened.
 
 ## 4. Information architecture
 

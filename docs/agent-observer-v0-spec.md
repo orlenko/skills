@@ -1116,6 +1116,10 @@ Completion, abort, and other lifecycle payloads appear only in progressive
 disclosure as activity history or diagnostics. Serialized tool output is never
 the default human-facing summary.
 
+The dashboard preserves expanded and collapsed disclosure state across polling
+refreshes. New data may update the contents of an open section, but must not
+close it.
+
 Project cards do not badge the normal `not analyzed` or `stale` states. They
 surface continuity only when a user-triggered job is active or failed, the
 latest review has a prominent unsuppressed candidate, or the user opens the
