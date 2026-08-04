@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ class ObserverConfig:
     state_dir: Path
     claude_roots: tuple[Path, ...]
     codex_roots: tuple[Path, ...]
+    codex_session_index: Path | None = None
 
     @classmethod
     def defaults(cls, state_dir: str | None = None) -> "ObserverConfig":
@@ -40,7 +43,11 @@ class ObserverConfig:
             os.environ.get("AGENT_OBSERVER_CODEX_ARCHIVE_ROOT")
             or home / ".codex" / "archived_sessions"
         ).expanduser()
-        return cls(state, (claude,), (codex, archived))
+        session_index = Path(
+            os.environ.get("AGENT_OBSERVER_CODEX_SESSION_INDEX")
+            or home / ".codex" / "session_index.jsonl"
+        ).expanduser()
+        return cls(state, (claude,), (codex, archived), session_index)
 
 
 class Observer:
@@ -120,6 +127,14 @@ class Observer:
                 self._baseline(source, candidate)
             else:
                 self._scan_source(self.db.source(candidate.source_id) or source)
+            if candidate.title:
+                self.db.set_session_title(
+                    candidate.provider,
+                    candidate.session_id,
+                    candidate.title,
+                    candidate.mtime,
+                )
+        self._sync_codex_titles()
         self._sample_branch(project)
         return added
 
@@ -130,6 +145,7 @@ class Observer:
             checked += 1
             if self._scan_source(source):
                 changed += 1
+        changed += self._sync_codex_titles()
         for project in self.db.projects():
             self._sample_branch(project)
         return {"sources_checked": checked, "sources_changed": changed}
@@ -142,6 +158,50 @@ class Observer:
         root = project.get("worktree_root")
         branch = current_branch(Path(str(root))) if root else None
         self.db.set_branch(str(project["project_id"]), branch, time.time())
+
+    @staticmethod
+    def _index_time(value: Any, fallback: float) -> float:
+        if not isinstance(value, str):
+            return fallback
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return fallback
+
+    def _sync_codex_titles(self) -> int:
+        path = self.config.codex_session_index
+        if path is None:
+            return 0
+        try:
+            fallback = path.stat().st_mtime
+            handle = path.open(encoding="utf-8")
+        except OSError:
+            return 0
+        titles: dict[str, tuple[str, float]] = {}
+        with handle:
+            for line in handle:
+                if len(line) > 64 * 1024:
+                    continue
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(value, dict):
+                    continue
+                session_id = value.get("id")
+                title = value.get("thread_name")
+                if not isinstance(session_id, str) or not isinstance(title, str):
+                    continue
+                title = title.strip()[:4096]
+                if title:
+                    titles[session_id] = (
+                        title,
+                        self._index_time(value.get("updated_at"), fallback),
+                    )
+        return sum(
+            self.db.set_session_title("codex", session_id, title, observed_at)
+            for session_id, (title, observed_at) in titles.items()
+        )
 
     def _match_project(self, cwd: str | None) -> dict[str, Any] | None:
         if not cwd:

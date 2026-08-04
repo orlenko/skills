@@ -376,6 +376,54 @@ class ObserverTests(unittest.TestCase):
             self.assertEqual(changes[0]["old_value"], "first")
             self.assertEqual(changes[0]["new_value"], "second")
 
+    def test_codex_session_index_names_are_synced_and_changes_are_recorded(self):
+        sid = "12345678-abcd-efab-cdef-123456789abc"
+        session = self.codex_root / f"rollout-{sid}.jsonl"
+        index = Path(self.temp.name) / "session_index.jsonl"
+        append_jsonl(
+            session,
+            codex_session(self.project, sid),
+            {
+                "type": "event_msg",
+                "timestamp": "2026-08-03T10:00:01Z",
+                "payload": {"type": "user_message", "message": "Named work"},
+            },
+        )
+        append_jsonl(
+            index,
+            {
+                "id": sid,
+                "thread_name": "First session name",
+                "updated_at": "2026-08-03T10:00:02Z",
+            },
+        )
+        config = ObserverConfig(
+            self.state,
+            (self.claude_root,),
+            (self.codex_root,),
+            index,
+        )
+        with Observer(config) as observer:
+            observer.add_project(str(self.project))
+            row = observer.status()["projects"][0]["sessions"][0]
+            self.assertEqual(row["title"], "First session name")
+
+            append_jsonl(
+                index,
+                {
+                    "id": sid,
+                    "thread_name": "Renamed session",
+                    "updated_at": "2026-08-03T10:05:00Z",
+                },
+            )
+            result = observer.scan()
+            self.assertEqual(result["sources_changed"], 1)
+            project = observer.status()["projects"][0]
+            self.assertEqual(project["sessions"][0]["title"], "Renamed session")
+            self.assertEqual(project["changes"][0]["kind"], "session_title_changed")
+            self.assertEqual(project["changes"][0]["old_value"], "First session name")
+            self.assertEqual(project["changes"][0]["new_value"], "Renamed session")
+
     def test_historical_baseline_uses_source_time_for_activity_age(self):
         sid = "12345678-aaaa-bbbb-cccc-123456789abc"
         session = self.codex_root / f"rollout-{sid}.jsonl"

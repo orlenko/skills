@@ -53,6 +53,9 @@ class WebAssetTests(unittest.TestCase):
             set(re.findall(r'post\("([^\"]+)"', script)),
             {"/api/projects", "/api/rescan", "/api/findings/seen"},
         )
+        self.assertIn("const renderMarkdown =", script)
+        self.assertIn('el("button", "queue-dismiss")', script)
+        self.assertIn("session?.title?.trim()", script)
         for speculative_control in (
             "Snooze",
             "Still relevant",

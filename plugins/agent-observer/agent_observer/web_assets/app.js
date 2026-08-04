@@ -7,6 +7,7 @@ const state = {
   busy: false,
   selectedProjectId: null,
   projectOrder: [],
+  focusAfterRender: null,
   error: null,
 };
 
@@ -37,6 +38,117 @@ const el = (tag, className, text) => {
 const humanLabel = (value) => {
   const words = String(value || "unknown").replaceAll("_", " ");
   return words.charAt(0).toUpperCase() + words.slice(1);
+};
+
+const plainPreview = (value) => String(value || "")
+  .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+  .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+  .replace(/(^|\s)[#>-]+\s+/gm, "$1")
+  .replace(/[`*_~]/g, "")
+  .replace(/\s+/g, " ")
+  .trim();
+
+const appendInlineMarkdown = (parent, value) => {
+  const text = String(value || "");
+  const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\[[^\]\n]+\]\([^)\n]+\)|\*[^*\n]+\*|_[^_\n]+_)/g;
+  let offset = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index > offset) parent.append(document.createTextNode(text.slice(offset, match.index)));
+    const token = match[0];
+    if (token.startsWith("`")) {
+      parent.append(el("code", "", token.slice(1, -1)));
+    } else if (token.startsWith("**") || token.startsWith("__")) {
+      parent.append(el("strong", "", token.slice(2, -2)));
+    } else if (token.startsWith("~~")) {
+      parent.append(el("s", "", token.slice(2, -2)));
+    } else if (token.startsWith("[")) {
+      parent.append(el("span", "markdown-link", token.slice(1, token.indexOf("]"))));
+    } else {
+      parent.append(el("em", "", token.slice(1, -1)));
+    }
+    offset = match.index + token.length;
+  }
+  if (offset < text.length) parent.append(document.createTextNode(text.slice(offset)));
+};
+
+const renderMarkdown = (value, className = "") => {
+  const root = el("div", `message-markdown ${className}`.trim());
+  const lines = String(value || "").replaceAll("\r\n", "\n").split("\n");
+  const isBlockStart = (line) => (
+    /^\s*```/.test(line)
+    || /^\s{0,3}#{1,4}\s+/.test(line)
+    || /^\s{0,3}>\s?/.test(line)
+    || /^\s*[-*+]\s+/.test(line)
+    || /^\s*\d+\.\s+/.test(line)
+  );
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+    const fence = line.match(/^\s*```\s*([^\s`]*)/);
+    if (fence) {
+      const codeLines = [];
+      index += 1;
+      while (index < lines.length && !/^\s*```/.test(lines[index])) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      const pre = el("pre", "markdown-code-block");
+      if (fence[1]) pre.append(el("span", "code-language", fence[1]));
+      pre.append(el("code", "", codeLines.join("\n")));
+      root.append(pre);
+      continue;
+    }
+    const heading = line.match(/^\s{0,3}#{1,4}\s+(.+)$/);
+    if (heading) {
+      const block = el("p", "markdown-heading");
+      appendInlineMarkdown(block, heading[1]);
+      root.append(block);
+      index += 1;
+      continue;
+    }
+    if (/^\s{0,3}>\s?/.test(line)) {
+      const quote = el("blockquote", "markdown-blockquote");
+      const quoteLines = [];
+      while (index < lines.length && /^\s{0,3}>\s?/.test(lines[index])) {
+        quoteLines.push(lines[index].replace(/^\s{0,3}>\s?/, ""));
+        index += 1;
+      }
+      appendInlineMarkdown(quote, quoteLines.join(" "));
+      root.append(quote);
+      continue;
+    }
+    const unordered = /^\s*[-*+]\s+/.test(line);
+    const ordered = /^\s*\d+\.\s+/.test(line);
+    if (unordered || ordered) {
+      const list = el(ordered ? "ol" : "ul", "markdown-list");
+      const itemPattern = ordered ? /^\s*\d+\.\s+(.+)$/ : /^\s*[-*+]\s+(.+)$/;
+      while (index < lines.length) {
+        const item = lines[index].match(itemPattern);
+        if (!item) break;
+        const row = el("li");
+        appendInlineMarkdown(row, item[1]);
+        list.append(row);
+        index += 1;
+      }
+      root.append(list);
+      continue;
+    }
+    const paragraphLines = [line.trim()];
+    index += 1;
+    while (index < lines.length && lines[index].trim() && !isBlockStart(lines[index])) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+    const paragraph = el("p");
+    appendInlineMarkdown(paragraph, paragraphLines.join(" "));
+    root.append(paragraph);
+  }
+  return root;
 };
 
 const relativeAge = (seconds) => {
@@ -147,13 +259,70 @@ const unseenFindings = (project) => project.findings
     return leftPriority - rightPriority || (right.updated_at || 0) - (left.updated_at || 0);
   });
 
+const signalSession = (project, signal) => {
+  const target = signal?.finding || project.review?.target_session;
+  if (target) {
+    const exact = project.sessions.find((session) => (
+      session.provider === target.provider && session.session_id === target.session_id
+    ));
+    if (exact) return exact;
+  }
+  return project.sessions[0] || null;
+};
+
+const pullRequestLabel = (project) => {
+  const raw = project.pull_request_id
+    ?? project.pull_request?.number
+    ?? project.pr_id
+    ?? null;
+  if (raw === null || raw === undefined || String(raw).trim() === "") return null;
+  const value = String(raw).replace(/^#/, "");
+  return `PR #${value}`;
+};
+
+const directoryName = (project) => {
+  const parts = String(project.resolved_path || project.display_path || "")
+    .split("/")
+    .filter(Boolean);
+  return parts[parts.length - 1] || project.display_path || "Unknown project";
+};
+
+const projectIdentity = (project, signal = projectSignal(project)) => {
+  const session = signalSession(project, signal);
+  const identifiers = [
+    session?.title?.trim() || null,
+    project.current_branch || null,
+    pullRequestLabel(project),
+    directoryName(project),
+  ].filter(Boolean);
+  return {
+    primary: identifiers[0],
+    secondary: identifiers.slice(1),
+    session,
+  };
+};
+
+const markFindingSeen = async (finding, project, control) => {
+  try {
+    control.disabled = true;
+    state.data = await post("/api/findings/seen", { finding_id: finding.finding_id });
+    state.focusAfterRender = `dismiss:${project.project_id}`;
+    toast("Attention item marked seen locally");
+    render({ forceSort: true });
+  } catch (error) {
+    showError(error);
+  } finally {
+    control.disabled = false;
+  }
+};
+
 const projectSignal = (project) => {
   const finding = unseenFindings(project)[0];
   if (finding) {
     return {
       kind: "observed",
       label: "Observed",
-      summary: finding.summary,
+      summary: plainPreview(finding.summary),
       source: `${finding.provider} · ${finding.session_id.slice(0, 8)}`,
       finding,
     };
@@ -162,7 +331,7 @@ const projectSignal = (project) => {
     return {
       kind: "model",
       label: "Model review",
-      summary: project.review.summary || "A bounded review suggests another look.",
+      summary: plainPreview(project.review.summary || "A bounded review suggests another look."),
       source: `${project.review.analyzer_provider} analysis · ${project.review.status}`,
     };
   }
@@ -261,8 +430,12 @@ const renderViews = () => {
 
 const renderProjectRow = (project) => {
   const signal = projectSignal(project);
-  const button = el("button", "project-row");
+  const identityValue = projectIdentity(project, signal);
+  const row = el("div", "project-row");
   const selected = project.project_id === state.selectedProjectId;
+  if (selected) row.classList.add("selected");
+
+  const button = el("button", "project-select");
   button.type = "button";
   button.dataset.projectId = project.project_id;
   button.dataset.focusKey = `project:${project.project_id}`;
@@ -270,13 +443,11 @@ const renderProjectRow = (project) => {
   button.setAttribute("aria-controls", "inspector");
 
   const identity = el("span", "project-identity");
-  identity.append(el("strong", "path", project.display_path));
+  identity.append(el("strong", "session-name", identityValue.primary));
   const identityMeta = el("span", "identity-meta");
-  const providers = [...new Set(project.sessions.map((session) => session.provider))];
-  if (providers.length) identityMeta.append(document.createTextNode(providers.join(" + ")));
-  if (project.current_branch) {
-    if (providers.length) identityMeta.append(document.createTextNode(" · "));
-    identityMeta.append(el("span", "branch", project.current_branch));
+  for (const [index, value] of identityValue.secondary.entries()) {
+    if (index) identityMeta.append(document.createTextNode(" · "));
+    identityMeta.append(el("span", index === 0 && project.current_branch === value ? "branch" : "", value));
   }
   identity.append(identityMeta);
 
@@ -300,7 +471,20 @@ const renderProjectRow = (project) => {
     state.selectedProjectId = project.project_id;
     render();
   });
-  return button;
+  row.append(button);
+  if (signal.finding) {
+    const dismiss = el("button", "queue-dismiss");
+    dismiss.type = "button";
+    dismiss.dataset.focusKey = `dismiss:${project.project_id}`;
+    dismiss.setAttribute("aria-label", `Mark seen: ${plainPreview(signal.finding.summary)}`);
+    dismiss.title = "Mark this attention item seen locally";
+    dismiss.append(el("span", "checkbox-mark", ""), el("span", "", "Seen"));
+    dismiss.addEventListener("click", () => markFindingSeen(signal.finding, project, dismiss));
+    row.append(dismiss);
+  } else {
+    row.append(el("span", "queue-action-empty", ""));
+  }
+  return row;
 };
 
 const sectionHeading = (title, truth, truthClass = "") => {
@@ -310,15 +494,16 @@ const sectionHeading = (title, truth, truthClass = "") => {
   return heading;
 };
 
-const renderFinding = (finding) => {
+const renderFinding = (finding, project) => {
   const row = el("article", `finding ${finding.seen ? "seen" : "unseen"}`);
   const heading = el("div", "item-heading");
   heading.append(el("h4", "", humanLabel(finding.kind)));
   heading.append(badge(finding.seen ? "Seen locally" : "Unseen", finding.seen ? "local-state" : "truth-observed"));
-  row.append(heading, el("p", "item-summary", finding.summary));
+  row.append(heading, renderMarkdown(finding.summary, "item-summary"));
   const evidence = finding.details?.evidence_excerpt;
   if (evidence) {
-    const quote = el("blockquote", "evidence-quote", `“${evidence}”`);
+    const quote = el("blockquote", "evidence-quote");
+    quote.append(renderMarkdown(evidence, "evidence-markdown"));
     row.append(quote);
   }
   row.append(el(
@@ -358,18 +543,7 @@ const renderFinding = (finding) => {
     const seen = el("button", "quiet-button", "Mark seen locally");
     seen.type = "button";
     seen.dataset.focusKey = `seen:${finding.finding_id}`;
-    seen.addEventListener("click", async () => {
-      try {
-        seen.disabled = true;
-        state.data = await post("/api/findings/seen", { finding_id: finding.finding_id });
-        toast("Finding marked seen locally");
-        render({ forceSort: true });
-      } catch (error) {
-        showError(error);
-      } finally {
-        seen.disabled = false;
-      }
-    });
+    seen.addEventListener("click", () => markFindingSeen(finding, project, seen));
     row.append(seen);
   }
   return row;
@@ -382,7 +556,7 @@ const renderReview = (review) => {
     section.append(el("p", "empty-copy", "No interactive review has been published for this project."));
     return section;
   }
-  section.append(el("p", "review-summary", review.summary || "Review prepared without a summary."));
+  section.append(renderMarkdown(review.summary || "Review prepared without a summary.", "review-summary"));
   const model = review.analyzer_model ? ` · ${review.analyzer_model}` : "";
   section.append(el(
     "p",
@@ -403,9 +577,11 @@ const renderReview = (review) => {
     const head = el("div", "item-heading");
     head.append(el("h4", "", item.title));
     head.append(badge(humanLabel(item.assessment), "truth-model"));
-    row.append(head, el("p", "item-summary", item.detail));
+    row.append(head, renderMarkdown(item.detail, "item-summary"));
     if (item.evidence_excerpt) {
-      row.append(el("blockquote", "evidence-quote", `“${item.evidence_excerpt}”`));
+      const quote = el("blockquote", "evidence-quote");
+      quote.append(renderMarkdown(item.evidence_excerpt, "evidence-markdown"));
+      row.append(quote);
     }
     row.append(el(
       "p",
@@ -513,8 +689,13 @@ const renderInspector = (project) => {
     return;
   }
 
+  const identity = projectIdentity(project);
   const header = el("header", "inspector-header");
-  header.append(el("p", "eyebrow", "PROJECT DETAIL"), el("h2", "selectable", project.display_path));
+  header.append(el("p", "eyebrow", identity.session ? "SESSION DETAIL" : "PROJECT DETAIL"));
+  header.append(el("h2", "selectable", identity.primary));
+  if (identity.secondary.length) {
+    header.append(el("p", "inspector-identifiers", identity.secondary.join(" · ")));
+  }
   const resolved = el("code", "resolved-path selectable", project.resolved_path);
   header.append(resolved);
   const actions = el("div", "inspector-actions");
@@ -544,7 +725,7 @@ const renderInspector = (project) => {
   const findings = el("section", "inspector-section");
   findings.append(sectionHeading("Source-backed attention", "Observed", "truth-observed"));
   const ordered = [...project.findings].sort((left, right) => Number(left.seen) - Number(right.seen) || (right.updated_at || 0) - (left.updated_at || 0));
-  if (ordered.length) ordered.forEach((finding) => findings.append(renderFinding(finding)));
+  if (ordered.length) ordered.forEach((finding) => findings.append(renderFinding(finding, project)));
   else findings.append(el("p", "empty-copy", "No factual findings have been recorded for this project."));
   inspector.append(findings, renderReview(project.review), renderSessions(project), renderSources(project), renderChanges(project));
 };
@@ -633,7 +814,13 @@ const render = ({ forceSort = false } = {}) => {
 
   list.scrollTop = listScroll;
   inspector.scrollTop = inspectorScroll;
-  const focusTarget = findFocusTarget(focusKey);
+  const requestedFocusKey = state.focusAfterRender || focusKey;
+  let focusTarget = findFocusTarget(requestedFocusKey);
+  if (!focusTarget && state.focusAfterRender) {
+    focusTarget = document.querySelector(".queue-dismiss")
+      || document.querySelector(".project-select");
+  }
+  state.focusAfterRender = null;
   if (focusTarget) focusTarget.focus({ preventScroll: true });
 };
 

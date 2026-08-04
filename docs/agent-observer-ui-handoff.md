@@ -21,6 +21,13 @@ into a second chat client. It also adds real copy-path and copy-session-ID
 actions, explicit service-health banners, durable mutation errors, a compact
 enrollment panel, and stable keyboard focus while the dashboard polls.
 
+The ledger promotes the exact finding session's user-assigned name when present,
+then branch, trustworthy PR identity when supplied, and directory name. Every
+source-backed attention row has a one-click local Seen action. Transcript-derived
+messages and review detail use a bundled, text-node-only Markdown renderer for
+paragraphs, emphasis, lists, quotes, and code without accepting provider HTML or
+loading a remote dependency.
+
 The implementation intentionally does not include the proposed layout switcher,
 queue and facet-table modes, speculative next actions, a synthetic evidence
 dialog, or controls for backend capabilities that do not exist. The specialist's

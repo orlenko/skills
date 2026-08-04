@@ -481,6 +481,48 @@ class ObserverDB:
                 (branch, now, project_id),
             )
 
+    def set_session_title(
+        self,
+        provider: str,
+        session_id: str,
+        title: str,
+        observed_at: float,
+    ) -> int:
+        rows = self.connection.execute(
+            """
+            SELECT project_id, title FROM sessions
+            WHERE provider = ? AND session_id = ?
+            """,
+            (provider, session_id),
+        ).fetchall()
+        changed = [row for row in rows if row["title"] != title]
+        if not changed:
+            return 0
+        with self.connection:
+            for row in changed:
+                if row["title"] is not None:
+                    self.connection.execute(
+                        """
+                        INSERT INTO changes(
+                            project_id, kind, old_value, new_value, observed_at
+                        ) VALUES (?, 'session_title_changed', ?, ?, ?)
+                        """,
+                        (
+                            row["project_id"],
+                            row["title"],
+                            title,
+                            observed_at,
+                        ),
+                    )
+            self.connection.execute(
+                """
+                UPDATE sessions SET title = ?
+                WHERE provider = ? AND session_id = ?
+                """,
+                (title, provider, session_id),
+            )
+        return len(changed)
+
     def update_source_checkpoint(
         self,
         source_id: str,

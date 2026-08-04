@@ -74,9 +74,11 @@ plugins/agent-observer/bin/agent-observer down
 
 State defaults to `~/.local/state/agent-observer`. Use
 `AGENT_OBSERVER_HOME`, `AGENT_OBSERVER_CLAUDE_ROOT`,
-`AGENT_OBSERVER_CODEX_ROOT`, or `AGENT_OBSERVER_CODEX_ARCHIVE_ROOT` to isolate
-development and tests. The state directory is mode `0700`; the SQLite database
-is mode `0600`.
+`AGENT_OBSERVER_CODEX_ROOT`, `AGENT_OBSERVER_CODEX_ARCHIVE_ROOT`, or
+`AGENT_OBSERVER_CODEX_SESSION_INDEX` to isolate development and tests. Codex
+session names are read from its local `session_index.jsonl`; Claude names come
+from provider session metadata. The state directory is mode `0700`; the SQLite
+database is mode `0600`.
 
 For an editable installation:
 
