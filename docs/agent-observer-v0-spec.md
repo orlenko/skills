@@ -503,10 +503,21 @@ spans, not full analyzer input packets.
 
 The add-project control offers best-effort candidates discovered from provider
 directory metadata, explicit Claude `cwd` values, and Codex `session_meta` or
-latest `turn_context` `cwd` values. Codex discovery may read a bounded 4 MiB
-header to locate `session_meta` and a bounded 4 MiB tail to locate the most
-recent complete `turn_context`. Discovery retains only identity and path
-metadata; it does not retain message content or begin continuous observation.
+latest `turn_context` `cwd` values. The candidate catalog examines at most 256
+recent session files from the preceding 30 days and returns at most 40 canonical
+projects, most-recent first. Already watched project identities are excluded.
+Each candidate card includes the latest session name and provider, current Git
+branch, directory and canonical path, activity time, and a bounded recent user
+topic. The combobox matches across those visible fields and still accepts an
+exact path fallback.
+
+Candidate discovery reads a bounded 256 KiB header and 512 KiB tail for Codex
+identity, and a 512 KiB tail for Claude identity. For only the selected recent
+project representatives, context lookup expands the tail geometrically up to a
+16 MiB ceiling to find a recent user topic and, for Claude, a nearby explicit
+title. Candidate message excerpts are returned transiently to the authenticated
+loopback dashboard; they are not retained and discovery does not begin
+continuous observation.
 
 Ambiguous encoded paths are labeled as candidates and require validation. A
 candidate that does not resolve to an existing directory cannot be watched.
@@ -796,6 +807,12 @@ Local transitions obey these invariants:
   stated time;
 - a materially different source identity creates a new item and never clears
   the old item's state.
+
+The current vertical slice exposes a simpler project-level `Dismiss` action on
+source-backed findings. It marks every presently unseen open finding for that
+project seen in Observer-owned state. A newly inserted finding remains unseen
+and resurfaces the project. The richer item-level states above remain the target
+contract for semantic review items.
 
 The group assessment is not model-generated. Its deterministic roll-up is
 `possible_loose_ends` when any item is `no_later_handling_observed` or

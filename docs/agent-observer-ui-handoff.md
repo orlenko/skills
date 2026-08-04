@@ -19,14 +19,15 @@ The inspector keeps source-backed findings, bounded model review, sessions,
 source health, changes, and local actions visible without expanding the ledger
 into a second chat client. It also adds real copy-path and copy-session-ID
 actions, explicit service-health banners, durable mutation errors, a compact
-enrollment panel, and stable keyboard focus while the dashboard polls.
+recent-project combobox, sortable ledger columns, and stable keyboard focus
+while the dashboard polls.
 
 The ledger identifies each project by its most recently active session, using
 that session's user-assigned name and provider before branch, trustworthy PR
 identity when supplied, and directory name. Attention items retain their own
 provider and session provenance; an older high-priority finding never relabels
 the project as its source session. Every source-backed attention row has a
-one-click local Seen action. Transcript-derived messages and review detail use a
+one-click local Dismiss action. Transcript-derived messages and review detail use a
 bundled, text-node-only Markdown renderer for paragraphs, emphasis, lists,
 quotes, and code without accepting provider HTML or loading a remote dependency.
 
@@ -99,7 +100,10 @@ Primary moments:
 - **Recover:** After a restart, see persisted work, stale services, and unseen
   findings without pretending the observer watched while offline.
 - **Enroll:** Add a recent project from discovered session candidates, with an
-  explicit path fallback.
+  explicit path fallback. Candidate cards expose the latest session name and
+  provider, branch, directory and canonical path, activity age, and a bounded
+  recent user topic. Typing matches those fields, and watched projects are
+  absent.
 
 ## 3. Product principles the design must encode
 
@@ -204,21 +208,27 @@ text operations, never HTML interpretation.
 | --- | --- | --- |
 | GET | `/api/status` | Dashboard projection plus service health |
 | GET | `/api/services` | Server and sync-daemon process state |
+| GET | `/api/project-candidates` | Recent unwatched project cards for enrollment |
 | POST | `/api/projects` | Add a project by `{ "path": "..." }` |
+| POST | `/api/projects/dismiss-attention` | Dismiss current attention by `{ "project": "project_id" }` |
+| POST | `/api/projects/remove` | Stop watching by `{ "project": "project_id" }` |
 | POST | `/api/rescan` | Rediscover sources by `{ "project": "project_id" }` |
-| POST | `/api/findings/seen` | Mark local seen state by `{ "finding_id": "..." }` |
+| POST | `/api/findings/seen` | Mark one finding seen by `{ "finding_id": "..." }` |
 
 The server returns `Cache-Control: no-store`, a restrictive Content Security
 Policy, frame denial, MIME sniffing denial, and no-referrer behavior.
 
 ### Shipped boundary versus design target
 
-The rough UI and the five endpoints above are implemented. The candidate
-dropdown, evidence-slice endpoint, review-launch UI, prepared-job display,
-snooze/dismiss actions, and reboot-time process supervision are design targets,
-not current backend promises. `up` idempotently starts the two requested
-sidecars, but no LaunchAgent is installed yet; after a machine reboot, invoking
-the skill or `agent-observer up` restores them and reconciles persisted state.
+The rough UI and endpoints above are implemented. The evidence-slice endpoint,
+review-launch UI, prepared-job display, richer per-item dispositions and snooze,
+and reboot-time process supervision are design targets, not current backend
+promises. The current row-level Dismiss action marks every presently unseen
+finding for that project seen in Observer-owned state. A later newly discovered
+finding starts unseen and returns the project to Needs a look. `up` idempotently
+starts the two requested sidecars, but no LaunchAgent is installed yet; after a
+machine reboot, invoking the skill or `agent-observer up` restores them and
+reconciles persisted state.
 Use the canonical fixture above for design work that needs states the current
 backend cannot yet synthesize in one live database.
 
@@ -282,9 +292,11 @@ Important fields:
 }
 ```
 
-Use `display_path` as the primary label and `resolved_path` for copy or technical
-detail. Ages should be derived from numeric seconds and refresh naturally. Do
-not substitute vague labels for the exact age everywhere.
+Use the most recently active session title as the primary label when available,
+then branch, trustworthy PR identity when supplied, and directory name.
+`resolved_path` remains available for copy and technical detail. Ages should be
+derived from numeric seconds and refresh naturally. Do not substitute vague
+labels for the exact age everywhere.
 
 ### Session object
 
@@ -421,19 +433,19 @@ Other assessments remain inspectable but should not create a prominent reminder.
 
 ### 7.1 Project enrollment
 
-The desired control is a searchable dropdown of recent candidate projects plus
-an explicit path option. Each candidate should eventually show:
+The implemented control is a searchable combobox of recent unwatched projects
+plus an exact-path fallback. Each result card shows:
 
-- display path;
-- provider presence;
+- latest session name and provider;
+- current branch and directory name;
+- canonical path;
 - newest known activity;
-- whether it is already watched;
-- validated worktree identity or an ambiguity warning.
+- bounded recent session topic.
 
-The backend currently implements path entry only. Candidate discovery needs a
-future `GET /api/candidates` contract. Design both the ideal dropdown and its
-loading, empty, ambiguous-path, missing-path, and already-watched states. Keep a
-manual path fallback.
+Typing matches every field above. `GET /api/project-candidates` supplies up to
+40 candidates ordered by recent log activity and excludes canonical project
+identities already watched. Preserve its loading, empty, missing-path, and
+duplicate-path states in future redesigns.
 
 Adding may take several seconds when provider history is large. Show determinate
 steps when known, otherwise calm progress copy. Do not imply observation began
@@ -453,13 +465,18 @@ Expansion should reveal:
 Preserve the user's expanded projects while polling. New data should not collapse
 or reorder content under the pointer without a strong reason.
 
+The implemented ledger offers Current signal, Project, and Activity sorts.
+Activity is live: every poll can move the newest project upward. Project captures
+a stable alphabetical order when selected and does not reshuffle as titles or
+activity update; selecting Project again establishes a fresh alphabetical order.
+
 ### 7.3 Local actions
 
 Implemented now:
 
-- mark a factual finding seen;
+- dismiss all current factual findings for a project until a new finding arrives;
 - rescan a project;
-- add a project by path;
+- add a project from recent candidates or by exact path;
 - stop watching a project after inline confirmation;
 - copy a project path;
 - copy a provider-scoped session ID.
@@ -467,7 +484,7 @@ Implemented now:
 Specified next:
 
 - snooze;
-- dismiss;
+- richer per-item dismissal and disposition;
 - mark handled elsewhere;
 - still relevant;
 - launch a review after provider and disclosure confirmation.

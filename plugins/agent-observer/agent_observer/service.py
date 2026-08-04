@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import ObserverDB
-from .discovery import TAIL_BYTES, discover_sources
+from .discovery import TAIL_BYTES, discover_recent_projects, discover_sources
 from .identity import current_branch, cwd_matches_project, identify_project
 from .jsonl import read_append, read_window
 from .model import MEANINGFUL_KINDS, ReadWindow, SourceCandidate
@@ -65,8 +65,16 @@ class Observer:
     def __exit__(self, *_args: object) -> None:
         self.close()
 
-    def add_project(self, path: str) -> dict[str, Any]:
-        identity = identify_project(path)
+    def add_project(
+        self, path: str, *, allow_existing: bool = True
+    ) -> dict[str, Any]:
+        identity = identify_project(path.strip())
+        try:
+            existing = self.db.project(identity.project_id)
+        except KeyError:
+            existing = None
+        if existing is not None and not allow_existing:
+            raise ValueError(f"project is already watched: {identity.resolved_path}")
         project = self.db.add_project(identity)
         self._cwd_project_cache.clear()
         self._sample_branch(project)
@@ -74,7 +82,17 @@ class Observer:
         return {
             "project": self.db.project(identity.project_id),
             "sources_added": discovered,
+            "already_watched": existing is not None,
         }
+
+    def project_candidates(self) -> list[dict[str, object]]:
+        watched = {str(project["project_id"]) for project in self.db.projects()}
+        return discover_recent_projects(
+            claude_roots=self.config.claude_roots,
+            codex_roots=self.config.codex_roots,
+            watched_project_ids=watched,
+            codex_session_index=self.config.codex_session_index,
+        )
 
     def _resolve_project(self, value: str) -> dict[str, Any]:
         for project in self.db.projects():

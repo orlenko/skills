@@ -249,6 +249,44 @@ class ReviewAndRuntimeTests(unittest.TestCase):
                 submit_review(observer, prepared["job_id"], draft_path)
 
     def test_sidecars_serve_only_authenticated_local_dashboard(self):
+        sid = "44444444-5555-6666-7777-888888888888"
+        append_jsonl(
+            self.config.claude_roots[0] / "recent-project" / f"{sid}.jsonl",
+            {
+                "type": "custom-title",
+                "sessionId": sid,
+                "cwd": str(self.project),
+                "timestamp": "2026-08-04T12:00:00Z",
+                "customTitle": "Enrollment card",
+            },
+            {
+                "type": "user",
+                "sessionId": sid,
+                "uuid": "catalog-user",
+                "cwd": str(self.project),
+                "timestamp": "2026-08-04T12:00:01Z",
+                "message": {"content": "Investigate recent project enrollment"},
+            },
+            {
+                "type": "assistant",
+                "sessionId": sid,
+                "uuid": "catalog-assistant",
+                "cwd": str(self.project),
+                "timestamp": "2026-08-04T12:00:02Z",
+                "message": {
+                    "content": "The enrollment proposal is ready.",
+                    "stop_reason": "end_turn",
+                },
+            },
+            {
+                "type": "system",
+                "subtype": "turn_duration",
+                "sessionId": sid,
+                "uuid": "catalog-turn",
+                "cwd": str(self.project),
+                "timestamp": "2026-08-04T12:00:03Z",
+            },
+        )
         services = start_services(self.config)
         self.assertTrue(services["server"]["running"])
         self.assertTrue(services["daemon"]["running"])
@@ -269,6 +307,13 @@ class ReviewAndRuntimeTests(unittest.TestCase):
             status = json.loads(response.read())
         self.assertEqual(status["schema_version"], "agent-observer-dashboard-v1")
 
+        with opener.open(clean_url + "api/project-candidates", timeout=5) as response:
+            candidates = json.loads(response.read())["candidates"]
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["resolved_path"], str(self.project.resolve()))
+        self.assertEqual(candidates[0]["session"]["title"], "Enrollment card")
+        self.assertIn("recent project enrollment", candidates[0]["session"]["topic"])
+
         request = urllib.request.Request(
             clean_url + "api/projects",
             data=json.dumps({"path": str(self.project)}).encode(),
@@ -282,6 +327,44 @@ class ReviewAndRuntimeTests(unittest.TestCase):
         with opener.open(request, timeout=5) as response:
             added = json.loads(response.read())
         self.assertEqual(len(added["projects"]), 1)
+        self.assertEqual(added["view_counts"]["needs_a_look"], 1)
+
+        dismiss_attention = urllib.request.Request(
+            clean_url + "api/projects/dismiss-attention",
+            data=json.dumps(
+                {"project": added["projects"][0]["project_id"]}
+            ).encode(),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Origin": clean_url.rstrip("/"),
+                "X-Agent-Observer": "1",
+            },
+        )
+        with opener.open(dismiss_attention, timeout=5) as response:
+            dismissed = json.loads(response.read())
+        self.assertEqual(dismissed["view_counts"]["needs_a_look"], 0)
+
+        with opener.open(clean_url + "api/project-candidates", timeout=5) as response:
+            self.assertEqual(json.loads(response.read())["candidates"], [])
+
+        duplicate = urllib.request.Request(
+            clean_url + "api/projects",
+            data=json.dumps({"path": f"  {self.project}  "}).encode(),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Origin": clean_url.rstrip("/"),
+                "X-Agent-Observer": "1",
+            },
+        )
+        with self.assertRaises(urllib.error.HTTPError) as duplicate_error:
+            opener.open(duplicate, timeout=5)
+        self.assertEqual(duplicate_error.exception.code, 400)
+        duplicate_body = json.loads(duplicate_error.exception.read())
+        self.assertIn("already watched", duplicate_body["error"])
+        self.assertNotIn("does not exist", duplicate_body["error"])
+        duplicate_error.exception.close()
 
         rejected = urllib.request.Request(
             clean_url + "api/rescan",

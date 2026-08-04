@@ -17,6 +17,8 @@ vertical slice provides:
 - read-only Git branch sampling;
 - collector health and a local CLI status surface;
 - a private authenticated localhost dashboard;
+- a recent-project enrollment combobox with bounded session topic cards;
+- project-level attention dismissal and live Activity or static Project sorting;
 - managed collection and server sidecars;
 - an opt-in review loop performed by the Claude or Codex session that invokes
   the skill, with exact evidence validation before dashboard publication.
@@ -27,7 +29,7 @@ Claude or Codex session, selects one worker session and at most 40 visible
 messages, returns at most three suggestions, and discloses its shared context.
 The invoking analyzer session is persistently excluded from collection when its
 provider exposes the session ID. LaunchAgent installation, filesystem
-notifications, candidate-project indexing, deep conversation replay, and the
+notifications, durable candidate indexing, deep conversation replay, and the
 productized isolated semantic ledger remain follow-up work. Explicit `add` and
 `rescan` operations may take several seconds with thousands of provider files;
 steady-state scans remain proportional to watched sources.

@@ -296,6 +296,80 @@ class ObserverTests(unittest.TestCase):
             self.assertEqual(session_row["last_message_excerpt"], "Done")
             self.assertEqual(session_row["last_turn_state"], "completed")
 
+    def test_dismissing_project_attention_clears_backlog_until_new_finding(self):
+        first_sid = "99999999-aaaa-bbbb-cccc-dddddddddddd"
+        second_sid = "99999999-aaaa-bbbb-cccc-eeeeeeeeeeee"
+
+        def completed_turn(session: Path, sid: str, turn: str, message: str) -> None:
+            append_jsonl(
+                session,
+                codex_session(self.project, sid),
+                {
+                    "type": "event_msg",
+                    "timestamp": "2026-08-04T12:00:01Z",
+                    "payload": {
+                        "type": "agent_message",
+                        "phase": "final_answer",
+                        "message": message,
+                    },
+                },
+                {
+                    "type": "event_msg",
+                    "timestamp": "2026-08-04T12:00:02Z",
+                    "payload": {
+                        "type": "task_complete",
+                        "turn_id": turn,
+                        "last_agent_message": message,
+                    },
+                },
+            )
+
+        first = self.codex_root / f"rollout-{first_sid}.jsonl"
+        second = self.codex_root / f"rollout-{second_sid}.jsonl"
+        completed_turn(first, first_sid, "turn-1", "First completed turn")
+        completed_turn(second, second_sid, "turn-2", "Second completed turn")
+
+        with Observer(self.config) as observer:
+            observer.add_project(str(self.project))
+            current = observer.status()["projects"][0]["findings"]
+            self.assertEqual(len(current), 2)
+            project_id = observer.status()["projects"][0]["project_id"]
+            self.assertTrue(observer.db.dismiss_project_findings(project_id))
+            dismissed = observer.status()["projects"][0]["findings"]
+            self.assertTrue(all(finding["seen"] for finding in dismissed))
+
+            append_jsonl(
+                first,
+                {
+                    "type": "event_msg",
+                    "timestamp": "2026-08-04T12:01:00Z",
+                    "payload": {"type": "user_message", "message": "One more thing"},
+                },
+                {
+                    "type": "event_msg",
+                    "timestamp": "2026-08-04T12:01:01Z",
+                    "payload": {
+                        "type": "agent_message",
+                        "phase": "final_answer",
+                        "message": "A newer completed turn",
+                    },
+                },
+                {
+                    "type": "event_msg",
+                    "timestamp": "2026-08-04T12:01:02Z",
+                    "payload": {
+                        "type": "task_complete",
+                        "turn_id": "turn-3",
+                        "last_agent_message": "A newer completed turn",
+                    },
+                },
+            )
+            observer.scan()
+            current = observer.status()["projects"][0]["findings"]
+            unseen = [finding for finding in current if not finding["seen"]]
+            self.assertEqual(len(unseen), 1)
+            self.assertEqual(unseen[0]["summary"], "A newer completed turn")
+
     def test_legacy_codex_response_messages_are_supported(self):
         sid = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
         session = self.codex_root / f"rollout-legacy-{sid}.jsonl"

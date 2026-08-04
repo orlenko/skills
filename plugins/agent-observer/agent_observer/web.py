@@ -133,6 +133,11 @@ def _handler(config: ObserverConfig, token: str, port: int):
                 result["services"] = service_status(config)
                 self._json(200, result)
                 return
+            if parsed.path == "/api/project-candidates":
+                with Observer(config) as observer:
+                    result = {"candidates": observer.project_candidates()}
+                self._json(200, result)
+                return
             if parsed.path == "/api/services":
                 self._json(200, service_status(config))
                 return
@@ -167,7 +172,7 @@ def _handler(config: ObserverConfig, token: str, port: int):
                         path = value.get("path")
                         if not isinstance(path, str) or not path.strip():
                             raise ValueError("path is required")
-                        observer.add_project(path)
+                        observer.add_project(path, allow_existing=False)
                     elif parsed.path == "/api/projects/remove":
                         project = value.get("project")
                         if not isinstance(project, str):
@@ -184,6 +189,13 @@ def _handler(config: ObserverConfig, token: str, port: int):
                             raise ValueError("finding_id is required")
                         if not observer.db.mark_finding_seen(finding_id):
                             raise KeyError("finding not found")
+                    elif parsed.path == "/api/projects/dismiss-attention":
+                        project = value.get("project")
+                        if not isinstance(project, str):
+                            raise ValueError("project is required")
+                        project_id = observer._resolve_project(project)["project_id"]
+                        if not observer.db.dismiss_project_findings(project_id):
+                            raise KeyError("project not found")
                     else:
                         self._json(404, {"error": "not found"})
                         return

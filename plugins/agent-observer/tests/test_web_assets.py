@@ -41,6 +41,7 @@ class WebAssetTests(unittest.TestCase):
                 "inspector",
                 "service-notices",
                 "add-form",
+                "project-options",
                 "search",
             }.issubset(parser.ids)
         )
@@ -53,13 +54,22 @@ class WebAssetTests(unittest.TestCase):
             set(re.findall(r'post\("([^\"]+)"', script)),
             {
                 "/api/projects",
+                "/api/projects/dismiss-attention",
                 "/api/projects/remove",
                 "/api/rescan",
-                "/api/findings/seen",
             },
         )
         self.assertIn("const renderMarkdown =", script)
         self.assertIn('el("button", "queue-dismiss")', script)
+        self.assertIn("const renderProjectOptions =", script)
+        self.assertIn('fetch("/api/project-candidates"', script)
+        self.assertIn("candidate.session?.topic", script)
+        self.assertIn("candidate.branch", script)
+        self.assertIn("candidate.resolved_path", script)
+        self.assertIn("const renderSortControls =", script)
+        self.assertIn('state.sort === "activity"', script)
+        self.assertIn('state.sort === "project"', script)
+        self.assertIn("Dismiss project attention", script)
         self.assertIn("session?.title?.trim()", script)
         self.assertIn("const latestProjectSession =", script)
         self.assertIn("const projectRemovalButton =", script)

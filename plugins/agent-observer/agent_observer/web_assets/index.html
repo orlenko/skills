@@ -33,10 +33,16 @@
         <p>Observer reads existing Claude and Codex session logs. The worker is not contacted.</p>
       </div>
       <form id="add-form">
-        <label for="project-path">Project directory</label>
+        <label for="project-path">Recent project</label>
         <div class="form-row">
-          <input id="project-path" name="path" type="text" autocomplete="off"
-                 placeholder="~/code/project" required>
+          <div class="project-combobox">
+            <input id="project-path" name="path" type="text" autocomplete="off"
+                   role="combobox" aria-autocomplete="list"
+                   aria-controls="project-options" aria-expanded="false"
+                   placeholder="Search name, path, branch, or topic" required>
+            <div id="project-options" class="project-options" role="listbox"
+                 aria-label="Recent unwatched projects" hidden></div>
+          </div>
           <button class="primary-button" type="submit">Begin watching</button>
         </div>
       </form>
@@ -61,11 +67,11 @@
         <div id="error" class="notice error" role="alert" hidden></div>
         <div class="attention-layout">
           <section class="ledger" aria-label="Watched projects">
-            <div class="ledger-columns" aria-hidden="true">
-              <span>Project</span>
-              <span>Current signal</span>
-              <span>Activity</span>
-              <span>Seen</span>
+            <div class="ledger-columns">
+              <button type="button" class="sort-heading" data-sort="project">Project</button>
+              <button type="button" class="sort-heading" data-sort="signal">Current signal</button>
+              <button type="button" class="sort-heading" data-sort="activity">Activity</button>
+              <span>Dismiss</span>
             </div>
             <div id="projects" class="project-list" aria-busy="true"></div>
           </section>

@@ -238,6 +238,22 @@ class ObserverDB:
             )
         return bool(cursor.rowcount)
 
+    def dismiss_project_findings(self, project_id: str) -> bool:
+        with self.connection:
+            row = self.connection.execute(
+                "SELECT 1 FROM projects WHERE project_id = ?", (project_id,)
+            ).fetchone()
+            if not row:
+                return False
+            self.connection.execute(
+                """
+                UPDATE findings SET seen = 1
+                WHERE project_id = ? AND state = 'open' AND seen = 0
+                """,
+                (project_id,),
+            )
+        return True
+
     def exclude_session(self, provider: str, session_id: str, reason: str) -> None:
         """Persistently keep an analyzer session out of collection and projection."""
         with self.connection:

@@ -3,12 +3,16 @@
 const state = {
   data: null,
   view: "all",
+  sort: "signal",
   search: "",
   busy: false,
   selectedProjectId: null,
   projectOrder: [],
   focusAfterRender: null,
   pendingRemovalProjectId: null,
+  candidates: [],
+  candidatesLoading: false,
+  candidateActiveIndex: -1,
   error: null,
 };
 
@@ -299,13 +303,124 @@ const projectIdentity = (project) => {
   };
 };
 
-const markFindingSeen = async (finding, project, control) => {
+const candidateTitle = (candidate) => (
+  candidate.session?.title?.trim() || candidate.directory_name || "Unnamed project"
+);
+
+const candidateMatches = () => {
+  const query = document.querySelector("#project-path").value.trim().toLocaleLowerCase();
+  if (!query) return state.candidates.slice(0, 10);
+  return state.candidates.filter((candidate) => [
+    candidateTitle(candidate),
+    candidate.resolved_path,
+    candidate.directory_name,
+    candidate.branch || "",
+    candidate.session?.topic || "",
+    candidate.session?.provider || "",
+  ].join(" ").toLocaleLowerCase().includes(query)).slice(0, 10);
+};
+
+const closeProjectOptions = () => {
+  const options = document.querySelector("#project-options");
+  options.hidden = true;
+  const input = document.querySelector("#project-path");
+  input.setAttribute("aria-expanded", "false");
+  input.removeAttribute("aria-activedescendant");
+  state.candidateActiveIndex = -1;
+};
+
+const chooseCandidate = (candidate) => {
+  const input = document.querySelector("#project-path");
+  input.value = candidate.resolved_path;
+  closeProjectOptions();
+  input.focus();
+};
+
+const renderProjectOptions = () => {
+  const options = document.querySelector("#project-options");
+  const input = document.querySelector("#project-path");
+  if (document.querySelector("#enrollment").hidden) {
+    closeProjectOptions();
+    return;
+  }
+  options.replaceChildren();
+  options.hidden = false;
+  input.setAttribute("aria-expanded", "true");
+  if (state.candidatesLoading) {
+    options.append(el("p", "project-options-empty", "Finding recent projects…"));
+    return;
+  }
+  const matches = candidateMatches();
+  if (!matches.length) {
+    options.append(el(
+      "p",
+      "project-options-empty",
+      state.candidates.length
+        ? "No unwatched recent project matches. You can still paste an exact directory."
+        : "No recent unwatched projects found. You can still paste an exact directory.",
+    ));
+    return;
+  }
+  if (state.candidateActiveIndex >= matches.length) state.candidateActiveIndex = matches.length - 1;
+  for (const [index, candidate] of matches.entries()) {
+    const option = el("button", "project-option");
+    option.type = "button";
+    option.id = `project-option-${index}`;
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", String(index === state.candidateActiveIndex));
+    const head = el("span", "project-option-head");
+    head.append(el("strong", "project-option-title", candidateTitle(candidate)));
+    if (candidate.session?.provider) {
+      head.append(el("span", "project-option-provider", candidate.session.provider));
+    }
+    head.append(el(
+      "span",
+      "project-option-age",
+      relativeAge(Date.now() / 1000 - candidate.last_activity_at),
+    ));
+    option.append(head);
+    const metadata = [candidate.branch, candidate.directory_name].filter(Boolean).join(" · ");
+    if (metadata) option.append(el("span", "project-option-meta", metadata));
+    option.append(el("span", "project-option-path", candidate.resolved_path));
+    if (candidate.session?.topic) {
+      option.append(el("span", "project-option-topic", candidate.session.topic));
+    }
+    option.addEventListener("click", () => chooseCandidate(candidate));
+    options.append(option);
+  }
+  if (state.candidateActiveIndex >= 0) {
+    input.setAttribute("aria-activedescendant", `project-option-${state.candidateActiveIndex}`);
+    options.children[state.candidateActiveIndex]?.scrollIntoView({ block: "nearest" });
+  } else {
+    input.removeAttribute("aria-activedescendant");
+  }
+};
+
+const loadProjectCandidates = async () => {
+  state.candidatesLoading = true;
+  renderProjectOptions();
+  try {
+    const response = await fetch("/api/project-candidates", { credentials: "same-origin" });
+    const value = await response.json();
+    if (!response.ok) throw new Error(value.error || `Request failed (${response.status})`);
+    state.candidates = Array.isArray(value.candidates) ? value.candidates : [];
+  } catch (error) {
+    state.candidates = [];
+    showError(error);
+  } finally {
+    state.candidatesLoading = false;
+    state.candidateActiveIndex = -1;
+    renderProjectOptions();
+  }
+};
+
+const dismissProjectAttention = async (project, control) => {
   try {
     control.disabled = true;
-    state.data = await post("/api/findings/seen", { finding_id: finding.finding_id });
+    state.data = await post("/api/projects/dismiss-attention", { project: project.project_id });
     state.focusAfterRender = `dismiss:${project.project_id}`;
-    toast("Attention item marked seen locally");
-    render({ forceSort: true });
+    toast("Project attention dismissed; newer findings will surface it again");
+    render();
   } catch (error) {
     showError(error);
   } finally {
@@ -325,7 +440,7 @@ const removeProject = async (project, control) => {
       state.focusAfterRender = next ? `project:${next.project_id}` : "watch-toggle";
     }
     toast("Stopped watching project; worker files were not changed");
-    render({ forceSort: true });
+    render();
   } catch (error) {
     showError(error);
   } finally {
@@ -444,23 +559,44 @@ const filteredProjects = () => {
   });
 };
 
-const orderedProjects = (freezeOrder) => {
+const orderedProjects = () => {
   const projects = filteredProjects();
   const sorted = [...projects].sort((left, right) => {
+    if (state.sort === "project") {
+      const leftIdentity = projectIdentity(left).primary || "";
+      const rightIdentity = projectIdentity(right).primary || "";
+      return leftIdentity.localeCompare(rightIdentity)
+        || left.resolved_path.localeCompare(right.resolved_path);
+    }
+    if (state.sort === "activity") {
+      return (left.facets.activity_age_seconds ?? Infinity)
+        - (right.facets.activity_age_seconds ?? Infinity)
+        || left.resolved_path.localeCompare(right.resolved_path);
+    }
     const [leftRank, leftAge] = sortKey(left);
     const [rightRank, rightAge] = sortKey(right);
     return leftRank - rightRank || leftAge - rightAge || left.display_path.localeCompare(right.display_path);
   });
-  if (freezeOrder && state.projectOrder.length) {
-    const byId = new Map(projects.map((project) => [project.project_id, project]));
-    const stable = state.projectOrder.map((id) => byId.get(id)).filter(Boolean);
-    const present = new Set(stable.map((project) => project.project_id));
-    stable.push(...sorted.filter((project) => !present.has(project.project_id)));
-    state.projectOrder = stable.map((project) => project.project_id);
-    return stable;
+  if (state.sort === "project") {
+    const present = new Set(state.projectOrder);
+    state.projectOrder.push(
+      ...sorted
+        .filter((project) => !present.has(project.project_id))
+        .map((project) => project.project_id),
+    );
+    const position = new Map(state.projectOrder.map((id, index) => [id, index]));
+    return [...projects].sort(
+      (left, right) => position.get(left.project_id) - position.get(right.project_id),
+    );
   }
-  state.projectOrder = sorted.map((project) => project.project_id);
+  state.projectOrder = [];
   return sorted;
+};
+
+const renderSortControls = () => {
+  for (const control of document.querySelectorAll("[data-sort]")) {
+    control.setAttribute("aria-pressed", String(control.dataset.sort === state.sort));
+  }
 };
 
 const renderViews = () => {
@@ -478,7 +614,7 @@ const renderViews = () => {
     button.append(el("span", "view-count", String(count)));
     button.addEventListener("click", () => {
       state.view = key;
-      render({ forceSort: true });
+      render();
     });
     nav.append(button);
   }
@@ -537,10 +673,10 @@ const renderProjectRow = (project) => {
     const dismiss = el("button", "queue-dismiss");
     dismiss.type = "button";
     dismiss.dataset.focusKey = `dismiss:${project.project_id}`;
-    dismiss.setAttribute("aria-label", `Mark seen: ${plainPreview(signal.finding.summary)}`);
-    dismiss.title = "Mark this attention item seen locally";
-    dismiss.append(el("span", "checkbox-mark", ""), el("span", "", "Seen"));
-    dismiss.addEventListener("click", () => markFindingSeen(signal.finding, project, dismiss));
+    dismiss.setAttribute("aria-label", `Dismiss current attention for ${identityValue.primary}`);
+    dismiss.title = "Dismiss all current attention for this project; newer findings will surface it again";
+    dismiss.append(el("span", "checkbox-mark", ""), el("span", "", "Dismiss"));
+    dismiss.addEventListener("click", () => dismissProjectAttention(project, dismiss));
     row.append(dismiss);
   } else if (isEmptyUnavailableProject(project)) {
     row.append(projectRemovalButton(project, "row", "Remove"));
@@ -603,10 +739,11 @@ const renderFinding = (finding, project) => {
   }
 
   if (!finding.seen) {
-    const seen = el("button", "quiet-button", "Mark seen locally");
+    const seen = el("button", "quiet-button", "Dismiss project attention");
     seen.type = "button";
     seen.dataset.focusKey = `seen:${finding.finding_id}`;
-    seen.addEventListener("click", () => markFindingSeen(finding, project, seen));
+    seen.title = "Dismiss all current attention for this project; newer findings will surface it again";
+    seen.addEventListener("click", () => dismissProjectAttention(project, seen));
     row.append(seen);
   }
   return row;
@@ -836,19 +973,17 @@ const findFocusTarget = (key) => {
     .find((node) => node.dataset.focusKey === key) || null;
 };
 
-const render = ({ forceSort = false } = {}) => {
+const render = () => {
   const active = document.activeElement;
   const focusKey = active?.dataset?.focusKey;
   const list = document.querySelector("#projects");
   const inspector = document.querySelector("#inspector");
-  const freezeOrder = !forceSort && Boolean(
-    list.matches(":hover") || list.contains(active) || inspector.contains(active),
-  );
   const listScroll = list.scrollTop;
   const inspectorScroll = inspector.scrollTop;
 
   renderViews();
-  const projects = orderedProjects(freezeOrder);
+  renderSortControls();
+  const projects = orderedProjects();
   if (!projects.some((project) => project.project_id === state.selectedProjectId)) {
     state.selectedProjectId = projects[0]?.project_id || null;
   }
@@ -909,17 +1044,72 @@ const refresh = async () => {
 
 document.querySelector("#search").addEventListener("input", (event) => {
   state.search = event.target.value;
-  render({ forceSort: true });
+  render();
 });
+
+for (const control of document.querySelectorAll("[data-sort]")) {
+  control.addEventListener("click", () => {
+    state.sort = control.dataset.sort;
+    state.projectOrder = [];
+    render();
+  });
+}
 
 const enrollment = document.querySelector("#enrollment");
 const watchToggle = document.querySelector("#watch-toggle");
+const projectCombobox = document.querySelector(".project-combobox");
+const projectInput = document.querySelector("#project-path");
 watchToggle.addEventListener("click", () => {
   const opening = enrollment.hidden;
   enrollment.hidden = !opening;
   watchToggle.setAttribute("aria-expanded", String(opening));
   watchToggle.textContent = opening ? "Close enrollment" : "Watch project";
-  if (opening) document.querySelector("#project-path").focus();
+  if (opening) {
+    projectInput.focus();
+    if (!state.candidatesLoading) loadProjectCandidates();
+  } else {
+    closeProjectOptions();
+  }
+});
+
+projectInput.addEventListener("focus", () => {
+  if (enrollment.hidden) return;
+  if (!state.candidates.length && !state.candidatesLoading) {
+    loadProjectCandidates();
+  } else {
+    renderProjectOptions();
+  }
+});
+
+projectInput.addEventListener("input", () => {
+  state.candidateActiveIndex = -1;
+  renderProjectOptions();
+});
+
+projectInput.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    closeProjectOptions();
+    return;
+  }
+  if (!["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) return;
+  const matches = candidateMatches();
+  if (!matches.length) return;
+  if (event.key === "Enter" && state.candidateActiveIndex < 0) return;
+  event.preventDefault();
+  if (event.key === "Enter") {
+    chooseCandidate(matches[state.candidateActiveIndex]);
+    return;
+  }
+  const direction = event.key === "ArrowDown" ? 1 : -1;
+  const start = state.candidateActiveIndex < 0
+    ? (direction > 0 ? -1 : 0)
+    : state.candidateActiveIndex;
+  state.candidateActiveIndex = (start + direction + matches.length) % matches.length;
+  renderProjectOptions();
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (!projectCombobox.contains(event.target)) closeProjectOptions();
 });
 
 document.querySelector("#add-form").addEventListener("submit", async (event) => {
@@ -933,15 +1123,19 @@ document.querySelector("#add-form").addEventListener("submit", async (event) => 
     state.view = "all";
     state.search = "";
     document.querySelector("#search").value = "";
-    const addedPath = input.value;
+    const addedPath = input.value.trim();
     input.value = "";
+    const added = state.data.projects.find((project) => project.resolved_path === addedPath || project.display_path === addedPath);
+    state.candidates = state.candidates.filter(
+      (candidate) => candidate.project_id !== added?.project_id,
+    );
+    closeProjectOptions();
     enrollment.hidden = true;
     watchToggle.setAttribute("aria-expanded", "false");
     watchToggle.textContent = "Watch project";
-    const added = state.data.projects.find((project) => project.resolved_path === addedPath || project.display_path === addedPath);
     if (added) state.selectedProjectId = added.project_id;
     toast("Project baseline committed to the watchlist");
-    render({ forceSort: true });
+    render();
   } catch (error) {
     showError(error);
   } finally {
