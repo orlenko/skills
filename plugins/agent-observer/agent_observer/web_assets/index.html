@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Agent Observer</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">LOCAL CONTROL SURFACE</p>
+        <h1>Agent Observer</h1>
+      </div>
+      <div class="service-state" id="service-state" aria-live="polite">
+        <span class="pulse" aria-hidden="true"></span>
+        Connecting
+      </div>
+    </header>
+
+    <main>
+      <section class="add-project" aria-labelledby="add-heading">
+        <div>
+          <h2 id="add-heading">Watch another project</h2>
+          <p>Read-only observation begins with a bounded local baseline.</p>
+        </div>
+        <form id="add-form">
+          <label class="sr-only" for="project-path">Project directory</label>
+          <input id="project-path" name="path" type="text" autocomplete="off"
+                 placeholder="~/code/project" required>
+          <button type="submit">Add project</button>
+        </form>
+      </section>
+
+      <div class="shell">
+        <nav class="views" aria-label="Project views" id="views"></nav>
+        <section class="workspace" aria-labelledby="workspace-heading">
+          <div class="workspace-heading">
+            <div>
+              <p class="eyebrow" id="view-kicker">ALL WATCHED PROJECTS</p>
+              <h2 id="workspace-heading">What deserves attention</h2>
+            </div>
+            <div class="workspace-tools">
+              <label class="sr-only" for="search">Filter projects</label>
+              <input id="search" type="search" placeholder="Filter paths or sessions">
+              <span id="updated-at">Waiting for data</span>
+            </div>
+          </div>
+          <div id="error" class="notice error" role="alert" hidden></div>
+          <div id="projects" class="project-list" aria-busy="true"></div>
+        </section>
+      </div>
+    </main>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>

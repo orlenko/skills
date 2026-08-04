@@ -125,6 +125,32 @@ CREATE TABLE IF NOT EXISTS changes (
     new_value TEXT,
     observed_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS review_jobs (
+    job_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    analyzer_provider TEXT NOT NULL,
+    analyzer_model TEXT,
+    status TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    submitted_at REAL,
+    packet_meta_json TEXT NOT NULL,
+    summary TEXT,
+    items_json TEXT NOT NULL DEFAULT '[]',
+    limitations_json TEXT NOT NULL DEFAULT '[]',
+    error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS review_jobs_project_time
+ON review_jobs(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS excluded_sessions (
+    provider TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY(provider, session_id)
+);
 """
 
 
@@ -203,6 +229,155 @@ class ObserverDB:
                 "DELETE FROM projects WHERE project_id = ?", (project_id,)
             )
         self.connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    def mark_finding_seen(self, finding_id: str) -> bool:
+        with self.connection:
+            cursor = self.connection.execute(
+                "UPDATE findings SET seen = 1 WHERE finding_id = ?",
+                (finding_id,),
+            )
+        return bool(cursor.rowcount)
+
+    def exclude_session(self, provider: str, session_id: str, reason: str) -> None:
+        """Persistently keep an analyzer session out of collection and projection."""
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO excluded_sessions(provider, session_id, reason, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(provider, session_id) DO UPDATE SET reason = excluded.reason
+                """,
+                (provider, session_id, reason, time.time()),
+            )
+            self.connection.execute(
+                "DELETE FROM findings WHERE provider = ? AND session_id = ?",
+                (provider, session_id),
+            )
+            self.connection.execute(
+                "DELETE FROM sources WHERE provider = ? AND session_id = ?",
+                (provider, session_id),
+            )
+
+    def include_session(self, provider: str, session_id: str) -> bool:
+        with self.connection:
+            cursor = self.connection.execute(
+                "DELETE FROM excluded_sessions WHERE provider = ? AND session_id = ?",
+                (provider, session_id),
+            )
+        return bool(cursor.rowcount)
+
+    def session_is_excluded(self, provider: str, session_id: str) -> bool:
+        row = self.connection.execute(
+            """
+            SELECT 1 FROM excluded_sessions
+            WHERE provider = ? AND session_id = ?
+            """,
+            (provider, session_id),
+        ).fetchone()
+        return row is not None
+
+    def create_review_job(
+        self,
+        *,
+        job_id: str,
+        project_id: str,
+        analyzer_provider: str,
+        analyzer_model: str | None,
+        created_at: float,
+        packet_meta: dict[str, Any],
+    ) -> None:
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO review_jobs(
+                    job_id, project_id, analyzer_provider, analyzer_model,
+                    status, created_at, packet_meta_json
+                ) VALUES (?, ?, ?, ?, 'prepared', ?, ?)
+                """,
+                (
+                    job_id,
+                    project_id,
+                    analyzer_provider,
+                    analyzer_model,
+                    created_at,
+                    json.dumps(packet_meta, separators=(",", ":"), sort_keys=True),
+                ),
+            )
+
+    def review_job(self, job_id: str) -> dict[str, Any]:
+        row = self.connection.execute(
+            "SELECT * FROM review_jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        if not row:
+            raise KeyError(f"review job not found: {job_id}")
+        return dict(row)
+
+    def expire_prepared_reviews(self, cutoff: float) -> int:
+        with self.connection:
+            cursor = self.connection.execute(
+                """
+                UPDATE review_jobs SET status = 'expired', error = 'review packet expired'
+                WHERE status = 'prepared' AND created_at < ?
+                """,
+                (cutoff,),
+            )
+        return int(cursor.rowcount)
+
+    def submit_review_job(
+        self,
+        job_id: str,
+        *,
+        submitted_at: float,
+        summary: str,
+        items: list[dict[str, Any]],
+        limitations: list[str],
+    ) -> None:
+        with self.connection:
+            cursor = self.connection.execute(
+                """
+                UPDATE review_jobs SET
+                    status = 'current', submitted_at = ?, summary = ?,
+                    items_json = ?, limitations_json = ?, error = NULL
+                WHERE job_id = ? AND status = 'prepared'
+                """,
+                (
+                    submitted_at,
+                    summary,
+                    json.dumps(items, separators=(",", ":"), sort_keys=True),
+                    json.dumps(limitations, separators=(",", ":"), sort_keys=True),
+                    job_id,
+                ),
+            )
+        if not cursor.rowcount:
+            raise ValueError("review job is not awaiting a submission")
+
+    def latest_reviews(self) -> dict[str, dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT job.* FROM review_jobs AS job
+            JOIN (
+                SELECT project_id, MAX(created_at) AS newest
+                FROM review_jobs
+                WHERE status = 'current'
+                GROUP BY project_id
+            ) AS latest
+              ON latest.project_id = job.project_id
+             AND latest.newest = job.created_at
+            WHERE job.status = 'current'
+            ORDER BY job.project_id, job.job_id DESC
+            """
+        ).fetchall()
+        reviews: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            project_id = str(row["project_id"])
+            if project_id in reviews:
+                continue
+            review = dict(row)
+            review["packet_meta"] = json.loads(review.pop("packet_meta_json"))
+            review["items"] = json.loads(review.pop("items_json"))
+            review["limitations"] = json.loads(review.pop("limitations_json"))
+            reviews[project_id] = review
+        return reviews
 
     def source(self, source_id: str) -> dict[str, Any] | None:
         row = self.connection.execute(
@@ -649,6 +824,7 @@ class ObserverDB:
 
     def status(self, now: float | None = None) -> dict[str, Any]:
         now = now or time.time()
+        reviews = self.latest_reviews()
         projects: list[dict[str, Any]] = []
         for project in self.projects():
             sessions = [
@@ -704,6 +880,7 @@ class ObserverDB:
                     "findings": findings,
                     "sources": sources,
                     "changes": changes,
+                    "review": reviews.get(str(project["project_id"])),
                 }
             )
         return {"generated_at": now, "projects": projects}

@@ -1,0 +1,371 @@
+{
+  "schema_version": "agent-observer-dashboard-v1",
+  "generated_at": 1785816000.0,
+  "view_counts": {
+    "needs_a_look": 2,
+    "review_suggested": 2,
+    "recently_active": 1,
+    "quiet": 2,
+    "stale": 1,
+    "observer_issues": 2
+  },
+  "services": {
+    "server": { "running": true, "pid": 31001, "port": 54321 },
+    "daemon": {
+      "running": true,
+      "pid": 31002,
+      "heartbeat_at": 1785815999.0,
+      "last_scan": { "sources_checked": 7, "sources_changed": 2 },
+      "error": null
+    }
+  },
+  "projects": [
+    {
+      "project_id": "project_ops",
+      "display_path": "~/code/ops",
+      "resolved_path": "/Users/operator/code/ops",
+      "current_branch": "feature/policy",
+      "sessions": [
+        {
+          "provider": "claude",
+          "session_id": "claude-ops-01",
+          "title": "Policy migration",
+          "activity_age_seconds": 74,
+          "last_kind": "assistant_message",
+          "last_turn_state": "completed"
+        }
+      ],
+      "sources": [
+        {
+          "source_id": "claude:claude-ops-01",
+          "provider": "claude",
+          "session_id": "claude-ops-01",
+          "health": "healthy",
+          "health_detail": null,
+          "generation": 1,
+          "committed_offset": 24010
+        }
+      ],
+      "findings": [
+        {
+          "finding_id": "decision:claude:claude-ops-01:1",
+          "provider": "claude",
+          "session_id": "claude-ops-01",
+          "kind": "decision_requested",
+          "state": "current",
+          "seen": false,
+          "updated_at": 1785815926.0,
+          "summary": "Choose strict rejection or compatibility warnings for legacy policy files.",
+          "details": { "evidence_excerpt": "Which migration behavior should I implement?" }
+        }
+      ],
+      "changes": [],
+      "primary_finding": {
+        "finding_id": "decision:claude:claude-ops-01:1",
+        "provider": "claude",
+        "session_id": "claude-ops-01",
+        "kind": "decision_requested",
+        "state": "current",
+        "seen": false,
+        "updated_at": 1785815926.0,
+        "summary": "Choose strict rejection or compatibility warnings for legacy policy files.",
+        "details": { "evidence_excerpt": "Which migration behavior should I implement?" }
+      },
+      "review": null,
+      "facets": {
+        "attention": "decision_requested",
+        "activity": "recent",
+        "activity_age_seconds": 74,
+        "health": "healthy",
+        "continuity": "not_analyzed",
+        "prominent_review_items": 0
+      },
+      "views": ["needs_a_look"]
+    },
+    {
+      "project_id": "project_lifeproj",
+      "display_path": "~/personal/lifeproj",
+      "resolved_path": "/Users/operator/personal/lifeproj",
+      "current_branch": "main",
+      "sessions": [
+        {
+          "provider": "codex",
+          "session_id": "codex-life-07",
+          "title": "Teka scheduling",
+          "activity_age_seconds": 820,
+          "last_kind": "user_message",
+          "last_turn_state": "completed"
+        }
+      ],
+      "sources": [
+        {
+          "source_id": "codex:codex-life-07",
+          "provider": "codex",
+          "session_id": "codex-life-07",
+          "health": "healthy",
+          "health_detail": null,
+          "generation": 1,
+          "committed_offset": 78002
+        }
+      ],
+      "findings": [],
+      "changes": [],
+      "primary_finding": null,
+      "review": {
+        "job_id": "review_life",
+        "analyzer_provider": "claude",
+        "analyzer_model": null,
+        "status": "current",
+        "created_at": 1785815100.0,
+        "submitted_at": 1785815120.0,
+        "summary": "An earlier rollout recommendation may have been left behind.",
+        "items": [
+          {
+            "type": "recommendation",
+            "assessment": "no_later_handling_observed",
+            "title": "Pilot reminders with one teka",
+            "detail": "The later supplied messages move to naming without revisiting the pilot.",
+            "provider": "codex",
+            "session_id": "codex-life-07",
+            "message_ref": "codex-v1:life:22",
+            "evidence_excerpt": "Pilot this with one teka for a week",
+            "timestamp": "2026-08-03T15:40:00Z"
+          }
+        ],
+        "limitations": ["Only 40 visible messages from one session were reviewed."],
+        "target_session": {
+          "provider": "codex",
+          "session_id": "codex-life-07",
+          "source_id": "codex:codex-life-07"
+        },
+        "coverage": { "message_count": 40, "message_limit": 40, "gaps": [] }
+      },
+      "facets": {
+        "attention": "none",
+        "activity": "quiet",
+        "activity_age_seconds": 820,
+        "health": "healthy",
+        "continuity": "current",
+        "prominent_review_items": 1
+      },
+      "views": ["review_suggested", "quiet"]
+    },
+    {
+      "project_id": "project_compiler",
+      "display_path": "~/code/compiler",
+      "resolved_path": "/Users/operator/code/compiler",
+      "current_branch": "parser-errors",
+      "sessions": [
+        {
+          "provider": "codex",
+          "session_id": "codex-compiler-03",
+          "title": "Parser diagnostics",
+          "activity_age_seconds": 18,
+          "last_kind": "assistant_message",
+          "last_turn_state": "active"
+        }
+      ],
+      "sources": [
+        {
+          "source_id": "codex:codex-compiler-03",
+          "provider": "codex",
+          "session_id": "codex-compiler-03",
+          "health": "healthy",
+          "health_detail": null,
+          "generation": 1,
+          "committed_offset": 188221
+        }
+      ],
+      "findings": [],
+      "changes": [],
+      "primary_finding": null,
+      "review": null,
+      "facets": {
+        "attention": "none",
+        "activity": "recent",
+        "activity_age_seconds": 18,
+        "health": "healthy",
+        "continuity": "not_analyzed",
+        "prominent_review_items": 0
+      },
+      "views": ["recently_active"]
+    },
+    {
+      "project_id": "project_deploy",
+      "display_path": "~/code/deploy",
+      "resolved_path": "/Users/operator/code/deploy",
+      "current_branch": "main",
+      "sessions": [
+        {
+          "provider": "claude",
+          "session_id": "claude-deploy-04",
+          "title": "Release automation",
+          "activity_age_seconds": 1460,
+          "last_kind": "assistant_message",
+          "last_turn_state": "completed"
+        }
+      ],
+      "sources": [
+        {
+          "source_id": "claude:claude-deploy-04",
+          "provider": "claude",
+          "session_id": "claude-deploy-04",
+          "health": "unavailable",
+          "health_detail": "provider source disappeared after restart",
+          "generation": 1,
+          "committed_offset": 91220
+        }
+      ],
+      "findings": [],
+      "changes": [],
+      "primary_finding": null,
+      "review": null,
+      "facets": {
+        "attention": "none",
+        "activity": "quiet",
+        "activity_age_seconds": 1460,
+        "health": "unavailable",
+        "continuity": "not_analyzed",
+        "prominent_review_items": 0
+      },
+      "views": ["quiet", "observer_issues"]
+    },
+    {
+      "project_id": "project_docs",
+      "display_path": "~/writing/platform-docs",
+      "resolved_path": "/Users/operator/writing/platform-docs",
+      "current_branch": "api-reference",
+      "sessions": [
+        {
+          "provider": "claude",
+          "session_id": "claude-docs-02",
+          "title": "API reference",
+          "activity_age_seconds": 116000,
+          "last_kind": "assistant_message",
+          "last_turn_state": "completed"
+        }
+      ],
+      "sources": [
+        {
+          "source_id": "claude:claude-docs-02",
+          "provider": "claude",
+          "session_id": "claude-docs-02",
+          "health": "healthy",
+          "health_detail": null,
+          "generation": 1,
+          "committed_offset": 45012
+        }
+      ],
+      "findings": [],
+      "changes": [
+        {
+          "kind": "git_branch_changed",
+          "old_value": "main",
+          "new_value": "api-reference",
+          "observed_at": 1785700000.0
+        }
+      ],
+      "primary_finding": null,
+      "review": null,
+      "facets": {
+        "attention": "none",
+        "activity": "stale",
+        "activity_age_seconds": 116000,
+        "health": "healthy",
+        "continuity": "not_analyzed",
+        "prominent_review_items": 0
+      },
+      "views": ["stale"]
+    },
+    {
+      "project_id": "project_observer",
+      "display_path": "~/personal/skills",
+      "resolved_path": "/Users/operator/personal/skills",
+      "current_branch": "main",
+      "sessions": [
+        {
+          "provider": "codex",
+          "session_id": "codex-skills-worker-09",
+          "title": "Observer dashboard",
+          "activity_age_seconds": 205,
+          "last_kind": "assistant_message",
+          "last_turn_state": "completed"
+        }
+      ],
+      "sources": [
+        {
+          "source_id": "codex:codex-skills-worker-09",
+          "provider": "codex",
+          "session_id": "codex-skills-worker-09",
+          "health": "degraded",
+          "health_detail": "one unknown provider record shape",
+          "generation": 2,
+          "committed_offset": 301102
+        }
+      ],
+      "findings": [
+        {
+          "finding_id": "complete:codex:codex-skills-worker-09:8",
+          "provider": "codex",
+          "session_id": "codex-skills-worker-09",
+          "kind": "turn_completed",
+          "state": "current",
+          "seen": false,
+          "updated_at": 1785815795.0,
+          "summary": "The worker completed its turn.",
+          "details": { "evidence_excerpt": "Implementation and tests are complete." }
+        }
+      ],
+      "changes": [],
+      "primary_finding": {
+        "finding_id": "complete:codex:codex-skills-worker-09:8",
+        "provider": "codex",
+        "session_id": "codex-skills-worker-09",
+        "kind": "turn_completed",
+        "state": "current",
+        "seen": false,
+        "updated_at": 1785815795.0,
+        "summary": "The worker completed its turn.",
+        "details": { "evidence_excerpt": "Implementation and tests are complete." }
+      },
+      "review": {
+        "job_id": "review_observer",
+        "analyzer_provider": "claude",
+        "analyzer_model": null,
+        "status": "stale",
+        "created_at": 1785815400.0,
+        "submitted_at": 1785815420.0,
+        "summary": "One earlier replay suggestion may still be useful.",
+        "items": [
+          {
+            "type": "recommendation",
+            "assessment": "partially_handled",
+            "title": "Add a bounded conversation replay",
+            "detail": "The UI links evidence but does not yet show the surrounding slice.",
+            "provider": "codex",
+            "session_id": "codex-skills-worker-09",
+            "message_ref": "codex-v1:skills:44",
+            "evidence_excerpt": "being able to replay that convo",
+            "timestamp": "2026-08-03T16:00:00Z"
+          }
+        ],
+        "limitations": ["New source bytes arrived after this review."],
+        "target_session": {
+          "provider": "codex",
+          "session_id": "codex-skills-worker-09",
+          "source_id": "codex:codex-skills-worker-09"
+        },
+        "coverage": { "message_count": 40, "message_limit": 40, "gaps": [] }
+      },
+      "facets": {
+        "attention": "turn_completed",
+        "activity": "recent",
+        "activity_age_seconds": 205,
+        "health": "degraded",
+        "continuity": "stale",
+        "prominent_review_items": 1
+      },
+      "views": ["needs_a_look", "review_suggested", "observer_issues"]
+    }
+  ]
+}

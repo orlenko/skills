@@ -98,6 +98,8 @@ class Observer:
         )
         added = 0
         for candidate in candidates:
+            if self.db.session_is_excluded(candidate.provider, candidate.session_id):
+                continue
             prior = self.db.source(candidate.source_id)
             source, created = self.db.register_source(
                 source_id=candidate.source_id,

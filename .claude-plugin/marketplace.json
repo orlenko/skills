@@ -31,6 +31,19 @@
       },
       "category": "productivity",
       "tags": ["design", "architecture", "skeptic", "agents"]
+    },
+    {
+      "name": "agent-observer",
+      "displayName": "Agent Observer",
+      "source": "./plugins/agent-observer",
+      "description": "A passive local dashboard and evidence-linked review loop for Claude and Codex sessions.",
+      "version": "0.2.0",
+      "author": {
+        "name": "Vlad Orlenko",
+        "url": "https://github.com/orlenko"
+      },
+      "category": "productivity",
+      "tags": ["agents", "observer", "dashboard", "codex", "claude"]
     }
   ]
 }

@@ -4,10 +4,9 @@ An installable library of skills and plugins shared by Codex and Claude Code.
 
 ## Agent Observer
 
-`agent-observer` is the early implementation of the passive, single-machine
-agent dashboard described in
+`agent-observer` is a passive, single-machine agent dashboard described in
 [`docs/agent-observer-v0-spec.md`](docs/agent-observer-v0-spec.md). The current
-Milestone A vertical slice provides:
+vertical slice provides:
 
 - an explicit project watchlist;
 - bounded Claude and Codex session discovery;
@@ -16,21 +15,61 @@ Milestone A vertical slice provides:
 - durable SQLite byte checkpoints and partial-record recovery;
 - source replacement/truncation generations;
 - read-only Git branch sampling;
-- collector health and a local CLI status surface.
+- collector health and a local CLI status surface;
+- a private authenticated localhost dashboard;
+- managed collection and server sidecars;
+- an opt-in review loop performed by the Claude or Codex session that invokes
+  the skill, with exact evidence validation before dashboard publication.
 
-It does not yet install a LaunchAgent, use filesystem notifications, serve the
-web dashboard, or run semantic continuity analysis. The `run` command performs
-narrow polling of already tracked sources and does not rescan provider trees.
-Explicit `add` and `rescan` operations may take several seconds when provider
-history contains thousands of session files; indexed discovery is follow-up
-work, while steady-state scans remain proportional to watched sources.
+The current **interactive D0 model review** is intentionally narrower than the
+isolated analyzer architecture in the full spec: it uses a dedicated active
+Claude or Codex session, selects one worker session and at most 40 visible
+messages, returns at most three suggestions, and discloses its shared context.
+The invoking analyzer session is persistently excluded from collection when its
+provider exposes the session ID. LaunchAgent installation, filesystem
+notifications, candidate-project indexing, deep conversation replay, and the
+productized isolated semantic ledger remain follow-up work. Explicit `add` and
+`rescan` operations may take several seconds with thousands of provider files;
+steady-state scans remain proportional to watched sources.
+
+### Install and invoke
+
+Use the same marketplace already used for Agent Pair.
+
+Claude Code:
+
+```sh
+claude plugin marketplace add orlenko/skills
+claude plugin install agent-observer@orlenko-skills
+```
+
+Codex:
+
+```sh
+codex plugin marketplace add orlenko/skills
+codex plugin add agent-observer@orlenko-skills
+```
+
+Start a fresh session, enter a project, and invoke:
+
+```text
+Codex: $agent-observer:observe
+Claude: /agent-observer:observe
+```
+
+From a fresh, dedicated Observer session, the command starts the sync daemon and
+dashboard, watches the current project, reviews one worker's bounded
+visible-message packet, validates the cited evidence, and publishes the review
+to the dashboard. Use `status`, `dashboard`, `add PATH`, `rescan PATH`, or
+`stop` as arguments for narrower operations.
 
 Run directly from a checkout:
 
 ```sh
-agent-observer/bin/agent-observer add ~/code/ops2
-agent-observer/bin/agent-observer status
-agent-observer/bin/agent-observer run
+plugins/agent-observer/bin/agent-observer --json start ~/code/ops2 --provider codex
+plugins/agent-observer/bin/agent-observer status
+plugins/agent-observer/bin/agent-observer services
+plugins/agent-observer/bin/agent-observer down
 ```
 
 State defaults to `~/.local/state/agent-observer`. Use
@@ -42,9 +81,12 @@ is mode `0600`.
 For an editable installation:
 
 ```sh
-python3 -m pip install -e agent-observer
+python3 -m pip install -e plugins/agent-observer
 agent-observer --help
 ```
+
+The UI design contract for specialized design tools is
+[`docs/agent-observer-ui-handoff.md`](docs/agent-observer-ui-handoff.md).
 
 ## Agent Pair
 
@@ -161,18 +203,28 @@ plugins/agent-pair/
   .claude-plugin/plugin.json
   skills/pair/SKILL.md
   bin/agent-pair
+plugins/agent-observer/
+  .codex-plugin/plugin.json
+  .claude-plugin/plugin.json
+  skills/observe/SKILL.md
+  bin/agent-observer
 ```
 
 ## Development
 
 ```sh
-python3 -m unittest discover -s agent-observer/tests -v
+python3 -m unittest discover -s plugins/agent-observer/tests -v
 python3 -m unittest discover -s plugins/agent-pair/tests -v
 python3 path/to/skill-creator/scripts/quick_validate.py \
   plugins/agent-pair/skills/pair
+python3 path/to/skill-creator/scripts/quick_validate.py \
+  plugins/agent-observer/skills/observe
 python3 path/to/plugin-creator/scripts/validate_plugin.py \
   plugins/agent-pair
+python3 path/to/plugin-creator/scripts/validate_plugin.py \
+  plugins/agent-observer
 claude plugin validate plugins/agent-pair
+claude plugin validate plugins/agent-observer
 ```
 
 The validator script locations depend on the local Codex installation; replace

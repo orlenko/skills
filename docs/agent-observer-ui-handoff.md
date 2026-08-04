@@ -1,0 +1,575 @@
+# Agent Observer UI design handoff
+
+Status: Design brief for specialized UI tools
+
+Implementation reference: `plugins/agent-observer/agent_observer/web_assets/`
+
+Product context: `PRODUCT.md`
+
+Behavioral authority: `docs/agent-observer-v0-spec.md`
+
+Canonical six-project design fixture:
+`docs/fixtures/agent-observer-dashboard-v1.json`
+
+## 0. Assignment for the design specialist
+
+Design the next Agent Observer web interface from the product and data
+constraints in this brief. Treat the current HTML/CSS/JS as a functional
+prototype whose visual system and layout may be replaced. Do not erase working
+states or invent backend capabilities.
+
+Your review should answer three questions before proposing screens:
+
+1. What is the smallest calm overview that lets one operator triage five to ten
+   projects in under five seconds?
+2. How should source-backed facts, derived state, model suggestions, local user
+   state, and uncertainty differ at both glance and evidence-detail levels?
+3. How should conversation replay and review launch reveal enough context to
+   recover abandoned work without turning the product into another chat inbox?
+
+Use `PRODUCT.md` for product character, this document for UX and data behavior,
+the six-project fixture for realistic overlapping states, and
+`plugins/agent-observer/agent_observer/web_assets/` only to understand the
+currently implemented interactions. Start with an information-architecture and
+cognitive-load critique, then deliver the artifacts listed in section 11. Mark
+every proposed control as **implemented**, **backend next**, or **concept** so
+the design can be handed back to an engineer without ambiguity.
+
+## 1. What the product is
+
+Agent Observer is a private, single-user control surface for someone supervising
+roughly five to ten Claude and Codex coding sessions. Worker agents do not know
+they are being observed. A local daemon reads their provider-owned session logs,
+projects source-backed facts into private SQLite state, and serves a loopback-only
+dashboard.
+
+The dashboard is not a replacement chat client. Its job is to answer:
+
+1. Which original worker session needs the operator now?
+2. What exact evidence supports that conclusion?
+3. Is the claim an observed fact, a local state, or a model suggestion?
+4. Is collection or analysis stale, incomplete, or unhealthy?
+5. What useful proposal, question, or requested action may have been left behind
+   after the conversation moved on?
+
+The current HTML is a working rough draft. Its styling and layout are disposable.
+Preserve the behavior, data distinctions, security boundary, and progressive
+disclosure requirements described here.
+
+## 2. Primary user and moments
+
+The sole user is a technical operator working in several terminals on one
+machine. They understand branches, session IDs, logs, Claude, and Codex. They do
+not want to reconstruct every conversation before deciding where to look.
+
+Primary moments:
+
+- **Glance:** Which project needs attention across all current work?
+- **Triage:** Is this an explicit decision, a completed turn, a possible loose
+  end, or an observer problem?
+- **Inspect:** Show the exact visible exchange and the analysis cutoff.
+- **Return:** Copy the project path or session ID, then switch to the original
+  terminal session.
+- **Recover:** After a restart, see persisted work, stale services, and unseen
+  findings without pretending the observer watched while offline.
+- **Enroll:** Add a recent project from discovered session candidates, with an
+  explicit path fallback.
+
+## 3. Product principles the design must encode
+
+### 3.1 Attention before activity
+
+A project that produced many tokens is not necessarily important. Source-backed
+decision requests and unseen completion or abort findings outrank raw recency.
+Model-suggested loose ends are useful but visually subordinate.
+
+### 3.2 Independent facets
+
+Do not collapse a project into one status color. Each project has independent:
+
+| Facet | Values |
+| --- | --- |
+| Attention | none, decision requested, turn completed, turn aborted, no completion observed |
+| Activity | recent, quiet, stale, unknown |
+| Health | healthy, degraded, unavailable |
+| Continuity | not analyzed, prepared, current, stale, incomplete, failed, disagreement |
+| Changes | branch, title, focus, or source changes with timestamps |
+
+A project may have an unseen decision and a degraded collector simultaneously.
+Both must remain visible.
+
+### 3.3 Truth classes at the claim
+
+Every prominent claim needs a local label or treatment that distinguishes:
+
+- **Observed:** deterministic source-backed fact, such as a structured Claude
+  question or Codex task completion.
+- **Derived:** deterministic projection, such as activity age or aggregated
+  health.
+- **Model review:** bounded semantic assessment produced by the explicitly
+  invoked Claude or Codex session.
+- **Local state:** seen, snoozed, dismissed, or handled elsewhere inside
+  Observer only.
+- **Unknown:** evidence or observer health is insufficient.
+
+Do not rely on color alone. Never present model review with the same weight or
+language as observed attention.
+
+### 3.4 Evidence stays close
+
+The operator should be able to move from a claim to its source excerpt, session,
+provider, timestamp, stable message reference, and cutoff without searching a
+log. Generated paraphrase and exact quoted evidence must look distinct.
+
+### 3.5 Progressive disclosure
+
+The first screen should remain calm with ten projects. Reveal sessions, findings,
+changes, observer diagnostics, analysis limits, and conversation slices as the
+operator drills in. Do not solve density with nested cards or a wall of badges.
+
+## 4. Information architecture
+
+The primary view is one project list with overlapping filters:
+
+1. **Needs a look:** unseen source-backed findings.
+2. **Review suggested:** prominent unsuppressed model-review items.
+3. **Recently active:** recent evidence without unseen factual attention.
+4. **Quiet.**
+5. **Stale.**
+6. **Observer issues:** degraded or unavailable collection.
+7. **All projects.**
+
+These are views, not mutually exclusive buckets. Counts should communicate that
+overlap rather than imply a total partition.
+
+Recommended hierarchy inside a project row:
+
+1. Project identity: display path, branch, provider presence.
+2. Highest-priority factual attention, if present.
+3. Exact age of the newest meaningful observation.
+4. Observer issue indicator, independent of attention.
+5. Model-review summary only when it has a prominent item, is running, or failed.
+6. Expansion affordance for sessions, evidence, changes, and analysis detail.
+
+## 5. Current HTTP and security contract
+
+The server binds to `127.0.0.1` on an ephemeral port. The CLI returns a URL with
+a five-minute, single-use bootstrap nonce. The server consumes it, sets an
+HttpOnly SameSite=Strict cookie containing the persistent local secret, and
+redirects to a clean URL. The persistent secret is never returned to the AI
+session or included in the URL.
+
+All API calls are same-origin. Mutations require:
+
+```http
+Origin: http://127.0.0.1:PORT
+X-Agent-Observer: 1
+Content-Type: application/json
+```
+
+No CORS is enabled. The UI must not add remote scripts, fonts, analytics, images,
+or network requests. Provider-controlled strings must enter the DOM through safe
+text operations, never HTML interpretation.
+
+### Endpoints implemented now
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/status` | Dashboard projection plus service health |
+| GET | `/api/services` | Server and sync-daemon process state |
+| POST | `/api/projects` | Add a project by `{ "path": "..." }` |
+| POST | `/api/rescan` | Rediscover sources by `{ "project": "project_id" }` |
+| POST | `/api/findings/seen` | Mark local seen state by `{ "finding_id": "..." }` |
+
+The server returns `Cache-Control: no-store`, a restrictive Content Security
+Policy, frame denial, MIME sniffing denial, and no-referrer behavior.
+
+### Shipped boundary versus design target
+
+The rough UI and the five endpoints above are implemented. The candidate
+dropdown, evidence-slice endpoint, review-launch UI, prepared-job display,
+snooze/dismiss actions, and reboot-time process supervision are design targets,
+not current backend promises. `up` idempotently starts the two requested
+sidecars, but no LaunchAgent is installed yet; after a machine reboot, invoking
+the skill or `agent-observer up` restores them and reconciles persisted state.
+Use the canonical fixture above for design work that needs states the current
+backend cannot yet synthesize in one live database.
+
+## 6. Dashboard response contract
+
+`GET /api/status` returns:
+
+```json
+{
+  "schema_version": "agent-observer-dashboard-v1",
+  "generated_at": 1785816000.0,
+  "view_counts": {
+    "needs_a_look": 2,
+    "review_suggested": 1,
+    "recently_active": 3,
+    "quiet": 1,
+    "stale": 2,
+    "observer_issues": 1
+  },
+  "projects": [],
+  "services": {
+    "server": { "running": true, "pid": 123, "port": 54321 },
+    "daemon": {
+      "running": true,
+      "pid": 124,
+      "heartbeat_at": 1785815999.0,
+      "last_scan": { "sources_checked": 5, "sources_changed": 1 },
+      "error": null
+    }
+  }
+}
+```
+
+### Project object
+
+Important fields:
+
+```json
+{
+  "project_id": "project_...",
+  "display_path": "~/code/ops2",
+  "resolved_path": "/Users/name/code/ops2",
+  "worktree_root": "/Users/name/code/ops2",
+  "current_branch": "feature/observer",
+  "branch_sampled_at": 1785815998.0,
+  "sessions": [],
+  "findings": [],
+  "sources": [],
+  "changes": [],
+  "review": null,
+  "facets": {
+    "attention": "decision_requested",
+    "activity": "recent",
+    "activity_age_seconds": 42.4,
+    "health": "healthy",
+    "continuity": "current",
+    "prominent_review_items": 2
+  },
+  "primary_finding": {},
+  "views": ["needs_a_look", "observer_issues"]
+}
+```
+
+Use `display_path` as the primary label and `resolved_path` for copy or technical
+detail. Ages should be derived from numeric seconds and refresh naturally. Do
+not substitute vague labels for the exact age everywhere.
+
+### Session object
+
+```json
+{
+  "provider": "claude",
+  "session_id": "provider-scoped-id",
+  "title": "optional title",
+  "current_cwd": "/absolute/path",
+  "last_activity_at": 1785815900.0,
+  "activity_age_seconds": 100.0,
+  "last_kind": "assistant_message",
+  "last_message_role": "assistant",
+  "last_message_excerpt": "bounded provider-controlled text",
+  "last_turn_state": "completed",
+  "awaiting_completion": 0
+}
+```
+
+Multiple Claude and Codex sessions may belong to one project. Provider and
+session ID together are identity. A title is mutable display metadata.
+
+### Factual finding object
+
+```json
+{
+  "finding_id": "decision:claude:session:call",
+  "provider": "claude",
+  "session_id": "...",
+  "kind": "decision_requested",
+  "state": "open",
+  "seen": 0,
+  "created_at": 1785815800.0,
+  "updated_at": 1785815800.0,
+  "summary": "Choose the database",
+  "details": {
+    "items": {
+      "0": {
+        "question": "Choose the database",
+        "options": [{ "label": "SQLite", "description": "Local" }],
+        "state": "open"
+      }
+    }
+  }
+}
+```
+
+Structured requests can contain multiple independently resolved items. The UI
+must not mark the whole request resolved because one child was answered.
+
+### Source health object
+
+Source fields include provider, session ID, path, generation, committed offset,
+current project binding, monitoring flag, health, health detail, malformed count,
+unknown count, last observation time, and last reconciliation time.
+
+Health detail is diagnostic text. Keep it available in an observer-issues view,
+but do not make normal cards read like logs.
+
+### Change object
+
+```json
+{
+  "kind": "git_branch_changed",
+  "old_value": "main",
+  "new_value": "feature/observer",
+  "observed_at": 1785815700.0
+}
+```
+
+A Git change is observed by the coordinator. Do not attribute it to a particular
+agent unless provider evidence explicitly supports that claim.
+
+### Interactive review object
+
+```json
+{
+  "job_id": "review_...",
+  "analyzer_provider": "codex",
+  "analyzer_model": null,
+  "status": "current",
+  "created_at": 1785815600.0,
+  "submitted_at": 1785815610.0,
+  "summary": "Two earlier requests may still need handling.",
+  "items": [
+    {
+      "type": "decision",
+      "assessment": "no_later_handling_observed",
+      "title": "Choose the database",
+      "detail": "Later supplied messages did not make the choice.",
+      "provider": "codex",
+      "session_id": "...",
+      "message_ref": "codex-v1:...",
+      "evidence_excerpt": "Choose SQLite or Postgres",
+      "timestamp": "2026-08-03T10:00:01Z"
+    }
+  ],
+  "limitations": ["Only the bounded visible-message packet was reviewed."],
+  "target_session": {
+    "provider": "codex",
+    "session_id": "...",
+    "source_id": "codex:..."
+  },
+  "coverage": {
+    "message_count": 40,
+    "message_limit": 40,
+    "tail_bytes_for_target_source": 4194304,
+    "gaps": [],
+    "source_checkpoints": []
+  }
+}
+```
+
+The active Claude or Codex session produced this object after an explicit skill
+invocation. This is an interactive D0 review, not a clean isolated analyzer. It
+selects exactly one worker session, includes at most 40 visible messages, and
+accepts at most three result items. The UI must disclose the provider, optional
+model, interactive-session mode, target session, bounded range, gaps, and
+staleness. When the provider exposes its current session ID, Observer
+persistently excludes that analyzer session from collection; use a dedicated
+Observer session. New source bytes make the display status stale without
+erasing the older assessment. Any coverage gap blocks negative assessments and
+requires `indeterminate` wording.
+
+Prominent assessments are:
+
+- `no_later_handling_observed`
+- `partially_handled`
+- `deferred_by_commitment`
+
+Other assessments remain inspectable but should not create a prominent reminder.
+
+## 7. Interaction requirements
+
+### 7.1 Project enrollment
+
+The desired control is a searchable dropdown of recent candidate projects plus
+an explicit path option. Each candidate should eventually show:
+
+- display path;
+- provider presence;
+- newest known activity;
+- whether it is already watched;
+- validated worktree identity or an ambiguity warning.
+
+The backend currently implements path entry only. Candidate discovery needs a
+future `GET /api/candidates` contract. Design both the ideal dropdown and its
+loading, empty, ambiguous-path, missing-path, and already-watched states. Keep a
+manual path fallback.
+
+Adding may take several seconds when provider history is large. Show determinate
+steps when known, otherwise calm progress copy. Do not imply observation began
+until the bounded baseline commits.
+
+### 7.2 Project expansion
+
+Expansion should reveal:
+
+- all known sessions in the 30-day, 20-session discovery window;
+- unseen and seen factual findings;
+- recent supported changes;
+- source health per provider;
+- latest model-review groups and limits;
+- why each current facet was selected.
+
+Preserve the user's expanded projects while polling. New data should not collapse
+or reorder content under the pointer without a strong reason.
+
+### 7.3 Local actions
+
+Implemented now:
+
+- mark a factual finding seen;
+- rescan a project;
+- add a project.
+
+Specified next:
+
+- snooze;
+- dismiss;
+- mark handled elsewhere;
+- still relevant;
+- remove project;
+- copy project path;
+- copy session ID;
+- launch a review after provider and disclosure confirmation.
+
+These actions update Observer-owned state only. Never phrase them as messages to
+the worker or changes to transcript truth.
+
+### 7.4 Visible conversation
+
+Design a read-only evidence slice reached from factual and model-review claims.
+It should contain exact user and assistant text in source order, roles,
+timestamps, stable message keys, origin and later-evidence highlights, analysis
+start and cutoff, binding boundary, and known gaps.
+
+Persistent disclosure:
+
+> This view excludes reasoning, tool requests and results, attachments, system
+> instructions, child-agent content, and compaction summaries. It is not the
+> worker's full effective context.
+
+Generated paraphrase must never appear inside exact transcript typography.
+Collapsed available context, unavailable evidence, and content outside the
+analyzed range require different treatments.
+
+The backend does not expose this endpoint yet. The design should propose a data
+shape, but it must use stable `message_ref` identity rather than array positions.
+
+### 7.5 Review launch
+
+Before a semantic review, show:
+
+- selected source session and binding segment;
+- source provider to analyzer provider route;
+- analyzer model when known;
+- message range and byte count;
+- included and excluded categories;
+- known gaps;
+- warning that the current interactive analyzer is a capability-bearing session,
+  shares its context, and may create provider-retained traces or project changes;
+- confirmation that a dedicated Observer session is excluded from collection.
+
+Review is opt-in. Do not automatically pick another provider based on quota or
+tokens. In the current workflow the operator invokes the same skill from whichever
+provider they choose.
+
+## 8. Required states
+
+Every major screen or control needs explicit design for:
+
+- initial loading;
+- no watched projects;
+- watched project with no discovered sessions;
+- no unseen findings;
+- factual attention plus model review on the same source;
+- source unavailable;
+- malformed or unknown provider schema;
+- daemon heartbeat stale while server remains available;
+- server restored after restart with cached data awaiting reconciliation;
+- review prepared but not submitted;
+- current review;
+- stale review after new messages;
+- incomplete review with evidence gaps;
+- rejected review citation;
+- long paths, titles, summaries, and evidence excerpts;
+- more than ten projects and twenty sessions in one project;
+- mutation failure without optimistic-state corruption.
+
+Do not use a generic toast as the only representation of a durable failure.
+
+## 9. Responsive and accessibility requirements
+
+- Meet WCAG 2.2 AA contrast and interaction requirements.
+- Support keyboard navigation for views, project expansion, enrollment, evidence,
+  and local actions.
+- Keep visible focus and meaningful accessible names.
+- Do not encode provider, truth class, health, or urgency with color alone.
+- Respect reduced motion. Motion may clarify state change only.
+- Remain usable at 200 percent browser zoom.
+- At narrow widths, preserve claim, project identity, and truth class before
+  secondary metadata.
+- Exact evidence must remain selectable and screen-reader legible.
+- Polling updates should not steal focus or cause repeated live-region speech.
+
+## 10. Visual direction
+
+The current rough draft uses a restrained warm-light palette and system type. It
+is intentionally plain. Specialized design tools may replace it.
+
+The desired feeling is calm, exact, quietly vigilant, and local. Avoid:
+
+- generic dark observability dashboards;
+- chat bubbles and agent avatars;
+- identical card grids;
+- metric theater;
+- decorative gradients or glow;
+- red alert styling for ordinary activity;
+- dense provider-log aesthetics;
+- model output presented as an oracle.
+
+Use familiar product affordances. This is a tool the operator leaves open beside
+terminals, not a landing page.
+
+## 11. What the specialized design pass should deliver
+
+1. Desktop and narrow-width primary dashboard layouts.
+2. A complete project expansion and evidence-slice design.
+3. Candidate project enrollment dropdown and all states.
+4. Review-launch disclosure and review-result states.
+5. Truth-class, activity, health, provider, and local-state visual vocabulary.
+6. Component and token specification suitable for dependency-free HTML/CSS/JS
+   or a future framework implementation.
+7. Keyboard and focus behavior.
+8. Loading, empty, stale, offline, malformed-data, and long-content examples.
+9. A mocked example using at least six projects with overlapping facets.
+10. A concise rationale explaining hierarchy, progressive disclosure, and how
+    the design prevents model suggestions from overpowering observed facts.
+
+## 12. Acceptance questions
+
+A design is ready for implementation only if the answer to each is yes:
+
+1. Can the operator find the most important source-backed item in under five
+   seconds?
+2. Can one project visibly be active, unhealthy, and review-suggested at once?
+3. Is every model claim recognizable without opening a legend?
+4. Can the operator reach exact evidence and its cutoff from the claim?
+5. Does one answered child question leave its unanswered siblings visible?
+6. Does stale or missing observer coverage block overconfident wording?
+7. Can the operator add a discovered project without typing its whole path?
+8. Can all core work be done by keyboard and at high zoom?
+9. Does polling preserve focus and expansion state?
+10. Is it unmistakable that actions affect Observer state, not worker sessions?

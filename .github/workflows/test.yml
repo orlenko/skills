@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  agent-pair:
+  plugins:
     strategy:
       fail-fast: false
       matrix:
@@ -29,7 +29,9 @@ jobs:
           python -m json.tool plugins/agent-pair/.claude-plugin/plugin.json >/dev/null
           python -m json.tool plugins/agent-pair/hooks/hooks.json >/dev/null
           python -m json.tool plugins/agent-pair/hooks/claude-hooks.json >/dev/null
+          python -m json.tool plugins/agent-observer/.codex-plugin/plugin.json >/dev/null
+          python -m json.tool plugins/agent-observer/.claude-plugin/plugin.json >/dev/null
       - name: Run tests
         run: |
-          python -W error::ResourceWarning -m unittest discover -s agent-observer/tests -v
+          python -W error::ResourceWarning -m unittest discover -s plugins/agent-observer/tests -v
           python -W error::ResourceWarning -m unittest discover -s plugins/agent-pair/tests -v
