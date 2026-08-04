@@ -33,6 +33,9 @@ def _activity(project: dict[str, Any]) -> tuple[str, float | None]:
 
 
 def _health(project: dict[str, Any]) -> str:
+    node = project.get("node")
+    if isinstance(node, dict) and node.get("transport_state") != "connected":
+        return "unavailable"
     states = {
         str(source.get("health") or "unavailable") for source in project["sources"]
     }
@@ -146,4 +149,5 @@ def dashboard_projection(raw: dict[str, Any]) -> dict[str, Any]:
         "generated_at": raw["generated_at"],
         "view_counts": view_counts,
         "projects": projects,
+        "remote_nodes": raw.get("remote_nodes", []),
     }

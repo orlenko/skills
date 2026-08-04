@@ -68,13 +68,14 @@ Agent Observer is a private, single-user control surface for someone supervising
 roughly five to ten Claude and Codex coding sessions. Worker agents do not know
 they are being observed. Deterministic local sidecars read their provider-owned
 session logs, project source-backed facts into private SQLite state, and serve a
-loopback-only dashboard. One dedicated, foreground Claude or Codex Observer
-session may attach to that state and continuously judge deterministic bounded
-review packets while its subscription-backed turn remains active.
+loopback-only dashboard. One dedicated Claude or Codex Observer command selects
+a dormant analyzer sidecar. Deterministic code waits for substantial activity,
+ten minutes of quiet, and the hourly cadence before an ephemeral
+subscription-backed provider CLI judges bounded review packets.
 
-V0 observes one machine. A future remote-node milestone keeps this dashboard on
+The first remote-node slice keeps this dashboard on
 the home machine while explicitly enrolled Ubuntu machines run their own
-collector, outbound proxy, and foreground subscription-backed analyzer without a
+collector, outbound proxy, and dormant subscription-backed analyzer without a
 remote web UI. The same project ledger will then combine local and remote work;
 host identity and remote service health must fit the information architecture
 without turning the overview into infrastructure monitoring.
@@ -82,7 +83,8 @@ without turning the overview into infrastructure monitoring.
 The intended instance is rooted at `~/personal/dash`; private state defaults to
 `~/personal/dash/.agent-observer/`. A later Claude or Codex session in that
 workspace takes over a fenced analyzer lease and resumes the same SQLite state.
-The UI must never imply that an ended agent turn can still be awakened.
+The UI must distinguish deterministic collection from the separately running,
+activity-gated analyzer sidecar.
 
 The dashboard is not a replacement chat client. Its job is to answer:
 
@@ -123,8 +125,8 @@ Primary moments:
   provider, branch, directory and canonical path, activity age, and a bounded
   recent user topic. Typing matches those fields, and watched projects are
   absent.
-- **Connect a remote host (future):** Copy a short-lived enrollment key from the
-  explicitly network-enabled home Observer session, redeem it from the remote
+- **Connect a remote host:** Copy a short-lived enrollment key from the home
+  Observer session, redeem it from the remote
   machine's dedicated Observer session, and see the resulting host connection
   and analysis health without a second dashboard.
 
@@ -206,7 +208,7 @@ Recommended hierarchy inside a project row:
 6. Selection affordance for a persistent inspector containing sessions,
    evidence, changes, and analysis detail.
 
-### 4.1 Future host-aware extension
+### 4.1 Host-aware extension
 
 Remote origin is project identity, not a warning badge. A remote row should show
 the human-readable hostname near the session provider and retain a stable opaque
@@ -226,7 +228,10 @@ visible, label their evidence cutoff, and show staleness separately. Never turn
 `remote host unreachable` into `worker stopped`, and never imply that the home
 dashboard can resume, message, or control a remote worker. Remote enrollment,
 credential revocation, reconnection, and backlog status are **concept** controls
-until Milestone E in the behavioral spec is implemented.
+in the web UI. Enrollment and revocation are implemented in the skill/CLI;
+hostname labels, disconnected-node notices, cached findings, transport state,
+analyzer state, snapshot revision, and clock-skew disclosure are implemented in
+the dashboard.
 
 The first remote slice manages its project watchlist from the remote Observer
 session. The home enrollment combobox remains local-only; do not mix remote paths
@@ -272,7 +277,7 @@ text operations, never HTML interpretation.
 | POST | `/api/rescan` | Rediscover sources by `{ "project": "project_id" }` |
 | POST | `/api/findings/seen` | Mark one finding seen by `{ "finding_id": "..." }` |
 
-### Foreground analyzer-loop contract
+### Activity-gated analyzer contract
 
 The following deterministic CLI operations are implemented. They are not
 browser mutation endpoints; the dashboard receives analyzer health through
@@ -280,8 +285,9 @@ browser mutation endpoints; the dashboard receives analyzer health through
 
 | Operation | Deterministic responsibility |
 | --- | --- |
-| `supervisor-begin` | Resolve workspace state, reconcile sidecars, supersede the prior lease epoch, exclude the invoking session, and return the current bootstrap URL |
-| `review-next --wait` | Return one immutable eligible packet, an empty bounded timeout, lease supersession, or a typed stop/failure state |
+| `supervisor-begin` | Resolve workspace state, reconcile collector/dashboard/analyzer sidecars, supersede the prior lease epoch, exclude the invoking session, and return the current bootstrap URL |
+| `analyzer` | Check activity gates deterministically; invoke no model when idle; drain an eligible subscription-backed batch no more than hourly |
+| `review-next` | Internal/manual diagnostic that returns one immutable eligible packet without driving an interactive polling loop |
 | `review-submit` | Validate lease epoch, packet identity, schema, citations, and spans; atomically publish and advance the accepted cutoff |
 | `supervisor-status` | Return separate collector, dashboard, and analyzer state plus current job, queue/coalescing counts, heartbeat, and last accepted review |
 | `supervisor-stop` | Revoke the lease and stop sidecars without deleting workspace-owned state |
@@ -312,14 +318,16 @@ Policy, frame denial, MIME sniffing denial, and no-referrer behavior.
 
 ### Shipped boundary versus design target
 
-The rough UI, foreground analyzer lease and queue, workspace-owned state, and
+The rough UI, analyzer lease and queue, workspace-owned state, and
 original endpoints above are implemented. The evidence-slice endpoint and
 richer per-item dispositions and snooze remain design targets, not current
 backend promises. The current row-level Dismiss action marks every presently
 unseen finding for that project seen in Observer-owned state. A later newly
 discovered finding starts unseen and returns the project to Needs a look. `up`
-idempotently starts the two requested sidecars; the skill invocation wraps that
-reconciliation, acquires the analyzer lease, and enters the review loop. No
+idempotently starts the requested sidecars; the skill invocation wraps that
+reconciliation, selects the analyzer provider, and returns. The dormant
+analyzer makes no model call until deterministic volume, quiet-time, and hourly
+cadence gates pass. No
 LaunchAgent is required by the revised design.
 Use the canonical fixture above for design work that needs states the current
 backend cannot yet synthesize in one live database.
@@ -504,9 +512,8 @@ agent unless provider evidence explicitly supports that claim.
 }
 ```
 
-The attached Claude or Codex session produced this object while holding an
-explicit foreground lease. This is an interactive D0 review, not a clean
-isolated analyzer. It selects exactly one worker session, includes at most 40
+An ephemeral Claude or Codex CLI invocation produced this object while a fenced
+analyzer sidecar held the lease. It selects exactly one worker session, includes at most 40
 visible messages on the first pass and a bounded delta-plus-overlap thereafter,
 and accepts at most three prominent result items. The UI must disclose the
 provider, optional model, interactive-session mode, target session, bounded
@@ -610,26 +617,28 @@ shape, but it must use stable `message_ref` identity rather than array positions
 
 ### 7.5 Analyzer attachment and review disclosure
 
-At Observer lease acquisition, show:
+At Observer analyzer selection, show:
 
 - the analyzer provider selected by the invoking Claude or Codex session;
 - source-to-analyzer routes eligible under current project policy;
 - packet categories and hard bounds;
-- warning that the current interactive analyzer is capability-bearing, shares
-  its context across successive packets, and may create provider-retained
-  traces;
+- that Claude is invoked without tools and Codex is ephemeral and read-only,
+  while provider retention policies may still apply;
 - confirmation that the dedicated Observer session and workspace state are
   excluded from collection;
-- an explicit statement that analysis lasts only while this foreground agent
-  turn remains attached.
+- the deterministic trigger: two substantial assistant messages, two user
+  messages, 1,200 assistant characters, ten minutes of quiet, and no more than
+  one model-backed batch per hour;
+- an explicit statement that idle observation uses no model tokens.
 
 For each queued, active, or accepted review, show the source session and binding
 segment, source-to-analyzer route, model when known, message range and byte
 count, included and excluded categories, known gaps, and immutable cutoff.
 
-Starting the lease is opt-in consent for eligible packets until that turn ends.
-Do not automatically pick another provider based on quota or tokens. A new
-Claude or Codex invocation deliberately takes over the lease and resumes the
+Starting the analyzer is opt-in consent for eligible packets until Observer is
+stopped or another provider takes over. Do not automatically pick another
+provider based on quota or tokens. A new Claude or Codex invocation deliberately
+takes over the lease and resumes the
 durable cursor.
 
 ## 8. Required states

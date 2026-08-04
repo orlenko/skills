@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Observer Remote"
+  short_description: "Connect a remote LAN or Tailscale Observer node"
+  default_prompt: "Connect or resume this remote Agent Observer node, report transport and analyzer health, and leave its dormant activity-gated services running."

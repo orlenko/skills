@@ -1,7 +1,7 @@
 {
   "name": "agent-observer",
-  "version": "0.3.0+codex.20260804181017",
-  "description": "A passive local dashboard with a subscription-backed review loop for Claude and Codex sessions.",
+  "version": "0.4.0+codex.20260804192317",
+  "description": "A passive local and remote dashboard with activity-gated subscription analysis for Claude and Codex sessions.",
   "author": {
     "name": "Vlad Orlenko",
     "url": "https://github.com/orlenko"
@@ -19,8 +19,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Agent Observer",
-    "shortDescription": "See what your local coding agents need.",
-    "longDescription": "A read-only local observer for Claude and Codex work, with workspace-owned durable collection, a localhost dashboard, and a resumable subscription-backed analysis loop driven by the session you invoke it from.",
+    "shortDescription": "See what local and remote coding agents need.",
+    "longDescription": "A read-only Observer for local and explicitly enrolled LAN or Tailscale Claude and Codex work, with durable collection, a localhost dashboard, and activity-gated subscription analysis that uses no model tokens while idle.",
     "developerName": "Vlad Orlenko",
     "category": "Productivity",
     "capabilities": [
@@ -28,7 +28,7 @@
     ],
     "websiteURL": "https://github.com/orlenko/skills",
     "defaultPrompt": [
-      "Start Agent Observer and keep reviewing watched projects.",
+      "Start Agent Observer and leave its dormant activity-gated services running.",
       "Show me which agent sessions need attention.",
       "Find possible loose ends in this project's visible conversations."
     ]

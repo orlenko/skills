@@ -38,7 +38,7 @@ def _handler(config: ObserverConfig, token: str, port: int):
     }
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "agent-observer/0.3"
+        server_version = "agent-observer/0.4"
 
         def _host_allowed(self) -> bool:
             host = self.headers.get("Host") or ""
@@ -197,8 +197,7 @@ def _handler(config: ObserverConfig, token: str, port: int):
                         project = value.get("project")
                         if not isinstance(project, str):
                             raise ValueError("project is required")
-                        project_id = observer._resolve_project(project)["project_id"]
-                        if not observer.db.dismiss_project_findings(project_id):
+                        if not observer.dismiss_project_attention(project):
                             raise KeyError("project not found")
                     else:
                         self._json(404, {"error": "not found"})

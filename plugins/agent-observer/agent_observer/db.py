@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import os
 import secrets
 import sqlite3
@@ -185,6 +187,37 @@ CREATE TABLE IF NOT EXISTS analysis_cursors (
     job_id TEXT,
     accepted_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS remote_invites (
+    secret_hash TEXT PRIMARY KEY,
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    used_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS remote_nodes (
+    node_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    provider TEXT,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_at REAL NOT NULL,
+    last_seen_at REAL,
+    revoked_at REAL,
+    upload_epoch INTEGER NOT NULL DEFAULT 0,
+    last_revision INTEGER NOT NULL DEFAULT 0,
+    snapshot_hash TEXT,
+    snapshot_json TEXT,
+    snapshot_generated_at REAL,
+    snapshot_received_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS remote_project_state (
+    node_id TEXT NOT NULL REFERENCES remote_nodes(node_id) ON DELETE CASCADE,
+    remote_project_id TEXT NOT NULL,
+    dismissed_fingerprint TEXT,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY(node_id, remote_project_id)
+);
 """
 
 
@@ -209,6 +242,10 @@ class ObserverDB:
     def close(self) -> None:
         self.connection.close()
 
+    @staticmethod
+    def _secret_hash(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
     def __enter__(self) -> "ObserverDB":
         return self
 
@@ -219,6 +256,415 @@ class ObserverDB:
     def transaction(self) -> Iterator[sqlite3.Connection]:
         with self.connection:
             yield self.connection
+
+    def create_remote_invite(self, secret: str, expires_at: float) -> None:
+        now = time.time()
+        with self.connection:
+            self.connection.execute(
+                "DELETE FROM remote_invites WHERE expires_at < ? OR used_at IS NOT NULL",
+                (now,),
+            )
+            self.connection.execute(
+                """
+                INSERT INTO remote_invites(secret_hash, created_at, expires_at)
+                VALUES (?, ?, ?)
+                """,
+                (self._secret_hash(secret), now, expires_at),
+            )
+
+    def accept_remote_invite(
+        self,
+        secret: str,
+        *,
+        display_name: str,
+        provider: str | None,
+    ) -> dict[str, Any]:
+        now = time.time()
+        secret_hash = self._secret_hash(secret)
+        token = secrets.token_urlsafe(32)
+        node_id = f"node_{secrets.token_hex(10)}"
+        with self.connection:
+            invite = self.connection.execute(
+                "SELECT * FROM remote_invites WHERE secret_hash = ?",
+                (secret_hash,),
+            ).fetchone()
+            if (
+                invite is None
+                or invite["used_at"] is not None
+                or float(invite["expires_at"]) <= now
+            ):
+                raise ValueError("remote enrollment key is invalid, expired, or already used")
+            updated = self.connection.execute(
+                """
+                UPDATE remote_invites SET used_at = ?
+                WHERE secret_hash = ? AND used_at IS NULL AND expires_at > ?
+                """,
+                (now, secret_hash, now),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("remote enrollment key is invalid, expired, or already used")
+            self.connection.execute(
+                """
+                INSERT INTO remote_nodes(
+                    node_id, display_name, provider, token_hash, created_at,
+                    last_seen_at, upload_epoch
+                ) VALUES (?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    node_id,
+                    display_name.strip()[:160] or "remote observer",
+                    provider,
+                    self._secret_hash(token),
+                    now,
+                    now,
+                ),
+            )
+        return {
+            "node_id": node_id,
+            "token": token,
+            "upload_epoch": 1,
+            "accepted_at": now,
+        }
+
+    def authenticate_remote_node(self, token: str) -> dict[str, Any]:
+        digest = self._secret_hash(token)
+        row = self.connection.execute(
+            "SELECT * FROM remote_nodes WHERE token_hash = ?",
+            (digest,),
+        ).fetchone()
+        if row is None or row["revoked_at"] is not None:
+            raise ValueError("remote node credential is invalid or revoked")
+        # Keep a constant-time comparison even though the indexed digest selected
+        # the row; this avoids making later authentication refactors surprising.
+        if not hmac.compare_digest(str(row["token_hash"]), digest):
+            raise ValueError("remote node credential is invalid or revoked")
+        return dict(row)
+
+    def claim_remote_uploader(self, token: str) -> dict[str, Any]:
+        node = self.authenticate_remote_node(token)
+        now = time.time()
+        with self.connection:
+            self.connection.execute(
+                """
+                UPDATE remote_nodes
+                SET upload_epoch = upload_epoch + 1, last_seen_at = ?
+                WHERE node_id = ? AND revoked_at IS NULL
+                """,
+                (now, node["node_id"]),
+            )
+        claimed = self.connection.execute(
+            "SELECT * FROM remote_nodes WHERE node_id = ?",
+            (node["node_id"],),
+        ).fetchone()
+        assert claimed is not None
+        return {
+            "node_id": str(claimed["node_id"]),
+            "display_name": str(claimed["display_name"]),
+            "upload_epoch": int(claimed["upload_epoch"]),
+            "claimed_at": now,
+        }
+
+    def import_remote_snapshot(
+        self,
+        token: str,
+        snapshot: dict[str, Any],
+        *,
+        canonical_json: str,
+        snapshot_hash: str,
+    ) -> dict[str, Any]:
+        node = self.authenticate_remote_node(token)
+        node_id = str(snapshot["node_id"])
+        if node_id != node["node_id"]:
+            raise ValueError("snapshot node identity does not match its credential")
+        epoch = int(snapshot["upload_epoch"])
+        revision = int(snapshot["revision"])
+        now = time.time()
+        current_epoch = int(node["upload_epoch"])
+        current_revision = int(node["last_revision"])
+        if epoch != current_epoch:
+            raise ValueError("remote uploader lease was superseded")
+        if revision < current_revision:
+            raise ValueError("remote snapshot revision is stale")
+        if revision == current_revision:
+            if hmac.compare_digest(str(node["snapshot_hash"] or ""), snapshot_hash):
+                return {
+                    "node_id": node_id,
+                    "upload_epoch": epoch,
+                    "revision": revision,
+                    "duplicate": True,
+                    "received_at": node["snapshot_received_at"],
+                }
+            raise ValueError("remote snapshot revision conflicts with stored content")
+        last_received = float(node.get("snapshot_received_at") or 0)
+        if last_received and now - last_received < 0.2:
+            raise ValueError("remote snapshot rate limit exceeded")
+        with self.connection:
+            updated = self.connection.execute(
+                """
+                UPDATE remote_nodes
+                SET display_name = ?, provider = ?, last_seen_at = ?,
+                    last_revision = ?, snapshot_hash = ?, snapshot_json = ?,
+                    snapshot_generated_at = ?, snapshot_received_at = ?
+                WHERE node_id = ? AND revoked_at IS NULL
+                  AND upload_epoch = ? AND last_revision < ?
+                """,
+                (
+                    str(snapshot["display_name"])[:160],
+                    snapshot.get("provider"),
+                    now,
+                    revision,
+                    snapshot_hash,
+                    canonical_json,
+                    float(snapshot["generated_at"]),
+                    now,
+                    node_id,
+                    epoch,
+                    revision,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("remote snapshot lost an uploader or revision race")
+        return {
+            "node_id": node_id,
+            "upload_epoch": epoch,
+            "revision": revision,
+            "duplicate": False,
+            "received_at": now,
+        }
+
+    def remote_nodes(self) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT node_id, display_name, provider, created_at, last_seen_at,
+                   revoked_at, upload_epoch, last_revision, snapshot_generated_at,
+                   snapshot_received_at
+            FROM remote_nodes ORDER BY created_at, node_id
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def revoke_remote_node(self, node_id: str) -> dict[str, Any]:
+        now = time.time()
+        with self.connection:
+            updated = self.connection.execute(
+                """
+                UPDATE remote_nodes SET revoked_at = ?, upload_epoch = upload_epoch + 1
+                WHERE node_id = ? AND revoked_at IS NULL
+                """,
+                (now, node_id),
+            )
+        if updated.rowcount != 1:
+            raise KeyError(f"active remote node not found: {node_id}")
+        return {"node_id": node_id, "revoked_at": now}
+
+    @staticmethod
+    def _remote_key(node_id: str, value: Any) -> str:
+        return f"remote:{node_id}:{value}"
+
+    @staticmethod
+    def _finding_fingerprint(findings: list[dict[str, Any]]) -> str:
+        current = sorted(
+            (
+                str(item.get("finding_id") or ""),
+                float(item.get("updated_at") or 0),
+            )
+            for item in findings
+            if item.get("state") == "open" and not item.get("seen")
+        )
+        return hashlib.sha256(
+            json.dumps(current, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    def remote_status(self, now: float | None = None) -> dict[str, Any]:
+        moment = now or time.time()
+        rows = self.connection.execute(
+            "SELECT * FROM remote_nodes ORDER BY created_at, node_id"
+        ).fetchall()
+        projects: list[dict[str, Any]] = []
+        nodes: list[dict[str, Any]] = []
+        for row in rows:
+            node = dict(row)
+            last_seen = float(node.get("last_seen_at") or 0)
+            transport_state = (
+                "revoked"
+                if node.get("revoked_at") is not None
+                else "connected"
+                if last_seen and moment - last_seen <= 20
+                else "disconnected"
+            )
+            public_node = {
+                key: node.get(key)
+                for key in (
+                    "node_id",
+                    "display_name",
+                    "provider",
+                    "created_at",
+                    "last_seen_at",
+                    "revoked_at",
+                    "upload_epoch",
+                    "last_revision",
+                    "snapshot_generated_at",
+                    "snapshot_received_at",
+                )
+            }
+            public_node["transport_state"] = transport_state
+            snapshot_generated = float(node.get("snapshot_generated_at") or 0)
+            snapshot_received = float(node.get("snapshot_received_at") or 0)
+            public_node["clock_skew_seconds"] = (
+                snapshot_received - snapshot_generated
+                if snapshot_generated and snapshot_received
+                else None
+            )
+            nodes.append(public_node)
+            raw = node.get("snapshot_json")
+            if not raw:
+                continue
+            try:
+                snapshot = json.loads(str(raw))
+                projection = snapshot["projection"]
+                remote_projects = projection["projects"]
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+            public_node["analyzer"] = snapshot.get("analyzer")
+            if not isinstance(remote_projects, list):
+                continue
+            for source_project in remote_projects:
+                if not isinstance(source_project, dict):
+                    continue
+                project = json.loads(json.dumps(source_project))
+                remote_project_id = str(project.get("project_id") or "")
+                if not remote_project_id:
+                    continue
+                project_id = self._remote_key(str(node["node_id"]), remote_project_id)
+                project["project_id"] = project_id
+                project["remote_project_id"] = remote_project_id
+                project["origin"] = "remote"
+                project["node"] = public_node
+                sessions = project.get("sessions")
+                project["sessions"] = sessions if isinstance(sessions, list) else []
+                for session in project["sessions"]:
+                    if not isinstance(session, dict):
+                        continue
+                    session["project_id"] = project_id
+                    if session.get("source_id"):
+                        session["source_id"] = self._remote_key(
+                            str(node["node_id"]), session["source_id"]
+                        )
+                    last_activity = session.get("last_activity_at")
+                    source_activity = float(last_activity) if last_activity else None
+                    skew = public_node["clock_skew_seconds"]
+                    corrected_activity = (
+                        source_activity + float(skew)
+                        if source_activity is not None and skew is not None
+                        else source_activity
+                    )
+                    session["source_activity_at"] = source_activity
+                    session["last_activity_at"] = corrected_activity
+                    session["activity_age_seconds"] = (
+                        max(0.0, moment - corrected_activity)
+                        if corrected_activity is not None
+                        else None
+                    )
+                findings = project.get("findings")
+                project["findings"] = findings if isinstance(findings, list) else []
+                fingerprint = self._finding_fingerprint(project["findings"])
+                state = self.connection.execute(
+                    """
+                    SELECT dismissed_fingerprint FROM remote_project_state
+                    WHERE node_id = ? AND remote_project_id = ?
+                    """,
+                    (node["node_id"], remote_project_id),
+                ).fetchone()
+                dismissed = bool(
+                    fingerprint
+                    and state
+                    and hmac.compare_digest(
+                        str(state["dismissed_fingerprint"] or ""), fingerprint
+                    )
+                )
+                for finding in project["findings"]:
+                    if not isinstance(finding, dict):
+                        continue
+                    if finding.get("finding_id"):
+                        finding["finding_id"] = self._remote_key(
+                            str(node["node_id"]), finding["finding_id"]
+                        )
+                    finding["project_id"] = project_id
+                    if finding.get("evidence_observation_id"):
+                        finding["evidence_observation_id"] = self._remote_key(
+                            str(node["node_id"]), finding["evidence_observation_id"]
+                        )
+                    if dismissed and finding.get("state") == "open":
+                        finding["seen"] = 1
+                project["remote_attention_dismissed"] = dismissed
+                sources = project.get("sources")
+                project["sources"] = sources if isinstance(sources, list) else []
+                for source in project["sources"]:
+                    if not isinstance(source, dict):
+                        continue
+                    if source.get("source_id"):
+                        source["source_id"] = self._remote_key(
+                            str(node["node_id"]), source["source_id"]
+                        )
+                    source["current_project_id"] = project_id
+                review = project.get("review")
+                if isinstance(review, dict):
+                    if review.get("job_id"):
+                        review["job_id"] = self._remote_key(
+                            str(node["node_id"]), review["job_id"]
+                        )
+                    review["project_id"] = project_id
+                    if review.get("source_id"):
+                        review["source_id"] = self._remote_key(
+                            str(node["node_id"]), review["source_id"]
+                        )
+                    packet_meta = review.get("packet_meta")
+                    if isinstance(packet_meta, dict):
+                        coverage = packet_meta.get("coverage")
+                        if isinstance(coverage, dict):
+                            for checkpoint in coverage.get("source_checkpoints") or []:
+                                if isinstance(checkpoint, dict) and checkpoint.get("source_id"):
+                                    checkpoint["source_id"] = self._remote_key(
+                                        str(node["node_id"]), checkpoint["source_id"]
+                                    )
+                projects.append(project)
+        return {"projects": projects, "nodes": nodes}
+
+    def dismiss_remote_project_findings(
+        self, node_id: str, remote_project_id: str
+    ) -> bool:
+        row = self.connection.execute(
+            "SELECT snapshot_json FROM remote_nodes WHERE node_id = ?",
+            (node_id,),
+        ).fetchone()
+        if row is None or not row["snapshot_json"]:
+            return False
+        try:
+            snapshot = json.loads(str(row["snapshot_json"]))
+            project = next(
+                item
+                for item in snapshot["projection"]["projects"]
+                if str(item.get("project_id")) == remote_project_id
+            )
+        except (json.JSONDecodeError, KeyError, StopIteration, TypeError):
+            return False
+        findings = project.get("findings")
+        if not isinstance(findings, list):
+            findings = []
+        fingerprint = self._finding_fingerprint(findings)
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO remote_project_state(
+                    node_id, remote_project_id, dismissed_fingerprint, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(node_id, remote_project_id) DO UPDATE SET
+                    dismissed_fingerprint = excluded.dismissed_fingerprint,
+                    updated_at = excluded.updated_at
+                """,
+                (node_id, remote_project_id, fingerprint, time.time()),
+            )
+        return True
 
     def _migrate_schema(self) -> None:
         columns = {
@@ -613,6 +1059,23 @@ class ObserverDB:
         if not row:
             raise KeyError(f"review job not found: {job_id}")
         return dict(row)
+
+    def update_review_packet_meta(
+        self, job_id: str, packet_meta: dict[str, Any]
+    ) -> None:
+        with self.connection:
+            cursor = self.connection.execute(
+                """
+                UPDATE review_jobs SET packet_meta_json = ?
+                WHERE job_id = ? AND status = 'prepared'
+                """,
+                (
+                    json.dumps(packet_meta, separators=(",", ":"), sort_keys=True),
+                    job_id,
+                ),
+            )
+        if not cursor.rowcount:
+            raise ValueError("review job is not awaiting a packet update")
 
     def expire_prepared_reviews(self, cutoff: float) -> int:
         with self.connection:

@@ -23,7 +23,11 @@ MAX_PACKET_BYTES = 256 * 1024
 TAIL_BYTES = 4 * 1024 * 1024
 REVIEW_TTL_SECONDS = 60 * 60
 MAX_WAIT_SECONDS = 55.0
-QUIESCENCE_SECONDS = 1.0
+ACTIVITY_DEBOUNCE_SECONDS = 10 * 60
+MIN_SUBSTANTIAL_ASSISTANT_MESSAGES = 2
+MIN_USER_MESSAGES = 2
+MIN_SUBSTANTIAL_MESSAGE_CHARS = 200
+MIN_ASSISTANT_CHARS = 1_200
 ALLOWED_TYPES = {
     "question",
     "decision",
@@ -139,6 +143,47 @@ def _semantic_input_hash(
     }
     encoded = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _messages_after_cursor(
+    messages: list[dict[str, Any]], cursor: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    if not cursor or not cursor.get("last_message_ref"):
+        return messages
+    last_ref = str(cursor["last_message_ref"])
+    for index in range(len(messages) - 1, -1, -1):
+        if str(messages[index].get("message_ref")) == last_ref:
+            return messages[index + 1 :]
+    # The accepted boundary may have fallen outside the bounded tail. Keeping the
+    # visible tail is safer than silently discarding new activity; packet coverage
+    # still discloses that the source began inside a bounded window.
+    return messages
+
+
+def _substantial_activity(
+    messages: list[dict[str, Any]], cursor: dict[str, Any] | None
+) -> dict[str, int | bool]:
+    pending = _messages_after_cursor(messages, cursor)
+    assistant = [
+        message
+        for message in pending
+        if message.get("role") == "assistant"
+        and len(str(message.get("text") or "").strip())
+        >= MIN_SUBSTANTIAL_MESSAGE_CHARS
+    ]
+    user_count = sum(1 for message in pending if message.get("role") == "user")
+    assistant_chars = sum(len(str(message.get("text") or "").strip()) for message in assistant)
+    return {
+        "eligible": (
+            len(assistant) >= MIN_SUBSTANTIAL_ASSISTANT_MESSAGES
+            and user_count >= MIN_USER_MESSAGES
+            and assistant_chars >= MIN_ASSISTANT_CHARS
+        ),
+        "pending_messages": len(pending),
+        "substantial_assistant_messages": len(assistant),
+        "user_messages": user_count,
+        "assistant_chars": assistant_chars,
+    }
 
 
 def _expire_review_artifacts(observer: Observer, now: float) -> None:
@@ -429,7 +474,7 @@ def _prepare_next_once(
             modified = Path(str(source["path"])).stat().st_mtime
         except OSError:
             continue
-        if now - modified < QUIESCENCE_SECONDS:
+        if now - modified < ACTIVITY_DEBOUNCE_SECONDS:
             continue
         project = observer.db.project(str(source["current_project_id"]))
         messages, gaps = _source_messages(source, project)
@@ -446,6 +491,11 @@ def _prepare_next_once(
                 last_message_ref=last_message_ref,
                 job_id=cursor.get("job_id") if cursor else None,
             )
+            continue
+        activity = _substantial_activity(messages, cursor)
+        if not activity["eligible"]:
+            # Do not advance the accepted cursor: deterministic collection keeps
+            # accumulating this exchange until it reaches review-worthy volume.
             continue
         identity = "\x1f".join(
             (
@@ -470,6 +520,16 @@ def _prepare_next_once(
             _lease_epoch=int(lease["epoch"]),
             _input_hash_override=input_hash,
         )
+        prepared["packet"]["coverage"]["activity_gate"] = activity
+        _write_private_json(Path(prepared["packet_path"]), prepared["packet"])
+        packet_meta = json.loads(
+            str(observer.db.review_job(job_id)["packet_meta_json"])
+        )
+        packet_meta["coverage"] = prepared["packet"]["coverage"]
+        packet_meta["packet_sha256"] = hashlib.sha256(
+            Path(prepared["packet_path"]).read_bytes()
+        ).hexdigest()
+        observer.db.update_review_packet_meta(job_id, packet_meta)
         observer.db.heartbeat_supervisor(
             lease_token, state="analyzing", current_job_id=job_id
         )

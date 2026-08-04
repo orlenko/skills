@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 from http.cookiejar import CookieJar
 from pathlib import Path
+from unittest import mock
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,7 @@ from agent_observer.reviews import (  # noqa: E402
 )
 from agent_observer.runtime import (  # noqa: E402
     service_status,
+    start_analyzer_service,
     start_services,
     stop_services,
 )
@@ -159,14 +161,33 @@ class ReviewAndRuntimeTests(unittest.TestCase):
             {
                 "type": "event_msg",
                 "timestamp": "2026-08-04T10:00:01Z",
+                "payload": {"type": "user_message", "message": "Draft the first option."},
+            },
+            {
+                "type": "event_msg",
+                "timestamp": "2026-08-04T10:00:02Z",
                 "payload": {
                     "type": "agent_message",
                     "phase": "final_answer",
-                    "message": "Choose alpha or beta.",
+                    "message": "First proposal: " + ("alpha details " * 55),
+                },
+            },
+            {
+                "type": "event_msg",
+                "timestamp": "2026-08-04T10:00:03Z",
+                "payload": {"type": "user_message", "message": "Now compare the second option."},
+            },
+            {
+                "type": "event_msg",
+                "timestamp": "2026-08-04T10:00:04Z",
+                "payload": {
+                    "type": "agent_message",
+                    "phase": "final_answer",
+                    "message": "Second proposal: " + ("beta details " * 55),
                 },
             },
         )
-        old = time.time() - 5
+        old = time.time() - 700
         os.utime(session, (old, old))
         with Observer(self.config) as observer:
             observer.add_project(str(self.project))
@@ -223,8 +244,29 @@ class ReviewAndRuntimeTests(unittest.TestCase):
                 session,
                 {
                     "type": "event_msg",
-                    "timestamp": "2026-08-04T10:00:02Z",
+                    "timestamp": "2026-08-04T10:00:05Z",
                     "payload": {"type": "user_message", "message": "Use alpha."},
+                },
+                {
+                    "type": "event_msg",
+                    "timestamp": "2026-08-04T10:00:06Z",
+                    "payload": {
+                        "type": "agent_message",
+                        "message": "Implementation pass one: " + ("work details " * 55),
+                    },
+                },
+                {
+                    "type": "event_msg",
+                    "timestamp": "2026-08-04T10:00:07Z",
+                    "payload": {"type": "user_message", "message": "Please verify the result."},
+                },
+                {
+                    "type": "event_msg",
+                    "timestamp": "2026-08-04T10:00:08Z",
+                    "payload": {
+                        "type": "agent_message",
+                        "message": "Verification result: " + ("evidence details " * 55),
+                    },
                 },
             )
             os.utime(session, (old, old))
@@ -232,6 +274,108 @@ class ReviewAndRuntimeTests(unittest.TestCase):
             later = next_review(observer, second_lease["lease_token"])
             self.assertEqual(later["state"], "work")
             self.assertNotEqual(later["review"]["job_id"], first_job)
+
+    def test_analyzer_is_idle_without_volume_and_runs_only_one_hourly_batch(self):
+        sid = "abababab-1111-2222-3333-cdcdcdcdcdcd"
+        session = self.config.codex_roots[0] / f"rollout-{sid}.jsonl"
+        append_jsonl(
+            session,
+            {
+                "type": "session_meta",
+                "timestamp": "2026-08-04T10:00:00Z",
+                "payload": {"id": sid, "cwd": str(self.project)},
+            },
+            {
+                "type": "event_msg",
+                "timestamp": "2026-08-04T10:00:01Z",
+                "payload": {"type": "user_message", "message": "One question."},
+            },
+            {
+                "type": "event_msg",
+                "timestamp": "2026-08-04T10:00:02Z",
+                "payload": {"type": "agent_message", "message": "One short answer."},
+            },
+        )
+        old = time.time() - 700
+        os.utime(session, (old, old))
+        with Observer(self.config) as observer:
+            observer.add_project(str(self.project))
+
+        root = Path(self.temp.name)
+        marker = root / "model-invocations.txt"
+        fake = root / "fake-codex"
+        fake.write_text(
+            """#!/usr/bin/env python3
+import json, os, pathlib, sys
+args = sys.argv[1:]
+out = pathlib.Path(args[args.index('--output-last-message') + 1])
+out.write_text(json.dumps({'schema_version': 'observer-interactive-review-v1', 'summary': 'No loose ends.', 'items': [], 'limitations': []}))
+marker = pathlib.Path(os.environ['OBSERVER_TEST_MARKER'])
+with marker.open('a') as handle:
+    handle.write('called\\n')
+""",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        environment = {
+            "AGENT_OBSERVER_CODEX_COMMAND": str(fake),
+            "OBSERVER_TEST_MARKER": str(marker),
+        }
+        with mock.patch.dict(os.environ, environment, clear=False):
+            start_analyzer_service(
+                self.config,
+                provider="codex",
+                model=None,
+                allow_cross_provider=True,
+            )
+            time.sleep(0.5)
+            self.assertFalse(marker.exists(), "idle source must not invoke the model")
+            stop_services(self.config)
+
+            append_jsonl(
+                session,
+                {
+                    "type": "event_msg",
+                    "timestamp": "2026-08-04T10:00:03Z",
+                    "payload": {"type": "user_message", "message": "First follow-up."},
+                },
+                {
+                    "type": "event_msg",
+                    "timestamp": "2026-08-04T10:00:04Z",
+                    "payload": {
+                        "type": "agent_message",
+                        "message": "First substantial response: " + ("context " * 90),
+                    },
+                },
+                {
+                    "type": "event_msg",
+                    "timestamp": "2026-08-04T10:00:05Z",
+                    "payload": {"type": "user_message", "message": "Second follow-up."},
+                },
+                {
+                    "type": "event_msg",
+                    "timestamp": "2026-08-04T10:00:06Z",
+                    "payload": {
+                        "type": "agent_message",
+                        "message": "Second substantial response: " + ("evidence " * 90),
+                    },
+                },
+            )
+            os.utime(session, (old, old))
+            with Observer(self.config) as observer:
+                observer.scan()
+            start_analyzer_service(
+                self.config,
+                provider="codex",
+                model=None,
+                allow_cross_provider=True,
+            )
+            deadline = time.monotonic() + 5
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(marker.exists())
+            time.sleep(0.5)
+            self.assertEqual(marker.read_text(encoding="utf-8").splitlines(), ["called"])
 
     def test_review_targets_one_session_and_exclusion_survives_rescan(self):
         older = "11111111-1111-1111-1111-111111111111"

@@ -157,21 +157,115 @@ def _spawn(config: ObserverConfig, kind: str, extra: list[str]) -> int:
 
 
 def service_status(config: ObserverConfig) -> dict[str, Any]:
+    from .remote import load_home_config
+
     runtime = _runtime_dir(config)
     server = _read_json(runtime / "server.json") or {}
     daemon = _read_json(runtime / "daemon.json") or {}
+    ingest = _read_json(runtime / "ingest.json") or {}
+    analyzer = _read_json(runtime / "analyzer.json") or {}
     server_running = _alive(server.get("pid"))
     daemon_running = _alive(daemon.get("pid"))
+    ingest_running = _alive(ingest.get("pid"))
+    analyzer_running = _alive(analyzer.get("pid"))
     result: dict[str, Any] = {
         "server": {**server, "running": server_running},
         "daemon": {**daemon, "running": daemon_running},
+        "ingest": {**ingest, "running": ingest_running},
+        "analyzer": {**analyzer, "running": analyzer_running},
+        "remote_ingest_enabled": load_home_config(config) is not None,
     }
     if server_running and server.get("port"):
         result["dashboard_url"] = f"http://127.0.0.1:{int(server['port'])}/"
     return result
 
 
+def _stop_service(config: ObserverConfig, kind: str) -> tuple[bool, bool]:
+    runtime = _runtime_dir(config)
+    path = runtime / f"{kind}.json"
+    info = _read_json(path) or {}
+    try:
+        pid = int(info.get("pid"))
+    except (TypeError, ValueError):
+        pid = 0
+    process_kind = {
+        "server": "serve",
+        "daemon": "daemon",
+        "ingest": "ingest",
+        "analyzer": "analyzer",
+    }[kind]
+    if pid and _alive(pid):
+        if not _owned_process(pid, process_kind):
+            return False, True
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+        for process in _BACKGROUND_PROCESSES:
+            if process.pid == pid:
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    pass
+        deadline = time.monotonic() + 3
+        while _alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if _alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return bool(pid), False
+
+
+def start_analyzer_service(
+    config: ObserverConfig,
+    *,
+    provider: str,
+    model: str | None,
+    allow_cross_provider: bool,
+) -> dict[str, Any]:
+    status = service_status(config)
+    analyzer = status["analyzer"]
+    mismatch = analyzer.get("running") and (
+        analyzer.get("provider") != provider
+        or analyzer.get("model") != model
+        or bool(analyzer.get("allow_cross_provider")) != allow_cross_provider
+    )
+    if mismatch:
+        _stop_service(config, "analyzer")
+        status = service_status(config)
+    if not status["analyzer"]["running"]:
+        try:
+            (_runtime_dir(config) / "analyzer.json").unlink()
+        except OSError:
+            pass
+        extra = ["--provider", provider]
+        if model:
+            extra.extend(("--model", model))
+        if allow_cross_provider:
+            extra.append("--allow-cross-provider")
+        _spawn(config, "analyzer", extra)
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        analyzer = service_status(config)["analyzer"]
+        if analyzer["running"] and analyzer.get("provider") == provider:
+            return analyzer
+        time.sleep(0.05)
+    _stop_service(config, "analyzer")
+    raise OSError(
+        "observer analyzer did not become ready; inspect "
+        f"{_runtime_dir(config) / 'analyzer.log'}"
+    )
+
+
 def start_services(config: ObserverConfig) -> dict[str, Any]:
+    from .remote import load_home_config
+
     runtime = _runtime_dir(config)
     ensure_auth_token(config)
     status = service_status(config)
@@ -187,11 +281,27 @@ def start_services(config: ObserverConfig) -> dict[str, Any]:
         except OSError:
             pass
         _spawn(config, "serve", ["--port", str(_free_port())])
+    home = load_home_config(config)
+    if home and not status["ingest"]["running"]:
+        try:
+            (runtime / "ingest.json").unlink()
+        except OSError:
+            pass
+        _spawn(
+            config,
+            "ingest",
+            ["--bind", str(home["bind"]), "--port", str(home["port"])],
+        )
 
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         status = service_status(config)
-        if status["server"]["running"] and status["daemon"]["running"]:
+        ingest_ready = not home or status["ingest"]["running"]
+        if (
+            status["server"]["running"]
+            and status["daemon"]["running"]
+            and ingest_ready
+        ):
             port = int(status["server"]["port"])
             bootstrap = issue_bootstrap_token(config)
             status["dashboard_url"] = f"http://127.0.0.1:{port}/?bootstrap={bootstrap}"
@@ -200,6 +310,27 @@ def start_services(config: ObserverConfig) -> dict[str, Any]:
     stop_services(config)
     raise OSError(
         f"observer sidecars did not become ready; inspect the runtime logs in {runtime}"
+    )
+
+
+def start_remote_services(config: ObserverConfig) -> dict[str, Any]:
+    runtime = _runtime_dir(config)
+    status = service_status(config)
+    if not status["daemon"]["running"]:
+        try:
+            (runtime / "daemon.json").unlink()
+        except OSError:
+            pass
+        _spawn(config, "daemon", [])
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        status = service_status(config)
+        if status["daemon"]["running"]:
+            return status
+        time.sleep(0.05)
+    stop_services(config)
+    raise OSError(
+        f"remote Observer collector did not become ready; inspect {runtime / 'daemon.log'}"
     )
 
 
@@ -269,44 +400,14 @@ def _owned_process(pid: int, kind: str) -> bool:
 
 
 def stop_services(config: ObserverConfig) -> dict[str, Any]:
-    runtime = _runtime_dir(config)
     stopped: list[str] = []
     refused: list[str] = []
-    for kind in ("server", "daemon"):
-        path = runtime / f"{kind}.json"
-        info = _read_json(path) or {}
-        try:
-            pid = int(info.get("pid"))
-        except (TypeError, ValueError):
-            pid = 0
-        if pid and _alive(pid):
-            process_kind = "serve" if kind == "server" else "daemon"
-            if not _owned_process(pid, process_kind):
-                refused.append(kind)
-                continue
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                pass
-            for process in _BACKGROUND_PROCESSES:
-                if process.pid == pid:
-                    try:
-                        process.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        pass
-            deadline = time.monotonic() + 3
-            while _alive(pid) and time.monotonic() < deadline:
-                time.sleep(0.05)
-            if _alive(pid):
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
+    for kind in ("analyzer", "server", "daemon", "ingest"):
+        did_stop, did_refuse = _stop_service(config, kind)
+        if did_refuse:
+            refused.append(kind)
+        elif did_stop:
             stopped.append(kind)
-        try:
-            path.unlink()
-        except OSError:
-            pass
     return {"stopped": stopped, "refused": refused}
 
 
@@ -330,10 +431,12 @@ def run_daemon(
     info_path = _runtime_dir(config) / "daemon.json"
     started_at = time.time()
     next_rescan = time.monotonic() + rescan_interval
+    next_remote_sync = time.monotonic() + 1.0
     with Observer(config) as observer:
         while not stopping.is_set():
             error: str | None = None
             scan: dict[str, Any] = {}
+            remote: dict[str, Any] | None = None
             try:
                 scan = observer.scan()
                 if time.monotonic() >= next_rescan:
@@ -342,6 +445,12 @@ def run_daemon(
                     next_rescan = time.monotonic() + rescan_interval
             except (OSError, ValueError, KeyError) as exc:
                 error = f"{type(exc).__name__}: {exc}"
+            if time.monotonic() >= next_remote_sync:
+                from .remote import load_connection, push_snapshot
+
+                if load_connection(config):
+                    remote = push_snapshot(config)
+                next_remote_sync = time.monotonic() + 5
             _atomic_json(
                 info_path,
                 {
@@ -350,6 +459,7 @@ def run_daemon(
                     "heartbeat_at": time.time(),
                     "last_scan": scan,
                     "error": error,
+                    "remote": remote,
                 },
             )
             stopping.wait(interval)
@@ -361,5 +471,19 @@ def write_server_info(config: ObserverConfig, *, port: int) -> Path:
     _atomic_json(
         path,
         {"pid": os.getpid(), "started_at": time.time(), "port": port},
+    )
+    return path
+
+
+def write_ingest_info(config: ObserverConfig, *, bind: str, port: int) -> Path:
+    path = _runtime_dir(config) / "ingest.json"
+    _atomic_json(
+        path,
+        {
+            "pid": os.getpid(),
+            "started_at": time.time(),
+            "bind": bind,
+            "port": port,
+        },
     )
     return path

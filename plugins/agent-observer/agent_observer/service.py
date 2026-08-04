@@ -186,7 +186,27 @@ class Observer:
 
     def status(self, *, now: float | None = None) -> dict[str, Any]:
         moment = now or time.time()
-        return self.db.status(moment)
+        result = self.db.status(moment)
+        remote = self.db.remote_status(moment)
+        result["projects"].extend(remote["projects"])
+        result["remote_nodes"] = remote["nodes"]
+        return result
+
+    @staticmethod
+    def _remote_project_identity(value: str) -> tuple[str, str] | None:
+        if not value.startswith("remote:"):
+            return None
+        parts = value.split(":", 2)
+        if len(parts) != 3 or not parts[1] or not parts[2]:
+            return None
+        return parts[1], parts[2]
+
+    def dismiss_project_attention(self, value: str) -> bool:
+        remote = self._remote_project_identity(value)
+        if remote:
+            return self.db.dismiss_remote_project_findings(*remote)
+        project_id = str(self._resolve_project(value)["project_id"])
+        return self.db.dismiss_project_findings(project_id)
 
     def _sample_branch(self, project: dict[str, Any]) -> None:
         root = project.get("worktree_root")

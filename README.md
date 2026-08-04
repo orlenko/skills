@@ -4,7 +4,8 @@ An installable library of skills and plugins shared by Codex and Claude Code.
 
 ## Agent Observer
 
-`agent-observer` is a passive, single-machine agent dashboard described in
+`agent-observer` is a passive local and explicitly enrolled remote-agent
+dashboard described in
 [`docs/agent-observer-v0-spec.md`](docs/agent-observer-v0-spec.md). The current
 vertical slice provides:
 
@@ -20,26 +21,35 @@ vertical slice provides:
 - a recent-project enrollment combobox with bounded session topic cards;
 - project-level attention dismissal and live Activity or static Project sorting;
 - managed collection and server sidecars;
-- a fenced foreground analyzer lease driven by the Claude or Codex session that
-  invokes the skill;
-- deterministic changed-session scheduling, bounded review packets, and exact
-  evidence validation before dashboard publication;
-- crash-safe accepted cutoffs and takeover by a replacement Observer session.
+- a dormant subscription-backed Claude or Codex analyzer sidecar selected by
+  the session that invokes the skill;
+- deterministic activity-volume gating, a ten-minute quiet debounce, hourly
+  model batches, bounded review packets, and exact evidence validation before
+  dashboard publication;
+- crash-safe accepted cutoffs and takeover by a replacement Observer session;
+- a dedicated pinned-TLS LAN/Tailscale ingest listener, single-use `ao1.`
+  enrollment, and revocable durable remote-node credentials;
+- remote collectors and dormant subscription analyzers with no remote web UI;
+- bounded node-scoped snapshot projection, uploader-epoch fencing, and
+  host-labeled local/remote projects in one dashboard.
 
-The current **interactive D0 model review** uses one dedicated active Claude or
-Codex session, selects one changed worker session and at most 40 visible
-messages per packet, returns at most three suggestions, and discloses its shared
-context. Starting the skill acquires or takes over the analyzer lease, reports
-the dashboard URL, and remains in a deterministic wait/analyze/submit loop. The
-invoking analyzer session is persistently excluded from collection when its
-provider exposes the session ID; its workspace cannot be added to the watchlist.
+The current **D0 model review** selects one changed worker session and at most
+40 visible messages per packet, returns at most three suggestions, and runs the
+selected provider CLI with subscription authentication and no persistent
+provider session. Deterministic code waits for at least two substantial model
+messages, two user messages, 1,200 model characters, and ten minutes of quiet.
+It then drains eligible sessions in one batch and will not invoke a model-backed
+batch again for an hour. With no qualifying activity it makes no model call and
+uses no tokens. The invoking Observer session is persistently excluded from
+collection when its provider exposes the session ID; its workspace cannot be
+added to the watchlist.
 
-Filesystem notifications, deep conversation replay, and the full productized
-semantic ledger remain follow-up work. A later remote-node milestone will let a
-home dashboard enroll read-only collector/analyzer nodes on other machines via a
-single-use pinned-TLS key; it is specified but not implemented. Explicit `add`
-and `rescan` operations may take several seconds with thousands of provider
-files; steady-state scans remain proportional to watched sources.
+Filesystem notifications, deep remote conversation replay, and the full
+productized semantic ledger remain follow-up work. Remote transport deliberately
+supports only addresses directly reachable over a LAN or Tailscale; it contains
+no relay or NAT-traversal service. Explicit `add` and `rescan` operations may
+take several seconds with thousands of provider files; steady-state scans remain
+proportional to watched sources.
 
 ### Install and invoke
 
@@ -67,15 +77,31 @@ Claude: /agent-observer:observe
 ```
 
 Run the command from a fresh, dedicated Observer workspace such as
-`~/personal/dash`. It starts the collector and dashboard without watching that
-workspace, acquires the analyzer lease, and continuously reviews deterministic
-packets until interrupted. Use the dashboard or `add PATH` to watch projects;
-use `status`, `rescan PATH`, or `stop` for narrower operations.
+`~/personal/dash`. It starts the collector, dashboard, and dormant analyzer
+without watching that workspace, then returns immediately. It also returns a
+single-use `ao1.` remote enrollment key. Use the dashboard or `add PATH` to watch projects; use `status`,
+`rescan PATH`, or `stop` for narrower operations.
+
+On an Ubuntu machine reachable over the same LAN or Tailscale network, install
+the plugin, start a dedicated workspace such as `~/personal/dash`, and invoke:
+
+```text
+Codex: $agent-observer:remote ao1.KEY_FROM_HOME
+Claude: /agent-observer:remote ao1.KEY_FROM_HOME
+```
+
+That machine starts deterministic collection and its dormant
+subscription-backed analyzer, uploads bounded snapshots to the home dashboard,
+and starts no web UI. Add or remove its watched projects from that remote
+Observer session. To advertise a specific Tailscale or LAN address from the
+home session, invoke `enable-remote ADDRESS` once; future `observe` invocations
+reuse it and issue a fresh key.
 
 Run directly from a checkout:
 
 ```sh
 plugins/agent-observer/bin/agent-observer --workspace ~/personal/dash --json supervisor-begin --provider codex --allow-cross-provider
+plugins/agent-observer/bin/agent-observer --workspace ~/personal/dash --json remote-enable --advertise 100.64.0.10
 plugins/agent-observer/bin/agent-observer --workspace ~/personal/dash supervisor-status
 plugins/agent-observer/bin/agent-observer --workspace ~/personal/dash add ~/code/ops2
 plugins/agent-observer/bin/agent-observer --workspace ~/personal/dash supervisor-stop

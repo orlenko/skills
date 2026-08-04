@@ -78,6 +78,12 @@ class WebAssetTests(unittest.TestCase):
         self.assertIn("session.last_activity_at", script)
         self.assertIn("state.data?.analyzer", script)
         self.assertIn("Semantic analyzer is detached", script)
+        self.assertIn("project.node?.display_name", script)
+        self.assertIn('project.origin === "remote"', script)
+        self.assertIn("Full context and watchlist controls remain on", script)
+        self.assertIn("state.data?.remote_nodes", script)
+        self.assertIn("state.data?.services?.analyzer", script)
+        self.assertIn("activity-gated review", script)
         self.assertNotIn("const signalSession =", script)
         for speculative_control in (
             "Snooze",

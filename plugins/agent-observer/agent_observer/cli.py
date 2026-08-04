@@ -9,6 +9,18 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .analyzer import run_analyzer
+from .ingest import run_ingest
+from .remote import (
+    DEFAULT_INVITE_TTL,
+    accept_invite,
+    claim_uploader,
+    enable_home_remote,
+    issue_invite,
+    load_home_config,
+    push_snapshot,
+    remote_connection_status,
+)
 from .reviews import next_review, prepare_review, submit_review
 from .runtime import (
     claim_active_instance,
@@ -16,6 +28,8 @@ from .runtime import (
     release_active_instance,
     run_daemon,
     service_status,
+    start_analyzer_service,
+    start_remote_services,
     start_services,
     stop_services,
 )
@@ -26,7 +40,7 @@ from .web import run_server
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agent-observer",
-        description="Passively observe local Claude and Codex session traces",
+        description="Passively observe local and explicitly enrolled remote Claude and Codex session traces",
     )
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
@@ -98,7 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     begin = commands.add_parser(
         "supervisor-begin",
-        help="Ensure sidecars and acquire the foreground analyzer lease",
+        help="Ensure collector, dashboard, ingest, and dormant analyzer sidecars",
     )
     begin.add_argument("--provider", choices=("claude", "codex"), required=True)
     begin.add_argument("--model")
@@ -118,6 +132,40 @@ def build_parser() -> argparse.ArgumentParser:
         "supervisor-stop", help="Revoke the analyzer lease and stop sidecars"
     )
 
+    remote_enable = commands.add_parser(
+        "remote-enable", help="Enable the dedicated LAN/Tailscale ingest listener"
+    )
+    remote_enable.add_argument("--bind", default="0.0.0.0")
+    remote_enable.add_argument("--port", type=int)
+    remote_enable.add_argument("--advertise", action="append")
+    remote_enable.add_argument("--ttl", type=int, default=DEFAULT_INVITE_TTL)
+
+    remote_invite = commands.add_parser(
+        "remote-invite", help="Issue a fresh single-use remote enrollment key"
+    )
+    remote_invite.add_argument("--ttl", type=int, default=DEFAULT_INVITE_TTL)
+
+    commands.add_parser("remote-nodes", help="List enrolled remote Observer nodes")
+    remote_revoke = commands.add_parser(
+        "remote-revoke", help="Revoke one remote Observer node credential"
+    )
+    remote_revoke.add_argument("node_id")
+
+    remote_begin = commands.add_parser(
+        "remote-begin",
+        help="Enroll or resume a remote collector and dormant analyzer",
+    )
+    remote_begin.add_argument("invite", nargs="?")
+    remote_begin.add_argument("--provider", choices=("claude", "codex"), required=True)
+    remote_begin.add_argument("--model")
+    remote_begin.add_argument("--analyzer-session-id")
+    remote_begin.add_argument("--display-name")
+    remote_begin.add_argument("--allow-cross-provider", action="store_true")
+    commands.add_parser("remote-status", help="Show this remote node connection state")
+    commands.add_parser(
+        "remote-stop", help="Detach the remote analyzer and stop its collector"
+    )
+
     serve = commands.add_parser(
         "serve", help="Run the localhost dashboard in the foreground"
     )
@@ -127,6 +175,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     daemon.add_argument("--interval", type=float, default=2.0)
     daemon.add_argument("--rescan-interval", type=float, default=300.0)
+    ingest = commands.add_parser(
+        "ingest", help="Run the dedicated remote snapshot ingress server"
+    )
+    ingest.add_argument("--bind", required=True)
+    ingest.add_argument("--port", type=int, required=True)
+    analyzer = commands.add_parser(
+        "analyzer", help="Run the dormant subscription-backed analyzer sidecar"
+    )
+    analyzer.add_argument("--provider", choices=("claude", "codex"), required=True)
+    analyzer.add_argument("--model")
+    analyzer.add_argument("--allow-cross-provider", action="store_true")
+    analyzer.add_argument("--poll", type=float, default=15.0)
+    analyzer.add_argument("--interval", type=float, default=3600.0)
     return parser
 
 
@@ -216,6 +277,17 @@ def run(args: argparse.Namespace) -> int:
             interval=args.interval,
             rescan_interval=args.rescan_interval,
         )
+    if args.command == "ingest":
+        return run_ingest(config, bind=args.bind, port=args.port)
+    if args.command == "analyzer":
+        return run_analyzer(
+            config,
+            provider=args.provider,
+            model=args.model,
+            allow_cross_provider=args.allow_cross_provider,
+            poll_seconds=args.poll,
+            interval_seconds=args.interval,
+        )
     if args.command == "up":
         _print(start_services(config), args.as_json)
         return 0
@@ -237,6 +309,103 @@ def run(args: argparse.Namespace) -> int:
                 "services": stop_services(config),
                 "state_dir": str(config.state_dir),
                 "released_active_instance": release_active_instance(config),
+            },
+            args.as_json,
+        )
+        return 0
+    if args.command == "remote-stop":
+        with Observer(config) as observer:
+            supervisor = observer.db.revoke_supervisor("remote Observer stopped")
+        _print(
+            {
+                "supervisor": supervisor,
+                "services": stop_services(config),
+                "remote": remote_connection_status(config),
+                "released_active_instance": release_active_instance(config),
+            },
+            args.as_json,
+        )
+        return 0
+    if args.command == "remote-status":
+        with Observer(config) as observer:
+            supervisor = observer.db.supervisor_status()
+        _print(
+            {
+                "state_dir": str(config.state_dir),
+                "services": service_status(config),
+                "supervisor": supervisor,
+                "remote": remote_connection_status(config),
+            },
+            args.as_json,
+        )
+        return 0
+    if args.command == "remote-enable":
+        home = enable_home_remote(
+            config,
+            bind=args.bind,
+            port=args.port,
+            advertise=args.advertise,
+        )
+        services = start_services(config)
+        with Observer(config) as observer:
+            enrollment = issue_invite(observer, home, ttl_seconds=args.ttl)
+        _print(
+            {"state_dir": str(config.state_dir), "services": services, "remote_enrollment": enrollment},
+            args.as_json,
+        )
+        return 0
+    if args.command == "remote-invite":
+        home = load_home_config(config)
+        if home is None:
+            raise ValueError("remote ingestion is not enabled; run remote-enable first")
+        services = start_services(config)
+        with Observer(config) as observer:
+            enrollment = issue_invite(observer, home, ttl_seconds=args.ttl)
+        _print(
+            {"state_dir": str(config.state_dir), "services": services, "remote_enrollment": enrollment},
+            args.as_json,
+        )
+        return 0
+    if args.command == "remote-begin":
+        analyzer_session_id = args.analyzer_session_id or os.environ.get(
+            "CODEX_THREAD_ID" if args.provider == "codex" else "CLAUDE_SESSION_ID"
+        )
+        if args.invite:
+            accept_invite(
+                config,
+                args.invite,
+                provider=args.provider,
+                display_name=args.display_name,
+            )
+        claim_uploader(config)
+        instance = claim_active_instance(config)
+        services = start_remote_services(config)
+        with Observer(config) as observer:
+            if analyzer_session_id:
+                observer.db.exclude_session(
+                    args.provider,
+                    analyzer_session_id,
+                    "invoking remote Observer controller session",
+                )
+        analyzer = start_analyzer_service(
+            config,
+            provider=args.provider,
+            model=args.model,
+            allow_cross_provider=args.allow_cross_provider,
+        )
+        with Observer(config) as observer:
+            supervisor = observer.db.supervisor_status()
+        services = service_status(config)
+        synced = push_snapshot(config)
+        _print(
+            {
+                "state_dir": str(config.state_dir),
+                "services": services,
+                "supervisor": supervisor,
+                "analyzer": analyzer,
+                "instance": instance,
+                "remote": remote_connection_status(config),
+                "sync": synced,
             },
             args.as_json,
         )
@@ -274,22 +443,31 @@ def run(args: argparse.Namespace) -> int:
                 observer.db.exclude_session(
                     args.provider,
                     analyzer_session_id,
-                    "foreground Observer analyzer lease owner",
+                    "invoking Observer controller session",
                 )
             instance = claim_active_instance(config)
+            home = load_home_config(config) or enable_home_remote(config)
             services = start_services(config)
-            supervisor = observer.db.acquire_supervisor(
+            analyzer = start_analyzer_service(
+                config,
                 provider=args.provider,
                 model=args.model,
-                session_id=analyzer_session_id,
                 allow_cross_provider=args.allow_cross_provider,
             )
+            supervisor = observer.db.supervisor_status()
+            services = service_status(config)
             result = {
                 "state_dir": str(config.state_dir),
                 "services": services,
                 "supervisor": supervisor,
+                "analyzer": analyzer,
                 "instance": instance,
+                "remote_enrollment": issue_invite(observer, home),
             }
+        elif args.command == "remote-nodes":
+            result = {"nodes": observer.db.remote_nodes()}
+        elif args.command == "remote-revoke":
+            result = observer.db.revoke_remote_node(args.node_id)
         elif args.command == "review-next":
             result = next_review(
                 observer, args.lease_token, wait_seconds=args.wait

@@ -551,6 +551,7 @@ const filteredProjects = () => {
       project.display_path,
       project.resolved_path,
       project.current_branch || "",
+      project.node?.display_name || "",
       ...project.findings.map((finding) => finding.summary),
       project.review?.summary || "",
       ...project.sessions.flatMap((session) => [session.provider, session.session_id, session.title || ""]),
@@ -640,6 +641,9 @@ const renderProjectRow = (project) => {
   if (identityValue.session) {
     identityTitle.append(el("span", "session-provider", humanLabel(identityValue.session.provider)));
   }
+  if (project.node?.display_name) {
+    identityTitle.append(badge(project.node.display_name, "host-badge"));
+  }
   identity.append(identityTitle);
   const identityMeta = el("span", "identity-meta");
   for (const [index, value] of identityValue.secondary.entries()) {
@@ -678,7 +682,7 @@ const renderProjectRow = (project) => {
     dismiss.append(el("span", "checkbox-mark", ""), el("span", "", "Dismiss"));
     dismiss.addEventListener("click", () => dismissProjectAttention(project, dismiss));
     row.append(dismiss);
-  } else if (isEmptyUnavailableProject(project)) {
+  } else if (project.origin !== "remote" && isEmptyUnavailableProject(project)) {
     row.append(projectRemovalButton(project, "row", "Remove"));
   } else {
     row.append(el("span", "queue-action-empty", ""));
@@ -753,7 +757,7 @@ const renderReview = (review) => {
   const section = el("section", "inspector-section model-review");
   section.append(sectionHeading("Conversation review", "Model review", "truth-model"));
   if (!review) {
-    section.append(el("p", "empty-copy", "No interactive review has been published for this project."));
+    section.append(el("p", "empty-copy", "No subscription-backed review has been published for this project."));
     return section;
   }
   section.append(renderMarkdown(review.summary || "Review prepared without a summary.", "review-summary"));
@@ -761,7 +765,7 @@ const renderReview = (review) => {
   section.append(el(
     "p",
     "provenance",
-    `${review.analyzer_provider}${model} · interactive analysis · ${humanLabel(review.status)}`,
+    `${review.analyzer_provider}${model} · subscription analysis · ${humanLabel(review.status)}`,
   ));
   if (review.target_session) {
     const target = `${review.target_session.provider}:${review.target_session.session_id.slice(0, 8)}`;
@@ -870,6 +874,16 @@ const renderFacets = (project) => {
     ["Observer health", humanLabel(project.facets.health)],
     ["Continuity", humanLabel(project.facets.continuity)],
   ];
+  if (project.node) {
+    values.push(
+      ["Host", project.node.display_name || project.node.node_id],
+      ["Remote transport", humanLabel(project.node.transport_state)],
+      ["Remote analyzer", humanLabel(project.node.analyzer?.state || "detached")],
+    );
+    if (Number.isFinite(Number(project.node.clock_skew_seconds))) {
+      values.push(["Detected clock skew", `${Math.round(Number(project.node.clock_skew_seconds))}s`]);
+    }
+  }
   for (const [term, value] of values) {
     list.append(el("dt", "", term), el("dd", "", value));
   }
@@ -896,6 +910,14 @@ const renderInspector = (project) => {
     : "PROJECT DETAIL";
   header.append(el("p", "eyebrow", detailLabel));
   header.append(el("h2", "selectable", identity.primary));
+  if (project.node?.display_name) {
+    const host = el("p", "remote-origin");
+    host.append(
+      badge(project.node.display_name, "host-badge"),
+      document.createTextNode(` ${humanLabel(project.node.transport_state)} · snapshot ${project.node.last_revision || 0}`),
+    );
+    header.append(host);
+  }
   if (identity.secondary.length) {
     header.append(el("p", "inspector-identifiers", identity.secondary.join(" · ")));
   }
@@ -921,7 +943,17 @@ const renderInspector = (project) => {
       rescan.disabled = false;
     }
   });
-  actions.append(copyPath, rescan, projectRemovalButton(project, "inspector", "Stop watching"));
+  actions.append(copyPath);
+  if (project.origin === "remote") {
+    const remoteNote = el(
+      "span",
+      "remote-action-note",
+      `Full context and watchlist controls remain on ${project.node?.display_name || "the remote host"}`,
+    );
+    actions.append(remoteNote);
+  } else {
+    actions.append(rescan, projectRemovalButton(project, "inspector", "Stop watching"));
+  }
   header.append(actions);
   inspector.append(header, renderFacets(project));
 
@@ -939,13 +971,23 @@ const renderServices = () => {
   const service = document.querySelector("#service-state");
   const server = state.data?.services?.server;
   const daemon = state.data?.services?.daemon;
+  const ingest = state.data?.services?.ingest;
+  const analyzerService = state.data?.services?.analyzer;
+  const ingestEnabled = Boolean(state.data?.services?.remote_ingest_enabled);
   const analyzer = state.data?.analyzer;
   const heartbeatAge = daemon?.heartbeat_at && state.data?.generated_at
     ? Math.max(0, state.data.generated_at - daemon.heartbeat_at)
     : null;
   const heartbeatStale = daemon?.running && (heartbeatAge === null || heartbeatAge > 15);
-  const healthy = Boolean(server?.running && daemon?.running && !heartbeatStale && !daemon?.error);
-  const analyzerActive = ["attached", "waiting", "analyzing"].includes(analyzer?.state);
+  const healthy = Boolean(
+    server?.running
+    && daemon?.running
+    && !heartbeatStale
+    && !daemon?.error
+    && (!ingestEnabled || ingest?.running)
+  );
+  const analyzerActive = Boolean(analyzerService?.running)
+    && ["attached", "waiting", "analyzing"].includes(analyzer?.state);
   service.className = `service-state ${healthy ? (analyzerActive ? "healthy" : "detached") : "issue"}`;
   service.lastElementChild.textContent = healthy
     ? (analyzerActive
@@ -969,11 +1011,35 @@ const renderServices = () => {
   if (daemon?.error) {
     addNotice("Collector reported an error", daemon.error, "error");
   }
+  if (ingestEnabled && !ingest?.running) {
+    addNotice(
+      "Remote ingest is not running",
+      "The dashboard remains local, but enrolled LAN/Tailscale nodes cannot upload snapshots.",
+      "error",
+    );
+  }
+  if (analyzerService && !analyzerService.running) {
+    addNotice(
+      "Semantic analyzer is not running",
+      "Factual collection continues without model calls. Start the Observer skill in Claude or Codex to restore activity-gated review.",
+      "warning",
+    );
+  } else if (analyzerService?.error) {
+    addNotice("Semantic analyzer reported an error", analyzerService.error, "warning");
+  }
+  for (const node of state.data?.remote_nodes || []) {
+    if (node.transport_state === "connected") continue;
+    addNotice(
+      `${node.display_name || "Remote Observer"} is ${node.transport_state}`,
+      "Cached findings remain visible, but new remote snapshots are not arriving. Worker state is unknown.",
+      node.transport_state === "revoked" ? "warning" : "warning",
+    );
+  }
   if (healthy && analyzer && !analyzerActive) {
     const reason = analyzer.stop_reason ? ` ${analyzer.stop_reason}.` : "";
     addNotice(
       "Semantic analyzer is detached",
-      `Factual collection is current, but conversation loose ends are not being reviewed.${reason} Start the Observer skill in Claude or Codex to resume.`,
+      `Factual collection is current, but conversation loose ends are not being reviewed.${reason} Start the Observer skill in Claude or Codex to resume activity-gated review.`,
       "warning",
     );
   }

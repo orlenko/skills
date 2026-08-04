@@ -36,8 +36,8 @@
       "name": "agent-observer",
       "displayName": "Agent Observer",
       "source": "./plugins/agent-observer",
-      "description": "A passive local dashboard with a subscription-backed review loop for Claude and Codex sessions.",
-      "version": "0.3.0",
+      "description": "A passive local and remote dashboard with activity-gated subscription analysis for Claude and Codex sessions.",
+      "version": "0.4.0",
       "author": {
         "name": "Vlad Orlenko",
         "url": "https://github.com/orlenko"
