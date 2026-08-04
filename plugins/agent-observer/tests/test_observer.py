@@ -1,14 +1,18 @@
+import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGE_ROOT))
 
+from agent_observer.cli import _config  # noqa: E402
 from agent_observer.service import Observer, ObserverConfig  # noqa: E402
 from agent_observer.identity import cwd_matches_project, identify_project  # noqa: E402
 
@@ -56,6 +60,19 @@ class ObserverTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_cli_preserves_the_codex_session_index_configuration(self):
+        index = Path(self.temp.name) / "custom-session-index.jsonl"
+        args = argparse.Namespace(
+            state_dir=str(self.state),
+            claude_root=None,
+            codex_root=None,
+        )
+        with patch.dict(
+            os.environ,
+            {"AGENT_OBSERVER_CODEX_SESSION_INDEX": str(index)},
+        ):
+            self.assertEqual(_config(args).codex_session_index, index)
 
     def test_claude_structured_questions_are_item_correlated(self):
         session = (

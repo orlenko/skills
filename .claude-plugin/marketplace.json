@@ -37,7 +37,7 @@
       "displayName": "Agent Observer",
       "source": "./plugins/agent-observer",
       "description": "A passive local dashboard and evidence-linked review loop for Claude and Codex sessions.",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "author": {
         "name": "Vlad Orlenko",
         "url": "https://github.com/orlenko"

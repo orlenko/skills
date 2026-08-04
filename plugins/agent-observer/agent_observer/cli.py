@@ -111,6 +111,7 @@ def _config(args: argparse.Namespace) -> ObserverConfig:
         tuple(Path(value).expanduser() for value in args.codex_root)
         if args.codex_root
         else defaults.codex_roots,
+        defaults.codex_session_index,
     )
 
 
