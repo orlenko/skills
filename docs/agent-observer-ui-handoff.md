@@ -1,6 +1,6 @@
 # Agent Observer UI design handoff
 
-Status: Design brief for specialized UI tools
+Status: Design brief plus selective implementation record
 
 Implementation reference: `plugins/agent-observer/agent_observer/web_assets/`
 
@@ -10,6 +10,23 @@ Behavioral authority: `docs/agent-observer-v0-spec.md`
 
 Canonical six-project design fixture:
 `docs/fixtures/agent-observer-dashboard-v1.json`
+
+## Selective redesign now in the rough UI
+
+The first specialist review has been integrated selectively. The implementation
+now uses one attention-sorted project ledger with a persistent project inspector.
+The inspector keeps source-backed findings, bounded model review, sessions,
+source health, changes, and local actions visible without expanding the ledger
+into a second chat client. It also adds real copy-path and copy-session-ID
+actions, explicit service-health banners, durable mutation errors, a compact
+enrollment panel, and stable keyboard focus while the dashboard polls.
+
+The implementation intentionally does not include the proposed layout switcher,
+queue and facet-table modes, speculative next actions, a synthetic evidence
+dialog, or controls for backend capabilities that do not exist. The specialist's
+steel-blue operations-console skin was also not adopted: the current warm,
+restrained surface better matches the product character in `PRODUCT.md` and
+keeps truth-class treatments from becoming a status-color wall.
 
 ## 0. Assignment for the design specialist
 
@@ -149,7 +166,8 @@ Recommended hierarchy inside a project row:
 3. Exact age of the newest meaningful observation.
 4. Observer issue indicator, independent of attention.
 5. Model-review summary only when it has a prominent item, is running, or failed.
-6. Expansion affordance for sessions, evidence, changes, and analysis detail.
+6. Selection affordance for a persistent inspector containing sessions,
+   evidence, changes, and analysis detail.
 
 ## 5. Current HTTP and security contract
 
@@ -432,7 +450,9 @@ Implemented now:
 
 - mark a factual finding seen;
 - rescan a project;
-- add a project.
+- add a project by path;
+- copy a project path;
+- copy a provider-scoped session ID.
 
 Specified next:
 
@@ -441,8 +461,6 @@ Specified next:
 - mark handled elsewhere;
 - still relevant;
 - remove project;
-- copy project path;
-- copy session ID;
 - launch a review after provider and disclosure confirmation.
 
 These actions update Observer-owned state only. Never phrase them as messages to

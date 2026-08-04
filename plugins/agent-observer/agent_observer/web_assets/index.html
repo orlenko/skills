@@ -11,48 +11,66 @@
   </head>
   <body>
     <header class="topbar">
-      <div>
-        <p class="eyebrow">LOCAL CONTROL SURFACE</p>
+      <div class="brand">
+        <p class="eyebrow">LOCAL OBSERVER</p>
         <h1>Agent Observer</h1>
       </div>
-      <div class="service-state" id="service-state" aria-live="polite">
-        <span class="pulse" aria-hidden="true"></span>
-        Connecting
+      <div class="topbar-actions">
+        <div class="service-state" id="service-state" aria-live="polite">
+          <span class="pulse" aria-hidden="true"></span>
+          <span>Connecting</span>
+        </div>
+        <button id="watch-toggle" type="button" aria-controls="enrollment" aria-expanded="false">
+          Watch project
+        </button>
       </div>
     </header>
 
-    <main>
-      <section class="add-project" aria-labelledby="add-heading">
-        <div>
-          <h2 id="add-heading">Watch another project</h2>
-          <p>Read-only observation begins with a bounded local baseline.</p>
-        </div>
-        <form id="add-form">
-          <label class="sr-only" for="project-path">Project directory</label>
+    <section class="enrollment" id="enrollment" aria-labelledby="add-heading" hidden>
+      <div>
+        <p class="eyebrow">ADD TO WATCHLIST</p>
+        <h2 id="add-heading">Watch a local project</h2>
+        <p>Observer reads existing Claude and Codex session logs. The worker is not contacted.</p>
+      </div>
+      <form id="add-form">
+        <label for="project-path">Project directory</label>
+        <div class="form-row">
           <input id="project-path" name="path" type="text" autocomplete="off"
                  placeholder="~/code/project" required>
-          <button type="submit">Add project</button>
-        </form>
-      </section>
+          <button class="primary-button" type="submit">Begin watching</button>
+        </div>
+      </form>
+    </section>
 
-      <div class="shell">
-        <nav class="views" aria-label="Project views" id="views"></nav>
-        <section class="workspace" aria-labelledby="workspace-heading">
-          <div class="workspace-heading">
-            <div>
-              <p class="eyebrow" id="view-kicker">ALL WATCHED PROJECTS</p>
-              <h2 id="workspace-heading">What deserves attention</h2>
-            </div>
-            <div class="workspace-tools">
-              <label class="sr-only" for="search">Filter projects</label>
-              <input id="search" type="search" placeholder="Filter paths or sessions">
-              <span id="updated-at">Waiting for data</span>
-            </div>
+    <div id="service-notices" class="service-notices" aria-live="polite"></div>
+
+    <main class="shell">
+      <nav class="views" aria-label="Project views" id="views"></nav>
+      <section class="workspace" aria-labelledby="workspace-heading">
+        <div class="workspace-heading">
+          <div>
+            <p class="eyebrow" id="view-kicker">ALL WATCHED PROJECTS</p>
+            <h2 id="workspace-heading">What deserves attention</h2>
           </div>
-          <div id="error" class="notice error" role="alert" hidden></div>
-          <div id="projects" class="project-list" aria-busy="true"></div>
-        </section>
-      </div>
+          <div class="workspace-tools">
+            <label class="sr-only" for="search">Filter projects</label>
+            <input id="search" type="search" placeholder="Filter paths or sessions">
+            <span id="updated-at">Waiting for data</span>
+          </div>
+        </div>
+        <div id="error" class="notice error" role="alert" hidden></div>
+        <div class="attention-layout">
+          <section class="ledger" aria-label="Watched projects">
+            <div class="ledger-columns" aria-hidden="true">
+              <span>Project</span>
+              <span>Current signal</span>
+              <span>Activity</span>
+            </div>
+            <div id="projects" class="project-list" aria-busy="true"></div>
+          </section>
+          <aside id="inspector" class="inspector" aria-label="Project detail"></aside>
+        </div>
+      </section>
     </main>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   </body>

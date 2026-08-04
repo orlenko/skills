@@ -5,7 +5,9 @@ const state = {
   view: "all",
   search: "",
   busy: false,
-  projectOpen: new Map(),
+  selectedProjectId: null,
+  projectOrder: [],
+  error: null,
 };
 
 const viewDefinitions = [
@@ -18,6 +20,13 @@ const viewDefinitions = [
   ["observer_issues", "Observer issues"],
 ];
 
+const findingPriorities = {
+  decision_requested: 0,
+  turn_aborted: 1,
+  turn_completed: 2,
+  no_completion_observed: 3,
+};
+
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -25,12 +34,30 @@ const el = (tag, className, text) => {
   return node;
 };
 
+const humanLabel = (value) => {
+  const words = String(value || "unknown").replaceAll("_", " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+};
+
 const relativeAge = (seconds) => {
-  if (seconds === null || seconds === undefined) return "activity unknown";
-  if (seconds < 60) return `${Math.max(0, Math.round(seconds))}s ago`;
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.round(seconds / 3600)}h ago`;
-  return `${Math.round(seconds / 86400)}d ago`;
+  if (seconds === null || seconds === undefined || !Number.isFinite(Number(seconds))) {
+    return "activity unknown";
+  }
+  const age = Math.max(0, Number(seconds));
+  if (age < 60) return `${Math.round(age)}s ago`;
+  if (age < 3600) return `${Math.round(age / 60)}m ago`;
+  if (age < 86400) return `${Math.round(age / 3600)}h ago`;
+  return `${Math.round(age / 86400)}d ago`;
+};
+
+const absoluteTime = (value) => {
+  if (value === null || value === undefined) return "Time unavailable";
+  const date = typeof value === "number" ? new Date(value * 1000) : new Date(value);
+  if (Number.isNaN(date.getTime())) return "Time unavailable";
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
 };
 
 const post = async (path, body) => {
@@ -52,154 +79,126 @@ const toast = (message) => {
   window.setTimeout(() => { node.hidden = true; }, 2800);
 };
 
+const renderError = () => {
+  const node = document.querySelector("#error");
+  node.replaceChildren();
+  node.hidden = !state.error;
+  if (!state.error) return;
+  const copy = el("div");
+  copy.append(el("strong", "", "Observer could not complete that action"));
+  copy.append(el("p", "", state.error.message));
+  const dismiss = el("button", "quiet-button", "Dismiss");
+  dismiss.type = "button";
+  dismiss.dataset.focusKey = "dismiss-error";
+  dismiss.addEventListener("click", () => {
+    state.error = null;
+    renderError();
+  });
+  node.append(copy, dismiss);
+};
+
+const showError = (error, kind = "mutation") => {
+  state.error = {
+    kind,
+    message: error instanceof Error ? error.message : String(error),
+  };
+  renderError();
+};
+
+const clearRefreshError = () => {
+  if (state.error?.kind === "refresh") {
+    state.error = null;
+    renderError();
+  }
+};
+
+const copyText = async (value, successMessage) => {
+  let copied = false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      copied = true;
+    } else {
+      const area = el("textarea", "copy-fallback");
+      area.value = value;
+      area.setAttribute("readonly", "");
+      document.body.append(area);
+      area.select();
+      copied = document.execCommand("copy");
+      area.remove();
+    }
+  } catch (_error) {
+    copied = false;
+  }
+  if (!copied) {
+    showError(new Error("The clipboard was unavailable. Select the value in the inspector and copy it manually."));
+    return;
+  }
+  toast(successMessage);
+};
+
 const badge = (text, kind = "") => el("span", `badge ${kind}`.trim(), text);
 
-const renderViews = () => {
-  const nav = document.querySelector("#views");
-  nav.replaceChildren();
-  for (const [key, label] of viewDefinitions) {
-    const button = el("button", "view-button");
-    button.type = "button";
-    button.setAttribute("aria-current", String(state.view === key));
-    button.append(el("span", "", label));
-    const count = key === "all"
-      ? (state.data?.projects.length || 0)
-      : (state.data?.view_counts[key] || 0);
-    button.append(el("span", "view-count", String(count)));
-    button.addEventListener("click", () => {
-      state.view = key;
-      render();
-    });
-    nav.append(button);
-  }
-};
-
-const renderFinding = (finding, project) => {
-  const row = el("article", "finding");
-  const heading = el("h3", "", finding.kind.replaceAll("_", " "));
-  row.append(heading, el("p", "", finding.summary));
-  const meta = el("p", "evidence", `Observed in ${finding.provider}:${finding.session_id.slice(0, 8)}`);
-  row.append(meta);
-  if (!finding.seen) {
-    const actions = el("div", "row-actions");
-    const seen = el("button", "", "Mark seen");
-    seen.type = "button";
-    seen.addEventListener("click", async () => {
-      try {
-        state.data = await post("/api/findings/seen", { finding_id: finding.finding_id });
-        toast("Finding marked seen");
-        render();
-      } catch (error) { showError(error); }
-    });
-    actions.append(seen);
-    row.append(actions);
-  }
-  return row;
-};
-
-const renderReview = (review) => {
-  const section = el("section", "review");
-  const label = el("p", "section-label meta", "MODEL REVIEW");
-  section.append(label);
-  if (!review) {
-    section.append(el("p", "evidence", "No interactive review has been published yet."));
-    return section;
-  }
-  section.append(el("p", "", review.summary || "Review prepared, awaiting analyzer output."));
-  const model = review.analyzer_model ? `, ${review.analyzer_model}` : "";
-  section.append(el("p", "evidence", `${review.analyzer_provider}${model} · ${review.status}`));
-  if (review.target_session) {
-    const target = `${review.target_session.provider}:${review.target_session.session_id.slice(0, 8)}`;
-    const count = review.coverage?.message_count ?? 0;
-    const limit = review.coverage?.message_limit ?? 40;
-    section.append(el("p", "evidence", `Reviewed ${target} · ${count}/${limit} visible messages`));
-  }
-  for (const gap of review.coverage?.gaps || []) {
-    section.append(el("p", "evidence issue-text", `Coverage gap: ${gap}`));
-  }
-  for (const item of review.items || []) {
-    const row = el("article", "review-item");
-    row.append(el("h3", "", item.title));
-    row.append(el("p", "", item.detail));
-    row.append(el("p", "evidence", `“${item.evidence_excerpt}”`));
-    row.append(el("p", "evidence", `${item.type} · ${item.assessment} · ${item.session_id.slice(0, 8)}`));
-    section.append(row);
-  }
-  for (const limitation of review.limitations || []) {
-    section.append(el("p", "evidence", `Limit: ${limitation}`));
-  }
-  return section;
-};
-
-const renderProject = (project) => {
-  const details = el("details", "project");
-  const savedOpen = state.projectOpen.get(project.project_id);
-  details.open = savedOpen ?? Boolean(project.primary_finding || project.facets.prominent_review_items);
-  details.addEventListener("toggle", () => {
-    state.projectOpen.set(project.project_id, details.open);
+const unseenFindings = (project) => project.findings
+  .filter((finding) => !finding.seen)
+  .sort((left, right) => {
+    const leftPriority = findingPriorities[left.kind] ?? 9;
+    const rightPriority = findingPriorities[right.kind] ?? 9;
+    return leftPriority - rightPriority || (right.updated_at || 0) - (left.updated_at || 0);
   });
-  const summary = el("summary");
 
-  const identity = el("div");
-  const pathLine = el("div", "path-line");
-  pathLine.append(el("span", "chevron", "›"), el("span", "path", project.display_path));
-  identity.append(pathLine);
-  const badges = el("div", "badges");
-  const providers = [...new Set(project.sessions.map((session) => session.provider))];
-  providers.forEach((provider) => badges.append(badge(provider)));
-  if (project.current_branch) badges.append(badge(project.current_branch));
-  if (project.primary_finding) badges.append(badge("observed", "observed"));
-  if (project.facets.prominent_review_items) badges.append(badge("model review", "model"));
-  if (project.facets.health !== "healthy") badges.append(badge(project.facets.health, "issue"));
-  identity.append(badges);
-
-  const headline = el("div", "headline");
-  const primary = project.primary_finding?.summary || project.review?.summary || "No current finding";
-  headline.append(el("strong", "", primary));
-  headline.append(el("span", "", `${project.sessions.length} known session${project.sessions.length === 1 ? "" : "s"}`));
-
-  const age = el("div", "age");
-  age.append(el("strong", "", relativeAge(project.facets.activity_age_seconds)));
-  age.append(el("span", "", project.facets.activity));
-  summary.append(identity, headline, age);
-  details.append(summary);
-
-  const body = el("div", "project-body");
-  const primaryColumn = el("div");
-  const factual = el("section");
-  factual.append(el("p", "section-label meta", "SOURCE-BACKED ATTENTION"));
-  const unseen = project.findings.filter((finding) => !finding.seen);
-  if (unseen.length) unseen.slice(0, 5).forEach((finding) => factual.append(renderFinding(finding, project)));
-  else factual.append(el("p", "evidence", "No unseen factual findings."));
-  primaryColumn.append(factual, renderReview(project.review));
-
-  const side = el("aside");
-  side.append(el("p", "section-label meta", "SESSIONS"));
-  for (const session of project.sessions.slice(0, 20)) {
-    const row = el("div", "session-row");
-    const left = el("span");
-    left.append(el("strong", "", session.provider), document.createTextNode(" "));
-    left.append(el("code", "", session.session_id.slice(0, 8)));
-    row.append(left, el("span", "", relativeAge(session.activity_age_seconds)));
-    side.append(row);
+const projectSignal = (project) => {
+  const finding = unseenFindings(project)[0];
+  if (finding) {
+    return {
+      kind: "observed",
+      label: "Observed",
+      summary: finding.summary,
+      source: `${finding.provider} · ${finding.session_id.slice(0, 8)}`,
+      finding,
+    };
   }
-  const actions = el("div", "project-actions");
-  const rescan = el("button", "", "Rescan sources");
-  rescan.type = "button";
-  rescan.addEventListener("click", async () => {
-    try {
-      rescan.disabled = true;
-      state.data = await post("/api/rescan", { project: project.project_id });
-      toast("Source discovery complete");
-      render();
-    } catch (error) { showError(error); }
-    finally { rescan.disabled = false; }
-  });
-  actions.append(rescan);
-  side.append(actions);
-  body.append(primaryColumn, side);
-  details.append(body);
-  return details;
+  if (project.facets.prominent_review_items > 0 && project.review) {
+    return {
+      kind: "model",
+      label: "Model review",
+      summary: project.review.summary || "A bounded review suggests another look.",
+      source: `${project.review.analyzer_provider} analysis · ${project.review.status}`,
+    };
+  }
+  if (project.facets.health !== "healthy") {
+    return {
+      kind: "unknown",
+      label: "Observer",
+      summary: "Collection needs inspection.",
+      source: humanLabel(project.facets.health),
+    };
+  }
+  if (project.facets.activity === "recent") {
+    return {
+      kind: "derived",
+      label: "Derived",
+      summary: "Recent agent activity. No unseen factual finding.",
+      source: `${project.sessions.length} known session${project.sessions.length === 1 ? "" : "s"}`,
+    };
+  }
+  return {
+    kind: "derived",
+    label: "Derived",
+    summary: "No current attention signal.",
+    source: `${project.sessions.length} known session${project.sessions.length === 1 ? "" : "s"}`,
+  };
+};
+
+const sortKey = (project) => {
+  const finding = unseenFindings(project)[0];
+  if (finding) return [findingPriorities[finding.kind] ?? 8, project.facets.activity_age_seconds ?? Infinity];
+  if (project.facets.prominent_review_items > 0) return [10, project.facets.activity_age_seconds ?? Infinity];
+  if (project.facets.health !== "healthy") return [20, project.facets.activity_age_seconds ?? Infinity];
+  if (project.facets.activity === "recent") return [30, project.facets.activity_age_seconds ?? Infinity];
+  if (project.facets.activity === "quiet") return [40, project.facets.activity_age_seconds ?? Infinity];
+  if (project.facets.activity === "stale") return [50, project.facets.activity_age_seconds ?? Infinity];
+  return [60, project.facets.activity_age_seconds ?? Infinity];
 };
 
 const filteredProjects = () => {
@@ -211,44 +210,431 @@ const filteredProjects = () => {
     const haystack = [
       project.display_path,
       project.resolved_path,
+      project.current_branch || "",
+      ...project.findings.map((finding) => finding.summary),
+      project.review?.summary || "",
       ...project.sessions.flatMap((session) => [session.provider, session.session_id, session.title || ""]),
     ].join(" ").toLocaleLowerCase();
     return haystack.includes(query);
   });
 };
 
-const render = () => {
-  renderViews();
+const orderedProjects = (freezeOrder) => {
+  const projects = filteredProjects();
+  const sorted = [...projects].sort((left, right) => {
+    const [leftRank, leftAge] = sortKey(left);
+    const [rightRank, rightAge] = sortKey(right);
+    return leftRank - rightRank || leftAge - rightAge || left.display_path.localeCompare(right.display_path);
+  });
+  if (freezeOrder && state.projectOrder.length) {
+    const byId = new Map(projects.map((project) => [project.project_id, project]));
+    const stable = state.projectOrder.map((id) => byId.get(id)).filter(Boolean);
+    const present = new Set(stable.map((project) => project.project_id));
+    stable.push(...sorted.filter((project) => !present.has(project.project_id)));
+    state.projectOrder = stable.map((project) => project.project_id);
+    return stable;
+  }
+  state.projectOrder = sorted.map((project) => project.project_id);
+  return sorted;
+};
+
+const renderViews = () => {
+  const nav = document.querySelector("#views");
+  nav.replaceChildren();
+  for (const [key, label] of viewDefinitions) {
+    const button = el("button", "view-button");
+    button.type = "button";
+    button.dataset.focusKey = `view:${key}`;
+    button.setAttribute("aria-current", String(state.view === key));
+    button.append(el("span", "", label));
+    const count = key === "all"
+      ? (state.data?.projects.length || 0)
+      : (state.data?.view_counts[key] || 0);
+    button.append(el("span", "view-count", String(count)));
+    button.addEventListener("click", () => {
+      state.view = key;
+      render({ forceSort: true });
+    });
+    nav.append(button);
+  }
+};
+
+const renderProjectRow = (project) => {
+  const signal = projectSignal(project);
+  const button = el("button", "project-row");
+  const selected = project.project_id === state.selectedProjectId;
+  button.type = "button";
+  button.dataset.projectId = project.project_id;
+  button.dataset.focusKey = `project:${project.project_id}`;
+  button.setAttribute("aria-pressed", String(selected));
+  button.setAttribute("aria-controls", "inspector");
+
+  const identity = el("span", "project-identity");
+  identity.append(el("strong", "path", project.display_path));
+  const identityMeta = el("span", "identity-meta");
+  const providers = [...new Set(project.sessions.map((session) => session.provider))];
+  if (providers.length) identityMeta.append(document.createTextNode(providers.join(" + ")));
+  if (project.current_branch) {
+    if (providers.length) identityMeta.append(document.createTextNode(" · "));
+    identityMeta.append(el("span", "branch", project.current_branch));
+  }
+  identity.append(identityMeta);
+
+  const claim = el("span", "project-claim");
+  const claimMeta = el("span", "claim-meta");
+  claimMeta.append(badge(signal.label, `truth-${signal.kind}`));
+  if (project.facets.health !== "healthy") {
+    claimMeta.append(badge(`Observer ${project.facets.health}`, "health-issue"));
+  }
+  if (signal.kind === "observed" && project.facets.prominent_review_items > 0) {
+    claimMeta.append(badge("Also model review", "truth-model"));
+  }
+  claim.append(claimMeta, el("strong", "claim-summary", signal.summary), el("span", "claim-source", signal.source));
+
+  const age = el("span", "project-age");
+  age.append(el("strong", "", relativeAge(project.facets.activity_age_seconds)));
+  age.append(el("span", "", humanLabel(project.facets.activity)));
+
+  button.append(identity, claim, age);
+  button.addEventListener("click", () => {
+    state.selectedProjectId = project.project_id;
+    render();
+  });
+  return button;
+};
+
+const sectionHeading = (title, truth, truthClass = "") => {
+  const heading = el("div", "section-heading");
+  heading.append(el("h3", "", title));
+  if (truth) heading.append(badge(truth, truthClass));
+  return heading;
+};
+
+const renderFinding = (finding) => {
+  const row = el("article", `finding ${finding.seen ? "seen" : "unseen"}`);
+  const heading = el("div", "item-heading");
+  heading.append(el("h4", "", humanLabel(finding.kind)));
+  heading.append(badge(finding.seen ? "Seen locally" : "Unseen", finding.seen ? "local-state" : "truth-observed"));
+  row.append(heading, el("p", "item-summary", finding.summary));
+  const evidence = finding.details?.evidence_excerpt;
+  if (evidence) {
+    const quote = el("blockquote", "evidence-quote", `“${evidence}”`);
+    row.append(quote);
+  }
+  row.append(el(
+    "p",
+    "provenance",
+    `${finding.provider} · ${finding.session_id.slice(0, 8)} · ${absoluteTime(finding.updated_at)}`,
+  ));
+
+  const structured = finding.details?.items;
+  const items = Array.isArray(structured)
+    ? structured
+    : (structured && typeof structured === "object" ? Object.values(structured) : []);
+  if (items.length) {
+    const list = el("div", "structured-questions");
+    for (const item of items) {
+      const question = el("div", "structured-question");
+      const questionHead = el("p", "question-heading");
+      questionHead.append(el("strong", "", item.question || "Question"));
+      questionHead.append(badge(humanLabel(item.state || "unknown"), "local-state"));
+      question.append(questionHead);
+      if (Array.isArray(item.options) && item.options.length) {
+        const options = el("ul", "option-list");
+        for (const option of item.options) {
+          const optionRow = el("li");
+          optionRow.append(el("strong", "", option.label || "Option"));
+          if (option.description) optionRow.append(document.createTextNode(`: ${option.description}`));
+          options.append(optionRow);
+        }
+        question.append(options);
+      }
+      list.append(question);
+    }
+    row.append(list);
+  }
+
+  if (!finding.seen) {
+    const seen = el("button", "quiet-button", "Mark seen locally");
+    seen.type = "button";
+    seen.dataset.focusKey = `seen:${finding.finding_id}`;
+    seen.addEventListener("click", async () => {
+      try {
+        seen.disabled = true;
+        state.data = await post("/api/findings/seen", { finding_id: finding.finding_id });
+        toast("Finding marked seen locally");
+        render({ forceSort: true });
+      } catch (error) {
+        showError(error);
+      } finally {
+        seen.disabled = false;
+      }
+    });
+    row.append(seen);
+  }
+  return row;
+};
+
+const renderReview = (review) => {
+  const section = el("section", "inspector-section model-review");
+  section.append(sectionHeading("Conversation review", "Model review", "truth-model"));
+  if (!review) {
+    section.append(el("p", "empty-copy", "No interactive review has been published for this project."));
+    return section;
+  }
+  section.append(el("p", "review-summary", review.summary || "Review prepared without a summary."));
+  const model = review.analyzer_model ? ` · ${review.analyzer_model}` : "";
+  section.append(el(
+    "p",
+    "provenance",
+    `${review.analyzer_provider}${model} · interactive analysis · ${humanLabel(review.status)}`,
+  ));
+  if (review.target_session) {
+    const target = `${review.target_session.provider}:${review.target_session.session_id.slice(0, 8)}`;
+    const count = review.coverage?.message_count ?? 0;
+    const limit = review.coverage?.message_limit ?? 40;
+    section.append(el("p", "coverage", `Target ${target}. Reviewed ${count} of at most ${limit} visible messages.`));
+  }
+  for (const gap of review.coverage?.gaps || []) {
+    section.append(el("p", "coverage issue-text", `Coverage gap: ${gap}`));
+  }
+  for (const item of review.items || []) {
+    const row = el("article", "review-item");
+    const head = el("div", "item-heading");
+    head.append(el("h4", "", item.title));
+    head.append(badge(humanLabel(item.assessment), "truth-model"));
+    row.append(head, el("p", "item-summary", item.detail));
+    if (item.evidence_excerpt) {
+      row.append(el("blockquote", "evidence-quote", `“${item.evidence_excerpt}”`));
+    }
+    row.append(el(
+      "p",
+      "provenance",
+      `${item.provider || review.target_session?.provider || "unknown"} · ${item.session_id.slice(0, 8)} · ${absoluteTime(item.timestamp)}`,
+    ));
+    section.append(row);
+  }
+  for (const limitation of review.limitations || []) {
+    section.append(el("p", "coverage", `Limit: ${limitation}`));
+  }
+  return section;
+};
+
+const renderSources = (project) => {
+  const section = el("section", "inspector-section");
+  section.append(sectionHeading("Source health", "Derived", "truth-derived"));
+  if (!project.sources.length) {
+    section.append(el("p", "empty-copy", "No bound sources. Observer coverage is unavailable."));
+    return section;
+  }
+  for (const source of project.sources) {
+    const row = el("article", "source-row");
+    const head = el("div", "item-heading");
+    head.append(el("h4", "", `${humanLabel(source.provider)} ${source.session_id.slice(0, 8)}`));
+    head.append(badge(humanLabel(source.health), source.health === "healthy" ? "health-good" : "health-issue"));
+    row.append(head);
+    if (source.health_detail) row.append(el("p", "issue-text", source.health_detail));
+    const diagnostics = [`generation ${source.generation ?? "unknown"}`];
+    if (source.malformed_count) diagnostics.push(`${source.malformed_count} malformed records`);
+    if (source.unknown_count) diagnostics.push(`${source.unknown_count} unknown records`);
+    row.append(el("p", "provenance", diagnostics.join(" · ")));
+    section.append(row);
+  }
+  return section;
+};
+
+const renderSessions = (project) => {
+  const section = el("section", "inspector-section");
+  section.append(sectionHeading("Known sessions", "Observed", "truth-observed"));
+  if (!project.sessions.length) {
+    section.append(el("p", "empty-copy", "No Claude or Codex session is currently bound to this project."));
+    return section;
+  }
+  for (const session of project.sessions) {
+    const row = el("article", "session-row");
+    const sessionCopy = el("button", "copy-button", "Copy ID");
+    sessionCopy.type = "button";
+    sessionCopy.dataset.focusKey = `copy-session:${session.provider}:${session.session_id}`;
+    sessionCopy.addEventListener("click", () => copyText(session.session_id, "Session ID copied"));
+    const copy = el("div", "session-copy");
+    copy.append(el("h4", "", session.title || `${humanLabel(session.provider)} session`));
+    copy.append(el("code", "selectable", `${session.provider}:${session.session_id}`));
+    const stateLine = [relativeAge(session.activity_age_seconds), humanLabel(session.last_turn_state || session.last_kind)];
+    copy.append(el("p", "provenance", stateLine.join(" · ")));
+    row.append(copy, sessionCopy);
+    section.append(row);
+  }
+  return section;
+};
+
+const renderChanges = (project) => {
+  const section = el("section", "inspector-section");
+  section.append(sectionHeading("Observed changes", "Observed", "truth-observed"));
+  if (!project.changes.length) {
+    section.append(el("p", "empty-copy", "No supported branch, title, or focus change has been recorded."));
+    return section;
+  }
+  for (const change of project.changes) {
+    const row = el("article", "change-row");
+    row.append(el("h4", "", humanLabel(change.kind)));
+    row.append(el("p", "", `${change.old_value || "unknown"} → ${change.new_value || "unknown"}`));
+    row.append(el("p", "provenance", absoluteTime(change.observed_at)));
+    section.append(row);
+  }
+  return section;
+};
+
+const renderFacets = (project) => {
+  const section = el("section", "inspector-section facet-section");
+  section.append(sectionHeading("Current facets", "Derived", "truth-derived"));
+  const list = el("dl", "facet-list");
+  const values = [
+    ["Attention", humanLabel(project.facets.attention)],
+    ["Activity", `${humanLabel(project.facets.activity)}, ${relativeAge(project.facets.activity_age_seconds)}`],
+    ["Observer health", humanLabel(project.facets.health)],
+    ["Continuity", humanLabel(project.facets.continuity)],
+  ];
+  for (const [term, value] of values) {
+    list.append(el("dt", "", term), el("dd", "", value));
+  }
+  section.append(list);
+  return section;
+};
+
+const renderInspector = (project) => {
+  const inspector = document.querySelector("#inspector");
+  inspector.replaceChildren();
+  if (!project) {
+    const empty = el("div", "inspector-empty");
+    empty.append(el("p", "eyebrow", "PROJECT DETAIL"));
+    empty.append(el("h2", "", "Select a watched project"));
+    empty.append(el("p", "", "Evidence, sessions, health, and local actions will appear here."));
+    inspector.append(empty);
+    return;
+  }
+
+  const header = el("header", "inspector-header");
+  header.append(el("p", "eyebrow", "PROJECT DETAIL"), el("h2", "selectable", project.display_path));
+  const resolved = el("code", "resolved-path selectable", project.resolved_path);
+  header.append(resolved);
+  const actions = el("div", "inspector-actions");
+  const copyPath = el("button", "quiet-button", "Copy path");
+  copyPath.type = "button";
+  copyPath.dataset.focusKey = `copy-path:${project.project_id}`;
+  copyPath.addEventListener("click", () => copyText(project.resolved_path, "Project path copied"));
+  const rescan = el("button", "quiet-button", "Rescan sources");
+  rescan.type = "button";
+  rescan.dataset.focusKey = `rescan:${project.project_id}`;
+  rescan.addEventListener("click", async () => {
+    try {
+      rescan.disabled = true;
+      state.data = await post("/api/rescan", { project: project.project_id });
+      toast("Source discovery complete");
+      render();
+    } catch (error) {
+      showError(error);
+    } finally {
+      rescan.disabled = false;
+    }
+  });
+  actions.append(copyPath, rescan);
+  header.append(actions);
+  inspector.append(header, renderFacets(project));
+
+  const findings = el("section", "inspector-section");
+  findings.append(sectionHeading("Source-backed attention", "Observed", "truth-observed"));
+  const ordered = [...project.findings].sort((left, right) => Number(left.seen) - Number(right.seen) || (right.updated_at || 0) - (left.updated_at || 0));
+  if (ordered.length) ordered.forEach((finding) => findings.append(renderFinding(finding)));
+  else findings.append(el("p", "empty-copy", "No factual findings have been recorded for this project."));
+  inspector.append(findings, renderReview(project.review), renderSessions(project), renderSources(project), renderChanges(project));
+};
+
+const renderServices = () => {
+  const notices = document.querySelector("#service-notices");
+  notices.replaceChildren();
+  const service = document.querySelector("#service-state");
+  const server = state.data?.services?.server;
+  const daemon = state.data?.services?.daemon;
+  const heartbeatAge = daemon?.heartbeat_at && state.data?.generated_at
+    ? Math.max(0, state.data.generated_at - daemon.heartbeat_at)
+    : null;
+  const heartbeatStale = daemon?.running && (heartbeatAge === null || heartbeatAge > 15);
+  const healthy = Boolean(server?.running && daemon?.running && !heartbeatStale && !daemon?.error);
+  service.className = `service-state ${healthy ? "healthy" : "issue"}`;
+  service.lastElementChild.textContent = healthy
+    ? "Collector and dashboard live"
+    : (heartbeatStale ? "Collector heartbeat stale" : "Observer needs attention");
+
+  const addNotice = (title, copy, kind) => {
+    const notice = el("section", `service-notice ${kind}`);
+    notice.append(el("strong", "", title), el("p", "", copy));
+    notices.append(notice);
+  };
+  if (server && !server.running) {
+    addNotice("Dashboard process state is inconsistent", "The current page is available, but the stored server state says it is not running.", "error");
+  }
+  if (daemon && !daemon.running) {
+    addNotice("Collector is not running", "Cached project information remains visible, but new session-log activity is not being collected.", "error");
+  } else if (heartbeatStale) {
+    addNotice("Collector heartbeat is stale", `The last recorded heartbeat was ${relativeAge(heartbeatAge)}. Displayed project data may be behind.`, "warning");
+  }
+  if (daemon?.error) {
+    addNotice("Collector reported an error", daemon.error, "error");
+  }
+};
+
+const findFocusTarget = (key) => {
+  if (!key) return null;
+  return [...document.querySelectorAll("[data-focus-key]")]
+    .find((node) => node.dataset.focusKey === key) || null;
+};
+
+const render = ({ forceSort = false } = {}) => {
+  const active = document.activeElement;
+  const focusKey = active?.dataset?.focusKey;
   const list = document.querySelector("#projects");
+  const inspector = document.querySelector("#inspector");
+  const freezeOrder = !forceSort && Boolean(
+    list.matches(":hover") || list.contains(active) || inspector.contains(active),
+  );
+  const listScroll = list.scrollTop;
+  const inspectorScroll = inspector.scrollTop;
+
+  renderViews();
+  const projects = orderedProjects(freezeOrder);
+  if (!projects.some((project) => project.project_id === state.selectedProjectId)) {
+    state.selectedProjectId = projects[0]?.project_id || null;
+  }
+
   list.replaceChildren();
   list.setAttribute("aria-busy", "false");
-  const projects = filteredProjects();
   if (!projects.length) {
     const empty = el("div", "empty");
     empty.append(el("strong", "", state.data?.projects.length ? "Nothing in this view" : "No projects watched yet"));
     empty.append(document.createTextNode(state.data?.projects.length
-      ? "Try another view or clear the path filter."
-      : "Add a project path above, or invoke the Observer skill from a project session."));
+      ? "Try another view or clear the filter."
+      : "Watch a local project to begin building a private activity ledger."));
     list.append(empty);
   } else {
-    projects.forEach((project) => list.append(renderProject(project)));
+    projects.forEach((project) => list.append(renderProjectRow(project)));
   }
+
+  const selected = projects.find((project) => project.project_id === state.selectedProjectId);
+  renderInspector(selected);
   const view = viewDefinitions.find(([key]) => key === state.view);
   document.querySelector("#view-kicker").textContent = (view?.[1] || "All projects").toUpperCase();
   if (state.data) {
-    document.querySelector("#updated-at").textContent = `updated ${relativeAge(Date.now() / 1000 - state.data.generated_at)}`;
-    const service = document.querySelector("#service-state");
-    const server = state.data.services?.server?.running;
-    const daemon = state.data.services?.daemon?.running;
-    service.className = `service-state ${server && daemon ? "healthy" : "issue"}`;
-    service.lastChild.textContent = server && daemon ? " Collector and dashboard live" : " Sidecar issue";
+    const updated = document.querySelector("#updated-at");
+    updated.textContent = `updated ${relativeAge(Date.now() / 1000 - state.data.generated_at)}`;
+    updated.title = absoluteTime(state.data.generated_at);
   }
-};
+  renderServices();
+  renderError();
 
-const showError = (error) => {
-  const node = document.querySelector("#error");
-  node.textContent = error instanceof Error ? error.message : String(error);
-  node.hidden = false;
+  list.scrollTop = listScroll;
+  inspector.scrollTop = inspectorScroll;
+  const focusTarget = findFocusTarget(focusKey);
+  if (focusTarget) focusTarget.focus({ preventScroll: true });
 };
 
 const refresh = async () => {
@@ -259,30 +645,56 @@ const refresh = async () => {
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || `Refresh failed (${response.status})`);
     state.data = value;
-    document.querySelector("#error").hidden = true;
+    clearRefreshError();
     render();
-  } catch (error) { showError(error); }
-  finally { state.busy = false; }
+  } catch (error) {
+    showError(error, "refresh");
+  } finally {
+    state.busy = false;
+  }
 };
 
 document.querySelector("#search").addEventListener("input", (event) => {
   state.search = event.target.value;
-  render();
+  render({ forceSort: true });
+});
+
+const enrollment = document.querySelector("#enrollment");
+const watchToggle = document.querySelector("#watch-toggle");
+watchToggle.addEventListener("click", () => {
+  const opening = enrollment.hidden;
+  enrollment.hidden = !opening;
+  watchToggle.setAttribute("aria-expanded", String(opening));
+  watchToggle.textContent = opening ? "Close enrollment" : "Watch project";
+  if (opening) document.querySelector("#project-path").focus();
 });
 
 document.querySelector("#add-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = document.querySelector("#project-path");
+  const button = event.submitter || event.currentTarget.querySelector("button[type=submit]");
   try {
-    const button = event.submitter;
-    if (button) button.disabled = true;
+    button.disabled = true;
+    button.textContent = "Building baseline";
     state.data = await post("/api/projects", { path: input.value });
     state.view = "all";
+    state.search = "";
+    document.querySelector("#search").value = "";
+    const addedPath = input.value;
     input.value = "";
-    toast("Project added to the watchlist");
-    render();
-  } catch (error) { showError(error); }
-  finally { if (event.submitter) event.submitter.disabled = false; }
+    enrollment.hidden = true;
+    watchToggle.setAttribute("aria-expanded", "false");
+    watchToggle.textContent = "Watch project";
+    const added = state.data.projects.find((project) => project.resolved_path === addedPath || project.display_path === addedPath);
+    if (added) state.selectedProjectId = added.project_id;
+    toast("Project baseline committed to the watchlist");
+    render({ forceSort: true });
+  } catch (error) {
+    showError(error);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Begin watching";
+  }
 });
 
 refresh();

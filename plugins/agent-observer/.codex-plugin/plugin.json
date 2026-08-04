@@ -1,6 +1,6 @@
 {
   "name": "agent-observer",
-  "version": "0.2.0",
+  "version": "0.2.0+codex.20260804142947",
   "description": "A passive local dashboard and evidence-linked review loop for Claude and Codex sessions.",
   "author": {
     "name": "Vlad Orlenko",
@@ -9,7 +9,13 @@
   "homepage": "https://github.com/orlenko/skills/tree/main/plugins/agent-observer",
   "repository": "https://github.com/orlenko/skills",
   "license": "MIT",
-  "keywords": ["agents", "observer", "dashboard", "codex", "claude"],
+  "keywords": [
+    "agents",
+    "observer",
+    "dashboard",
+    "codex",
+    "claude"
+  ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Agent Observer",
@@ -17,7 +23,9 @@
     "longDescription": "A read-only local observer for Claude and Codex work, with durable collection, a localhost dashboard, and opt-in analysis by the session you invoke it from.",
     "developerName": "Vlad Orlenko",
     "category": "Productivity",
-    "capabilities": ["Interactive"],
+    "capabilities": [
+      "Interactive"
+    ],
     "websiteURL": "https://github.com/orlenko/skills",
     "defaultPrompt": [
       "Start Agent Observer for this project.",
