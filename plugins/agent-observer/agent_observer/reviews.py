@@ -22,6 +22,8 @@ MAX_ITEMS = 3
 MAX_PACKET_BYTES = 256 * 1024
 TAIL_BYTES = 4 * 1024 * 1024
 REVIEW_TTL_SECONDS = 60 * 60
+MAX_WAIT_SECONDS = 55.0
+QUIESCENCE_SECONDS = 1.0
 ALLOWED_TYPES = {
     "question",
     "decision",
@@ -59,7 +61,7 @@ def _source_messages(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     path = Path(str(source["path"]))
     try:
-        size = path.stat().st_size
+        size = min(path.stat().st_size, int(source.get("committed_offset") or 0))
         start = max(0, size - TAIL_BYTES)
         window = read_window(path, start, size)
     except OSError:
@@ -73,7 +75,7 @@ def _source_messages(
         generation=int(source["generation"]),
         message_mode=str(source.get("message_mode") or "unknown"),
     )
-    current_matches = False
+    current_matches = cwd_matches_project(source.get("current_cwd"), project)
     messages: list[dict[str, Any]] = []
     for batch in batches:
         if batch.cwd:
@@ -122,6 +124,23 @@ def _source_recency(source: dict[str, Any]) -> tuple[float, str, str]:
     return max(observed, modified), str(source["provider"]), str(source["session_id"])
 
 
+def _semantic_input_hash(
+    messages: list[dict[str, Any]], gaps: list[str]
+) -> str:
+    value = {
+        "messages": [
+            {
+                key: message.get(key)
+                for key in ("message_ref", "role", "phase", "timestamp", "text")
+            }
+            for message in messages
+        ],
+        "gaps": gaps,
+    }
+    encoded = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _expire_review_artifacts(observer: Observer, now: float) -> None:
     cutoff = now - REVIEW_TTL_SECONDS
     observer.db.expire_prepared_reviews(cutoff)
@@ -145,6 +164,10 @@ def prepare_review(
     exclude_session_id: str | None = None,
     target_session_id: str | None = None,
     target_provider: str | None = None,
+    _source_override: dict[str, Any] | None = None,
+    _job_id_override: str | None = None,
+    _lease_epoch: int | None = None,
+    _input_hash_override: str | None = None,
 ) -> dict[str, Any]:
     if analyzer_provider not in {"claude", "codex"}:
         raise ValueError("analyzer provider must be claude or codex")
@@ -163,15 +186,19 @@ def prepare_review(
     _expire_review_artifacts(observer, created_at)
     coverage_gaps: list[str] = []
     source_checkpoints: list[dict[str, Any]] = []
-    sources = [
-        source
-        for source in observer.db.sources()
-        if source.get("current_project_id") == project["project_id"]
-        and not (
-            source["provider"] == analyzer_provider
-            and str(source["session_id"]) == exclude_session_id
-        )
-    ]
+    sources = (
+        [_source_override]
+        if _source_override is not None
+        else [
+            source
+            for source in observer.db.sources()
+            if source.get("current_project_id") == project["project_id"]
+            and not (
+                source["provider"] == analyzer_provider
+                and str(source["session_id"]) == exclude_session_id
+            )
+        ]
+    )
     if target_session_id:
         sources = [
             source
@@ -225,6 +252,7 @@ def prepare_review(
             "mode": "interactive-session",
             "isolation": "current Claude/Codex session, not an isolated analyzer",
             "excluded_session_id": exclude_session_id,
+            "lease_epoch": _lease_epoch,
         },
         "target_session": (
             {
@@ -255,6 +283,10 @@ def prepare_review(
             "message_limit": MAX_MESSAGES,
             "tail_bytes_for_target_source": TAIL_BYTES,
             "gaps": coverage_gaps,
+            "negative_assessment_blocked": any(
+                "begins inside a bounded tail" not in gap
+                for gap in coverage_gaps
+            ),
             "source_checkpoints": source_checkpoints,
         },
         "response_schema": {
@@ -278,7 +310,11 @@ def prepare_review(
         messages.pop(0)
     packet["coverage"]["message_count"] = len(messages)
 
-    job_id = "review_" + uuid.uuid4().hex
+    input_hash = _input_hash_override or _semantic_input_hash(
+        messages, coverage_gaps
+    )
+
+    job_id = _job_id_override or "review_" + uuid.uuid4().hex
     jobs = observer.config.state_dir / "review-jobs"
     _private_directory(jobs)
     packet_path = jobs / f"{job_id}.packet.json"
@@ -292,6 +328,8 @@ def prepare_review(
         "packet_sha256": hashlib.sha256(packet_path.read_bytes()).hexdigest(),
         "target_session": packet["target_session"],
         "coverage": packet["coverage"],
+        "input_hash": input_hash,
+        "lease_epoch": _lease_epoch,
     }
     observer.db.create_review_job(
         job_id=job_id,
@@ -300,13 +338,171 @@ def prepare_review(
         analyzer_model=analyzer_model,
         created_at=created_at,
         packet_meta=packet_meta,
+        source_id=str(source["source_id"]) if source and _lease_epoch is not None else None,
+        source_generation=int(source["generation"])
+        if source and _lease_epoch is not None
+        else None,
+        source_offset=int(source["committed_offset"])
+        if source and _lease_epoch is not None
+        else None,
+        input_hash=input_hash if source and _lease_epoch is not None else None,
+        lease_epoch=_lease_epoch,
     )
     return {
         "job_id": job_id,
         "packet_path": str(packet_path),
         "draft_path": str(draft_path),
         "packet": packet,
+        "input_hash": input_hash,
     }
+
+
+def _prepared_job_result(observer: Observer, job_id: str) -> dict[str, Any]:
+    job = observer.db.review_job(job_id)
+    jobs = observer.config.state_dir / "review-jobs"
+    packet_path = jobs / f"{job_id}.packet.json"
+    draft_path = jobs / f"{job_id}.review.json"
+    try:
+        packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise OSError(f"prepared review packet is unavailable: {exc}") from exc
+    return {
+        "job_id": job_id,
+        "packet_path": str(packet_path),
+        "draft_path": str(draft_path),
+        "packet": packet,
+        "input_hash": json.loads(str(job["packet_meta_json"])).get("input_hash"),
+    }
+
+
+def _candidate_order(
+    observer: Observer, source: dict[str, Any]
+) -> tuple[int, float, float, str]:
+    cursor = observer.db.analysis_cursor(str(source["source_id"]))
+    if cursor is None:
+        return (0, 0.0, -_source_recency(source)[0], str(source["source_id"]))
+    return (
+        1,
+        float(cursor.get("accepted_at") or 0),
+        -_source_recency(source)[0],
+        str(source["source_id"]),
+    )
+
+
+def _prepare_next_once(
+    observer: Observer, lease_token: str
+) -> dict[str, Any] | None:
+    lease = observer.db.supervisor_lease(lease_token)
+    current_job_id = lease.get("current_job_id")
+    if current_job_id:
+        job = observer.db.review_job(str(current_job_id))
+        if (
+            job.get("status") == "prepared"
+            and int(job.get("lease_epoch") or -1) == int(lease["epoch"])
+        ):
+            observer.db.heartbeat_supervisor(
+                lease_token, state="analyzing", current_job_id=str(current_job_id)
+            )
+            return _prepared_job_result(observer, str(current_job_id))
+
+    sources = [
+        source
+        for source in observer.db.sources(monitoring_only=True)
+        if source.get("current_project_id")
+        and (
+            bool(lease.get("allow_cross_provider"))
+            or source.get("provider") == lease.get("provider")
+        )
+    ]
+    sources.sort(key=lambda source: _candidate_order(observer, source))
+    now = time.time()
+    for source in sources:
+        source_id = str(source["source_id"])
+        cursor = observer.db.analysis_cursor(source_id)
+        generation = int(source["generation"])
+        committed_offset = int(source["committed_offset"])
+        if cursor and (
+            int(cursor["generation"]), int(cursor["committed_offset"])
+        ) == (generation, committed_offset):
+            continue
+        try:
+            modified = Path(str(source["path"])).stat().st_mtime
+        except OSError:
+            continue
+        if now - modified < QUIESCENCE_SECONDS:
+            continue
+        project = observer.db.project(str(source["current_project_id"]))
+        messages, gaps = _source_messages(source, project)
+        input_hash = _semantic_input_hash(messages, gaps)
+        last_message_ref = (
+            str(messages[-1]["message_ref"]) if messages else None
+        )
+        if not messages or (cursor and cursor.get("input_hash") == input_hash):
+            observer.db.advance_analysis_cursor(
+                source_id=source_id,
+                generation=generation,
+                committed_offset=committed_offset,
+                input_hash=input_hash,
+                last_message_ref=last_message_ref,
+                job_id=cursor.get("job_id") if cursor else None,
+            )
+            continue
+        identity = "\x1f".join(
+            (
+                source_id,
+                str(generation),
+                str(committed_offset),
+                input_hash,
+                str(lease["provider"]),
+                str(lease.get("model") or ""),
+                PACKET_VERSION,
+            )
+        )
+        job_id = "review_" + hashlib.sha256(identity.encode()).hexdigest()[:32]
+        prepared = prepare_review(
+            observer,
+            str(project["project_id"]),
+            analyzer_provider=str(lease["provider"]),
+            analyzer_model=lease.get("model"),
+            exclude_session_id=lease.get("session_id"),
+            _source_override=source,
+            _job_id_override=job_id,
+            _lease_epoch=int(lease["epoch"]),
+            _input_hash_override=input_hash,
+        )
+        observer.db.heartbeat_supervisor(
+            lease_token, state="analyzing", current_job_id=job_id
+        )
+        return prepared
+    return None
+
+
+def next_review(
+    observer: Observer,
+    lease_token: str,
+    *,
+    wait_seconds: float = 0,
+) -> dict[str, Any]:
+    if wait_seconds < 0 or wait_seconds > MAX_WAIT_SECONDS:
+        raise ValueError(f"--wait must be between 0 and {int(MAX_WAIT_SECONDS)} seconds")
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        prepared = _prepare_next_once(observer, lease_token)
+        if prepared is not None:
+            return {
+                "state": "work",
+                "review": prepared,
+                "supervisor": observer.db.supervisor_status(),
+            }
+        observer.db.heartbeat_supervisor(lease_token, state="waiting")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {
+                "state": "waiting",
+                "review": None,
+                "supervisor": observer.db.supervisor_status(),
+            }
+        time.sleep(min(0.5, remaining))
 
 
 def _bounded_string(value: Any, field: str, limit: int, *, required: bool) -> str:
@@ -323,7 +519,11 @@ def _bounded_string(value: Any, field: str, limit: int, *, required: bool) -> st
 
 
 def submit_review(
-    observer: Observer, job_id: str, draft_path: str | Path
+    observer: Observer,
+    job_id: str,
+    draft_path: str | Path,
+    *,
+    lease_token: str | None = None,
 ) -> dict[str, Any]:
     job = observer.db.review_job(job_id)
     if job["status"] != "prepared":
@@ -362,7 +562,12 @@ def submit_review(
     raw_items = value.get("items")
     if not isinstance(raw_items, list) or len(raw_items) > MAX_ITEMS:
         raise ValueError(f"items must be a list containing at most {MAX_ITEMS} entries")
-    incomplete = bool(packet.get("coverage", {}).get("gaps"))
+    coverage = packet.get("coverage", {})
+    incomplete = bool(
+        coverage.get(
+            "negative_assessment_blocked", bool(coverage.get("gaps"))
+        )
+    )
     items: list[dict[str, Any]] = []
     for index, item in enumerate(raw_items):
         if not isinstance(item, dict):
@@ -426,13 +631,32 @@ def submit_review(
         _bounded_string(item, f"limitations[{index}]", 1000, required=True)
         for index, item in enumerate(raw_limitations)
     ]
-    observer.db.submit_review_job(
-        job_id,
-        submitted_at=time.time(),
-        summary=summary,
-        items=items,
-        limitations=limitations,
-    )
+    submitted_at = time.time()
+    if job.get("lease_epoch") is not None:
+        if not lease_token:
+            raise ValueError("supervised review submission requires its lease token")
+        last_message_ref = (
+            str(packet["messages"][-1]["message_ref"])
+            if packet.get("messages")
+            else None
+        )
+        observer.db.submit_supervised_review_job(
+            job_id,
+            lease_token=lease_token,
+            submitted_at=submitted_at,
+            summary=summary,
+            items=items,
+            limitations=limitations,
+            last_message_ref=last_message_ref,
+        )
+    else:
+        observer.db.submit_review_job(
+            job_id,
+            submitted_at=submitted_at,
+            summary=summary,
+            items=items,
+            limitations=limitations,
+        )
     for temporary in (path, packet_path):
         try:
             temporary.unlink()

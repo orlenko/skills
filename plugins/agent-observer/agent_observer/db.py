@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -138,7 +139,12 @@ CREATE TABLE IF NOT EXISTS review_jobs (
     summary TEXT,
     items_json TEXT NOT NULL DEFAULT '[]',
     limitations_json TEXT NOT NULL DEFAULT '[]',
-    error TEXT
+    error TEXT,
+    source_id TEXT REFERENCES sources(source_id) ON DELETE CASCADE,
+    source_generation INTEGER,
+    source_offset INTEGER,
+    input_hash TEXT,
+    lease_epoch INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS review_jobs_project_time
@@ -151,7 +157,38 @@ CREATE TABLE IF NOT EXISTS excluded_sessions (
     created_at REAL NOT NULL,
     PRIMARY KEY(provider, session_id)
 );
+
+CREATE TABLE IF NOT EXISTS supervisor_state (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    epoch INTEGER NOT NULL DEFAULT 0,
+    lease_token TEXT,
+    provider TEXT,
+    model TEXT,
+    session_id TEXT,
+    state TEXT NOT NULL DEFAULT 'detached',
+    acquired_at REAL,
+    heartbeat_at REAL,
+    current_job_id TEXT,
+    stop_reason TEXT,
+    allow_cross_provider INTEGER NOT NULL DEFAULT 0
+);
+
+INSERT OR IGNORE INTO supervisor_state(singleton, epoch, state)
+VALUES (1, 0, 'detached');
+
+CREATE TABLE IF NOT EXISTS analysis_cursors (
+    source_id TEXT PRIMARY KEY REFERENCES sources(source_id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL,
+    committed_offset INTEGER NOT NULL,
+    input_hash TEXT NOT NULL,
+    last_message_ref TEXT,
+    job_id TEXT,
+    accepted_at REAL NOT NULL
+);
 """
+
+
+SUPERVISOR_STALE_SECONDS = 120.0
 
 
 class ObserverDB:
@@ -165,6 +202,7 @@ class ObserverDB:
         self.connection.execute("PRAGMA journal_mode = WAL")
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.executescript(SCHEMA)
+        self._migrate_schema()
         self.connection.commit()
         os.chmod(self.path, 0o600)
 
@@ -181,6 +219,24 @@ class ObserverDB:
     def transaction(self) -> Iterator[sqlite3.Connection]:
         with self.connection:
             yield self.connection
+
+    def _migrate_schema(self) -> None:
+        columns = {
+            str(row["name"])
+            for row in self.connection.execute("PRAGMA table_info(review_jobs)")
+        }
+        additions = {
+            "source_id": "TEXT REFERENCES sources(source_id) ON DELETE CASCADE",
+            "source_generation": "INTEGER",
+            "source_offset": "INTEGER",
+            "input_hash": "TEXT",
+            "lease_epoch": "INTEGER",
+        }
+        for name, declaration in additions.items():
+            if name not in columns:
+                self.connection.execute(
+                    f"ALTER TABLE review_jobs ADD COLUMN {name} {declaration}"
+                )
 
     def add_project(self, identity: ProjectIdentity) -> dict[str, Any]:
         now = time.time()
@@ -292,6 +348,208 @@ class ObserverDB:
         ).fetchone()
         return row is not None
 
+    def acquire_supervisor(
+        self,
+        *,
+        provider: str,
+        model: str | None,
+        session_id: str | None,
+        allow_cross_provider: bool,
+    ) -> dict[str, Any]:
+        now = time.time()
+        token = secrets.token_urlsafe(32)
+        with self.connection:
+            row = self.connection.execute(
+                "SELECT epoch FROM supervisor_state WHERE singleton = 1"
+            ).fetchone()
+            epoch = int(row["epoch"] if row else 0) + 1
+            self.connection.execute(
+                """
+                UPDATE review_jobs
+                SET status = 'superseded', error = 'analyzer lease superseded'
+                WHERE status = 'prepared' AND lease_epoch IS NOT NULL
+                """
+            )
+            self.connection.execute(
+                """
+                UPDATE supervisor_state SET
+                    epoch = ?, lease_token = ?, provider = ?, model = ?,
+                    session_id = ?, state = 'attached', acquired_at = ?,
+                    heartbeat_at = ?, current_job_id = NULL, stop_reason = NULL,
+                    allow_cross_provider = ?
+                WHERE singleton = 1
+                """,
+                (
+                    epoch,
+                    token,
+                    provider,
+                    model,
+                    session_id,
+                    now,
+                    now,
+                    int(allow_cross_provider),
+                ),
+            )
+        return {**self.supervisor_status(), "lease_token": token}
+
+    def supervisor_status(self, *, now: float | None = None) -> dict[str, Any]:
+        row = self.connection.execute(
+            "SELECT * FROM supervisor_state WHERE singleton = 1"
+        ).fetchone()
+        if not row:
+            return {"state": "detached", "epoch": 0}
+        result = dict(row)
+        result.pop("lease_token", None)
+        result["lease_epoch"] = result["epoch"]
+        result["allow_cross_provider"] = bool(result["allow_cross_provider"])
+        heartbeat = result.get("heartbeat_at")
+        if (
+            result.get("state") in {"attached", "waiting", "analyzing"}
+            and heartbeat is not None
+            and (now or time.time()) - float(heartbeat) > SUPERVISOR_STALE_SECONDS
+        ):
+            result["state"] = "detached"
+            result["stop_reason"] = "analyzer heartbeat expired"
+        queued = self.connection.execute(
+            "SELECT COUNT(*) FROM review_jobs WHERE status = 'prepared'"
+        ).fetchone()
+        result["queued_jobs"] = int(queued[0] if queued else 0)
+        eligible = self.connection.execute(
+            """
+            SELECT COUNT(*) FROM sources AS source
+            LEFT JOIN analysis_cursors AS cursor
+              ON cursor.source_id = source.source_id
+            WHERE source.monitoring = 1
+              AND source.current_project_id IS NOT NULL
+              AND (
+                cursor.source_id IS NULL
+                OR cursor.generation != source.generation
+                OR cursor.committed_offset != source.committed_offset
+              )
+            """
+        ).fetchone()
+        result["queued_sessions"] = int(eligible[0] if eligible else 0)
+        coalesced = self.connection.execute(
+            """
+            SELECT COUNT(*) FROM review_jobs AS job
+            JOIN sources AS source ON source.source_id = job.source_id
+            WHERE job.job_id = ?
+              AND job.status = 'prepared'
+              AND (
+                source.generation != job.source_generation
+                OR source.committed_offset != job.source_offset
+              )
+            """,
+            (result.get("current_job_id"),),
+        ).fetchone()
+        result["coalesced_sessions"] = int(coalesced[0] if coalesced else 0)
+        latest = self.connection.execute(
+            "SELECT MAX(submitted_at) FROM review_jobs WHERE status = 'current'"
+        ).fetchone()
+        result["last_accepted_review_at"] = latest[0] if latest else None
+        return result
+
+    def _current_supervisor(self, lease_token: str) -> sqlite3.Row:
+        row = self.connection.execute(
+            "SELECT * FROM supervisor_state WHERE singleton = 1"
+        ).fetchone()
+        if not row or not row["lease_token"] or not secrets.compare_digest(
+            str(row["lease_token"]), lease_token
+        ):
+            raise ValueError("analyzer lease was superseded or stopped")
+        return row
+
+    def heartbeat_supervisor(
+        self,
+        lease_token: str,
+        *,
+        state: str,
+        current_job_id: str | None = None,
+    ) -> dict[str, Any]:
+        if state not in {"attached", "waiting", "analyzing"}:
+            raise ValueError("invalid analyzer state")
+        with self.connection:
+            row = self._current_supervisor(lease_token)
+            self.connection.execute(
+                """
+                UPDATE supervisor_state
+                SET state = ?, heartbeat_at = ?, current_job_id = ?, stop_reason = NULL
+                WHERE singleton = 1 AND epoch = ?
+                """,
+                (state, time.time(), current_job_id, int(row["epoch"])),
+            )
+        return self.supervisor_status()
+
+    def revoke_supervisor(self, reason: str = "stopped by user") -> dict[str, Any]:
+        with self.connection:
+            row = self.connection.execute(
+                "SELECT epoch FROM supervisor_state WHERE singleton = 1"
+            ).fetchone()
+            epoch = int(row["epoch"] if row else 0) + 1
+            self.connection.execute(
+                """
+                UPDATE review_jobs SET status = 'superseded', error = ?
+                WHERE status = 'prepared' AND lease_epoch IS NOT NULL
+                """,
+                (reason,),
+            )
+            self.connection.execute(
+                """
+                UPDATE supervisor_state SET
+                    epoch = ?, lease_token = NULL, state = 'detached',
+                    heartbeat_at = ?, current_job_id = NULL, stop_reason = ?
+                WHERE singleton = 1
+                """,
+                (epoch, time.time(), reason),
+            )
+        return self.supervisor_status()
+
+    def supervisor_lease(self, lease_token: str) -> dict[str, Any]:
+        return dict(self._current_supervisor(lease_token))
+
+    def analysis_cursor(self, source_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM analysis_cursors WHERE source_id = ?", (source_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def advance_analysis_cursor(
+        self,
+        *,
+        source_id: str,
+        generation: int,
+        committed_offset: int,
+        input_hash: str,
+        last_message_ref: str | None,
+        job_id: str | None,
+        accepted_at: float | None = None,
+    ) -> None:
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO analysis_cursors(
+                    source_id, generation, committed_offset, input_hash,
+                    last_message_ref, job_id, accepted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_id) DO UPDATE SET
+                    generation = excluded.generation,
+                    committed_offset = excluded.committed_offset,
+                    input_hash = excluded.input_hash,
+                    last_message_ref = excluded.last_message_ref,
+                    job_id = excluded.job_id,
+                    accepted_at = excluded.accepted_at
+                """,
+                (
+                    source_id,
+                    generation,
+                    committed_offset,
+                    input_hash,
+                    last_message_ref,
+                    job_id,
+                    accepted_at or time.time(),
+                ),
+            )
+
     def create_review_job(
         self,
         *,
@@ -301,14 +559,37 @@ class ObserverDB:
         analyzer_model: str | None,
         created_at: float,
         packet_meta: dict[str, Any],
+        source_id: str | None = None,
+        source_generation: int | None = None,
+        source_offset: int | None = None,
+        input_hash: str | None = None,
+        lease_epoch: int | None = None,
     ) -> None:
         with self.connection:
             self.connection.execute(
                 """
                 INSERT INTO review_jobs(
                     job_id, project_id, analyzer_provider, analyzer_model,
-                    status, created_at, packet_meta_json
-                ) VALUES (?, ?, ?, ?, 'prepared', ?, ?)
+                    status, created_at, packet_meta_json, source_id,
+                    source_generation, source_offset, input_hash, lease_epoch
+                ) VALUES (?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    project_id = excluded.project_id,
+                    analyzer_provider = excluded.analyzer_provider,
+                    analyzer_model = excluded.analyzer_model,
+                    status = 'prepared',
+                    created_at = excluded.created_at,
+                    submitted_at = NULL,
+                    packet_meta_json = excluded.packet_meta_json,
+                    summary = NULL,
+                    items_json = '[]',
+                    limitations_json = '[]',
+                    error = NULL,
+                    source_id = excluded.source_id,
+                    source_generation = excluded.source_generation,
+                    source_offset = excluded.source_offset,
+                    input_hash = excluded.input_hash,
+                    lease_epoch = excluded.lease_epoch
                 """,
                 (
                     job_id,
@@ -317,6 +598,11 @@ class ObserverDB:
                     analyzer_model,
                     created_at,
                     json.dumps(packet_meta, separators=(",", ":"), sort_keys=True),
+                    source_id,
+                    source_generation,
+                    source_offset,
+                    input_hash,
+                    lease_epoch,
                 ),
             )
 
@@ -367,33 +653,105 @@ class ObserverDB:
         if not cursor.rowcount:
             raise ValueError("review job is not awaiting a submission")
 
+    def submit_supervised_review_job(
+        self,
+        job_id: str,
+        *,
+        lease_token: str,
+        submitted_at: float,
+        summary: str,
+        items: list[dict[str, Any]],
+        limitations: list[str],
+        last_message_ref: str | None,
+    ) -> None:
+        with self.connection:
+            lease = self._current_supervisor(lease_token)
+            job = self.connection.execute(
+                "SELECT * FROM review_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            if not job or job["status"] != "prepared":
+                raise ValueError("review job is not awaiting a submission")
+            if int(job["lease_epoch"] or -1) != int(lease["epoch"]):
+                raise ValueError("review job belongs to a superseded analyzer lease")
+            cursor = self.connection.execute(
+                """
+                UPDATE review_jobs SET
+                    status = 'current', submitted_at = ?, summary = ?,
+                    items_json = ?, limitations_json = ?, error = NULL
+                WHERE job_id = ? AND status = 'prepared'
+                """,
+                (
+                    submitted_at,
+                    summary,
+                    json.dumps(items, separators=(",", ":"), sort_keys=True),
+                    json.dumps(limitations, separators=(",", ":"), sort_keys=True),
+                    job_id,
+                ),
+            )
+            if not cursor.rowcount:
+                raise ValueError("review job is not awaiting a submission")
+            self.connection.execute(
+                """
+                INSERT INTO analysis_cursors(
+                    source_id, generation, committed_offset, input_hash,
+                    last_message_ref, job_id, accepted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_id) DO UPDATE SET
+                    generation = excluded.generation,
+                    committed_offset = excluded.committed_offset,
+                    input_hash = excluded.input_hash,
+                    last_message_ref = excluded.last_message_ref,
+                    job_id = excluded.job_id,
+                    accepted_at = excluded.accepted_at
+                """,
+                (
+                    str(job["source_id"]),
+                    int(job["source_generation"]),
+                    int(job["source_offset"]),
+                    str(job["input_hash"]),
+                    last_message_ref,
+                    job_id,
+                    submitted_at,
+                ),
+            )
+            self.connection.execute(
+                """
+                UPDATE supervisor_state
+                SET state = 'waiting', heartbeat_at = ?, current_job_id = NULL
+                WHERE singleton = 1 AND epoch = ?
+                """,
+                (submitted_at, int(lease["epoch"])),
+            )
+
     def latest_reviews(self) -> dict[str, dict[str, Any]]:
         rows = self.connection.execute(
             """
-            SELECT job.* FROM review_jobs AS job
-            JOIN (
-                SELECT project_id, MAX(created_at) AS newest
-                FROM review_jobs
-                WHERE status = 'current'
-                GROUP BY project_id
-            ) AS latest
-              ON latest.project_id = job.project_id
-             AND latest.newest = job.created_at
-            WHERE job.status = 'current'
-            ORDER BY job.project_id, job.job_id DESC
+            SELECT * FROM review_jobs
+            WHERE status = 'current'
+            ORDER BY project_id, created_at DESC, job_id DESC
             """
         ).fetchall()
-        reviews: dict[str, dict[str, Any]] = {}
+        newest: dict[str, dict[str, Any]] = {}
+        with_items: dict[str, dict[str, Any]] = {}
+        seen_sources: dict[str, set[str]] = {}
         for row in rows:
             project_id = str(row["project_id"])
-            if project_id in reviews:
+            source_key = str(row["source_id"] or "__manual__")
+            project_sources = seen_sources.setdefault(project_id, set())
+            if source_key in project_sources:
                 continue
+            project_sources.add(source_key)
             review = dict(row)
             review["packet_meta"] = json.loads(review.pop("packet_meta_json"))
             review["items"] = json.loads(review.pop("items_json"))
             review["limitations"] = json.loads(review.pop("limitations_json"))
-            reviews[project_id] = review
-        return reviews
+            newest.setdefault(project_id, review)
+            if review["items"]:
+                with_items.setdefault(project_id, review)
+        return {
+            project_id: with_items.get(project_id, review)
+            for project_id, review in newest.items()
+        }
 
     def source(self, source_id: str) -> dict[str, Any] | None:
         row = self.connection.execute(

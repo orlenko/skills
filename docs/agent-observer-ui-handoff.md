@@ -66,9 +66,16 @@ the design can be handed back to an engineer without ambiguity.
 
 Agent Observer is a private, single-user control surface for someone supervising
 roughly five to ten Claude and Codex coding sessions. Worker agents do not know
-they are being observed. A local daemon reads their provider-owned session logs,
-projects source-backed facts into private SQLite state, and serves a loopback-only
-dashboard.
+they are being observed. Deterministic local sidecars read their provider-owned
+session logs, project source-backed facts into private SQLite state, and serve a
+loopback-only dashboard. One dedicated, foreground Claude or Codex Observer
+session may attach to that state and continuously judge deterministic bounded
+review packets while its subscription-backed turn remains active.
+
+The intended instance is rooted at `~/personal/dash`; private state defaults to
+`~/personal/dash/.agent-observer/`. A later Claude or Codex session in that
+workspace takes over a fenced analyzer lease and resumes the same SQLite state.
+The UI must never imply that an ended agent turn can still be awakened.
 
 The dashboard is not a replacement chat client. Its job is to answer:
 
@@ -91,6 +98,9 @@ not want to reconstruct every conversation before deciding where to look.
 
 Primary moments:
 
+- **Start or take over:** Invoke the skill, receive the current dashboard URL
+  immediately, and see whether the collector, dashboard, and analyzer are each
+  healthy.
 - **Glance:** Which project needs attention across all current work?
 - **Triage:** Is this an explicit decision, a completed turn, a possible loose
   end, or an observer problem?
@@ -99,6 +109,8 @@ Primary moments:
   terminal session.
 - **Recover:** After a restart, see persisted work, stale services, and unseen
   findings without pretending the observer watched while offline.
+- **Resume analysis:** Attach a new Claude or Codex Observer session after
+  quota, context, reboot, or interruption without repeating accepted work.
 - **Enroll:** Add a recent project from discovered session candidates, with an
   explicit path fallback. Candidate cards expose the latest session name and
   provider, branch, directory and canonical path, activity age, and a bounded
@@ -215,20 +227,55 @@ text operations, never HTML interpretation.
 | POST | `/api/rescan` | Rediscover sources by `{ "project": "project_id" }` |
 | POST | `/api/findings/seen` | Mark one finding seen by `{ "finding_id": "..." }` |
 
+### Foreground analyzer-loop contract
+
+The following deterministic CLI operations are implemented. They are not
+browser mutation endpoints; the dashboard receives analyzer health through
+`GET /api/status` and `GET /api/services`:
+
+| Operation | Deterministic responsibility |
+| --- | --- |
+| `supervisor-begin` | Resolve workspace state, reconcile sidecars, supersede the prior lease epoch, exclude the invoking session, and return the current bootstrap URL |
+| `review-next --wait` | Return one immutable eligible packet, an empty bounded timeout, lease supersession, or a typed stop/failure state |
+| `review-submit` | Validate lease epoch, packet identity, schema, citations, and spans; atomically publish and advance the accepted cutoff |
+| `supervisor-status` | Return separate collector, dashboard, and analyzer state plus current job, queue/coalescing counts, heartbeat, and last accepted review |
+| `supervisor-stop` | Revoke the lease and stop sidecars without deleting workspace-owned state |
+
+`GET /api/status` should eventually include an `analyzer` object with at least:
+
+```json
+{
+  "state": "attached",
+  "provider": "codex",
+  "session_id": "...",
+  "lease_epoch": 7,
+  "heartbeat_at": 1785859200.0,
+  "current_job": null,
+  "queued_sessions": 2,
+  "coalesced_sessions": 1,
+  "last_accepted_review_at": 1785859180.0,
+  "stop_reason": null
+}
+```
+
+Allowed states are `attached`, `waiting`, `analyzing`, `detached`, `expired`,
+`superseded`, `quota-limited`, `context-limited`, and `failed`. Analyzer state is
+independent of collector and dashboard process state.
+
 The server returns `Cache-Control: no-store`, a restrictive Content Security
 Policy, frame denial, MIME sniffing denial, and no-referrer behavior.
 
 ### Shipped boundary versus design target
 
-The rough UI and endpoints above are implemented. The evidence-slice endpoint,
-review-launch UI, prepared-job display, richer per-item dispositions and snooze,
-and reboot-time process supervision are design targets, not current backend
-promises. The current row-level Dismiss action marks every presently unseen
-finding for that project seen in Observer-owned state. A later newly discovered
-finding starts unseen and returns the project to Needs a look. `up` idempotently
-starts the two requested sidecars, but no LaunchAgent is installed yet; after a
-machine reboot, invoking the skill or `agent-observer up` restores them and
-reconciles persisted state.
+The rough UI, foreground analyzer lease and queue, workspace-owned state, and
+original endpoints above are implemented. The evidence-slice endpoint and
+richer per-item dispositions and snooze remain design targets, not current
+backend promises. The current row-level Dismiss action marks every presently
+unseen finding for that project seen in Observer-owned state. A later newly
+discovered finding starts unseen and returns the project to Needs a look. `up`
+idempotently starts the two requested sidecars; the skill invocation wraps that
+reconciliation, acquires the analyzer lease, and enters the review loop. No
+LaunchAgent is required by the revised design.
 Use the canonical fixture above for design work that needs states the current
 backend cannot yet synthesize in one live database.
 
@@ -375,6 +422,8 @@ agent unless provider evidence explicitly supports that claim.
 ```json
 {
   "job_id": "review_...",
+  "lease_epoch": 7,
+  "packet_hash": "sha256:...",
   "analyzer_provider": "codex",
   "analyzer_model": null,
   "status": "current",
@@ -410,16 +459,18 @@ agent unless provider evidence explicitly supports that claim.
 }
 ```
 
-The active Claude or Codex session produced this object after an explicit skill
-invocation. This is an interactive D0 review, not a clean isolated analyzer. It
-selects exactly one worker session, includes at most 40 visible messages, and
-accepts at most three result items. The UI must disclose the provider, optional
-model, interactive-session mode, target session, bounded range, gaps, and
-staleness. When the provider exposes its current session ID, Observer
-persistently excludes that analyzer session from collection; use a dedicated
-Observer session. New source bytes make the display status stale without
-erasing the older assessment. Any coverage gap blocks negative assessments and
-requires `indeterminate` wording.
+The attached Claude or Codex session produced this object while holding an
+explicit foreground lease. This is an interactive D0 review, not a clean
+isolated analyzer. It selects exactly one worker session, includes at most 40
+visible messages on the first pass and a bounded delta-plus-overlap thereafter,
+and accepts at most three prominent result items. The UI must disclose the
+provider, optional model, interactive-session mode, target session, bounded
+range, gaps, immutable cutoff, and staleness. Observer persistently excludes
+every session that has owned its analyzer lease, not only the current owner;
+use a dedicated Observer workspace. New source bytes make the display status
+stale without erasing the older assessment. A gap between an item's supplied
+origin and cutoff blocks a negative assessment; a disclosed clipped start that
+precedes every supplied origin does not.
 
 Prominent assessments are:
 
@@ -512,23 +563,29 @@ analyzed range require different treatments.
 The backend does not expose this endpoint yet. The design should propose a data
 shape, but it must use stable `message_ref` identity rather than array positions.
 
-### 7.5 Review launch
+### 7.5 Analyzer attachment and review disclosure
 
-Before a semantic review, show:
+At Observer lease acquisition, show:
 
-- selected source session and binding segment;
-- source provider to analyzer provider route;
-- analyzer model when known;
-- message range and byte count;
-- included and excluded categories;
-- known gaps;
-- warning that the current interactive analyzer is a capability-bearing session,
-  shares its context, and may create provider-retained traces or project changes;
-- confirmation that a dedicated Observer session is excluded from collection.
+- the analyzer provider selected by the invoking Claude or Codex session;
+- source-to-analyzer routes eligible under current project policy;
+- packet categories and hard bounds;
+- warning that the current interactive analyzer is capability-bearing, shares
+  its context across successive packets, and may create provider-retained
+  traces;
+- confirmation that the dedicated Observer session and workspace state are
+  excluded from collection;
+- an explicit statement that analysis lasts only while this foreground agent
+  turn remains attached.
 
-Review is opt-in. Do not automatically pick another provider based on quota or
-tokens. In the current workflow the operator invokes the same skill from whichever
-provider they choose.
+For each queued, active, or accepted review, show the source session and binding
+segment, source-to-analyzer route, model when known, message range and byte
+count, included and excluded categories, known gaps, and immutable cutoff.
+
+Starting the lease is opt-in consent for eligible packets until that turn ends.
+Do not automatically pick another provider based on quota or tokens. A new
+Claude or Codex invocation deliberately takes over the lease and resumes the
+durable cursor.
 
 ## 8. Required states
 
@@ -543,6 +600,11 @@ Every major screen or control needs explicit design for:
 - malformed or unknown provider schema;
 - daemon heartbeat stale while server remains available;
 - server restored after restart with cached data awaiting reconciliation;
+- collector and dashboard healthy while no analyzer is attached;
+- analyzer waiting with an empty deterministic queue;
+- analyzer working on one immutable cutoff while newer messages are coalesced;
+- analyzer superseded by a newer Claude or Codex invocation;
+- analyzer detached after provider turn, quota, context limit, or app shutdown;
 - review prepared but not submitted;
 - current review;
 - stale review after new messages;

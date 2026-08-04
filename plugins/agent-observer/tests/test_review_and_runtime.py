@@ -1,7 +1,9 @@
 import http.client
 import json
+import os
 import sys
 import tempfile
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -15,6 +17,7 @@ sys.path.insert(0, str(PACKAGE_ROOT))
 from agent_observer.presentation import dashboard_projection  # noqa: E402
 from agent_observer.reviews import (  # noqa: E402
     PACKET_VERSION,
+    next_review,
     prepare_review,
     submit_review,
 )
@@ -143,6 +146,93 @@ class ReviewAndRuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "evidence is absent"):
                 submit_review(observer, rejected["job_id"], bad_path)
 
+    def test_supervisor_takeover_fences_submission_and_resumes_cursor(self):
+        sid = "99999999-aaaa-bbbb-cccc-dddddddddddd"
+        session = self.config.codex_roots[0] / f"rollout-{sid}.jsonl"
+        append_jsonl(
+            session,
+            {
+                "type": "session_meta",
+                "timestamp": "2026-08-04T10:00:00Z",
+                "payload": {"id": sid, "cwd": str(self.project)},
+            },
+            {
+                "type": "event_msg",
+                "timestamp": "2026-08-04T10:00:01Z",
+                "payload": {
+                    "type": "agent_message",
+                    "phase": "final_answer",
+                    "message": "Choose alpha or beta.",
+                },
+            },
+        )
+        old = time.time() - 5
+        os.utime(session, (old, old))
+        with Observer(self.config) as observer:
+            observer.add_project(str(self.project))
+            first_lease = observer.db.acquire_supervisor(
+                provider="claude",
+                model=None,
+                session_id="observer-one",
+                allow_cross_provider=True,
+            )
+            first = next_review(observer, first_lease["lease_token"])
+            self.assertEqual(first["state"], "work")
+            first_job = first["review"]["job_id"]
+
+            second_lease = observer.db.acquire_supervisor(
+                provider="claude",
+                model=None,
+                session_id="observer-two",
+                allow_cross_provider=True,
+            )
+            self.assertGreater(second_lease["epoch"], first_lease["epoch"])
+            second = next_review(observer, second_lease["lease_token"])
+            self.assertEqual(second["state"], "work")
+            self.assertEqual(second["review"]["job_id"], first_job)
+
+            draft_path = Path(second["review"]["draft_path"])
+            draft_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": PACKET_VERSION,
+                        "summary": "No prominent loose end selected.",
+                        "items": [],
+                        "limitations": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "superseded"):
+                submit_review(
+                    observer,
+                    first_job,
+                    draft_path,
+                    lease_token=first_lease["lease_token"],
+                )
+            submit_review(
+                observer,
+                first_job,
+                draft_path,
+                lease_token=second_lease["lease_token"],
+            )
+            waiting = next_review(observer, second_lease["lease_token"])
+            self.assertEqual(waiting["state"], "waiting")
+
+            append_jsonl(
+                session,
+                {
+                    "type": "event_msg",
+                    "timestamp": "2026-08-04T10:00:02Z",
+                    "payload": {"type": "user_message", "message": "Use alpha."},
+                },
+            )
+            os.utime(session, (old, old))
+            observer.scan()
+            later = next_review(observer, second_lease["lease_token"])
+            self.assertEqual(later["state"], "work")
+            self.assertNotEqual(later["review"]["job_id"], first_job)
+
     def test_review_targets_one_session_and_exclusion_survives_rescan(self):
         older = "11111111-1111-1111-1111-111111111111"
         newer = "22222222-2222-2222-2222-222222222222"
@@ -188,7 +278,7 @@ class ReviewAndRuntimeTests(unittest.TestCase):
             observer.rescan_project(str(self.project))
             self.assertIn(newer, {row["session_id"] for row in observer.db.sources()})
 
-    def test_incomplete_or_tampered_packets_cannot_publish_negative_claims(self):
+    def test_clipped_start_is_disclosed_and_tampered_packets_are_rejected(self):
         sid = "33333333-3333-3333-3333-333333333333"
         session = self.config.codex_roots[0] / f"rollout-{sid}.jsonl"
         session.parent.mkdir(parents=True)
@@ -219,6 +309,7 @@ class ReviewAndRuntimeTests(unittest.TestCase):
             )
             packet = prepared["packet"]
             self.assertTrue(packet["coverage"]["gaps"])
+            self.assertFalse(packet["coverage"]["negative_assessment_blocked"])
             origin = packet["messages"][0]
             draft = {
                 "schema_version": PACKET_VERSION,
@@ -238,15 +329,24 @@ class ReviewAndRuntimeTests(unittest.TestCase):
             }
             draft_path = Path(prepared["draft_path"])
             draft_path.write_text(json.dumps(draft), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "must be indeterminate"):
-                submit_review(observer, prepared["job_id"], draft_path)
+            submit_review(observer, prepared["job_id"], draft_path)
 
-            packet_path = Path(prepared["packet_path"])
+            tampered_review = prepare_review(
+                observer, str(self.project), analyzer_provider="claude"
+            )
+            packet_path = Path(tampered_review["packet_path"])
             tampered = json.loads(packet_path.read_text(encoding="utf-8"))
             tampered["coverage"]["gaps"] = []
             packet_path.write_text(json.dumps(tampered), encoding="utf-8")
+            Path(tampered_review["draft_path"]).write_text(
+                json.dumps(draft), encoding="utf-8"
+            )
             with self.assertRaisesRegex(ValueError, "integrity check"):
-                submit_review(observer, prepared["job_id"], draft_path)
+                submit_review(
+                    observer,
+                    tampered_review["job_id"],
+                    tampered_review["draft_path"],
+                )
 
     def test_sidecars_serve_only_authenticated_local_dashboard(self):
         sid = "44444444-5555-6666-7777-888888888888"
@@ -306,6 +406,7 @@ class ReviewAndRuntimeTests(unittest.TestCase):
         with opener.open(clean_url + "api/status", timeout=5) as response:
             status = json.loads(response.read())
         self.assertEqual(status["schema_version"], "agent-observer-dashboard-v1")
+        self.assertEqual(status["analyzer"]["state"], "detached")
 
         with opener.open(clean_url + "api/project-candidates", timeout=5) as response:
             candidates = json.loads(response.read())["candidates"]

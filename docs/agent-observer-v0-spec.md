@@ -1,7 +1,8 @@
 # Agent Observer v0 Specification
 
-Status: Draft 0.2
-Scope: Single-machine, passive worker observation with opt-in analysis
+Status: Draft 0.3
+Scope: Single-machine passive worker observation with a subscription-backed
+foreground review loop
 Working names: Agent Observer, `observerd`
 
 ## 1. Purpose
@@ -12,11 +13,12 @@ the worker sessions to cooperate, highlights evidence that may need attention,
 preserves useful conversational threads that may have fallen out of focus, and
 survives restarts without turning silence into fiction.
 
-V0 has a factual observer and an optional model-assisted continuity review. It
-is not an overseer, process monitor, message bus, or source of truth for the
-work itself. Worker sessions and their project files remain the sources of
-truth; Agent Observer provides visibility into what their traces evidenced and
-what a bounded semantic review suggests may deserve another look.
+V0 has a factual observer and a model-assisted continuity review driven by one
+dedicated Claude or Codex session. It is not a worker overseer, process monitor,
+message bus, or source of truth for the work itself. Worker sessions and their
+project files remain the sources of truth; Agent Observer provides visibility
+into what their traces evidenced and what a bounded semantic review suggests
+may deserve another look.
 
 ## 2. Product outcome
 
@@ -57,8 +59,8 @@ When evidence supports completion but not a semantic decision, it says less:
 | Project and nested session views | Messages or decisions sent to workers |
 | Factual activity and change detection | Terminal focus or automatic session resume |
 | Structured Claude decision requests | Unbounded or project-wide semantic extraction |
-| Opt-in, on-demand conversation-continuity review | Continuous background semantic analysis |
-| Explicit Claude or Codex analyzer choice | Automatic quota-based cross-provider fallback |
+| Foreground conversation-continuity loop in an explicitly invoked Observer session | Unattended API-token or OS-daemon model calls |
+| Invoking Claude or Codex session is the explicit analyzer choice | Automatic quota-based cross-provider fallback |
 | Evidence-linked possible loose ends within one session | Automatic thread merging across sessions |
 | Bounded evidence excerpts | Raw transcript replication |
 | Durable local projections and findings | A public API or remote wire protocol |
@@ -400,18 +402,29 @@ reasoning are not persisted.
 
 ## 7. Architecture
 
-V0 runs as one persistent local coordinator with factual gathering, projection,
-and presentation modules. Optional semantic reviews launch isolated analyzer
-jobs without changing worker sessions:
+V0 separates persistent deterministic sidecars from one foreground semantic
+supervisor. The user starts or takes over an instance by invoking
+`$agent-observer:observe` in Codex or `/agent-observer:observe` in Claude from a
+dedicated Observer workspace. That invocation reconciles the collector and
+dashboard, acquires the analyzer lease, prints the dashboard URL, and remains
+in a bounded wait-analyze-submit loop for as long as that agent turn is active:
 
 ```text
 Claude traces ─┐
 Codex traces ──┼─> gatherers ─> observations ─> projector ─> SQLite ─> local UI/API
 Git worktree ──┘
-
-visible turn packet ─> analyzer dispatcher ─> isolated Claude or Codex
-                                             └─> validator ─> semantic ledger ─┘
+                                              │
+dedicated Claude/Codex Observer session       │
+  └─> deterministic next-work/wait command ───┘
+        └─> minimized visible-message packet
+              └─> semantic judgment in the active subscription session
+                    └─> deterministic validator ─> semantic ledger ────────┘
 ```
+
+The sidecars never invoke a model and never require API credentials. They keep
+factual collection and the dashboard available after the foreground analyzer
+stops. Conversely, analyzer failure or quota exhaustion cannot stop factual
+collection.
 
 ### 7.1 Gathering
 
@@ -442,45 +455,86 @@ implementation choices, not product requirements.
 
 ### 7.4 Semantic analysis
 
-Semantic review is a separate processing path. The user selects one interactive
-session, one contiguous watched-project binding segment, an explicit transcript
-range, and either Claude or Codex. The coordinator builds a minimized packet of
-visible user and assistant text, launches a fresh analyzer, validates its
-schema and evidence citations, and projects accepted results into a separate
+Semantic review is a separate processing path owned by the active, dedicated
+Observer session. A deterministic scheduler chooses exactly one provider
+session, one contiguous watched-project binding segment, and one captured
+cutoff. A deterministic packet builder supplies only canonical visible user and
+assistant text plus compact prior ledger state. The active Claude or Codex
+session analyzes that packet, writes a strict draft, and invokes the
+deterministic validator. Only accepted, evidence-linked output enters the
 semantic ledger.
 
-Analyzer jobs:
+The foreground supervisor:
 
-- run from an observer-owned directory that is never a watched project;
-- are explicitly tagged and excluded from source discovery;
-- receive no reasoning, tool arguments/results, attachments, snapshots, child
-  content, project files, or general filesystem context;
-- use a verified clean provider profile that disables tools, hooks, MCP
-  servers, skills, inherited project configuration, and filesystem access
-  beyond a narrow observer-owned job directory; merely changing `cwd` is not
-  isolation;
-- are unsupported for any provider invocation that cannot satisfy that
-  tool-free contract;
-- treat transcript text as untrusted data rather than instructions;
-- may emit only the strict semantic-review schema;
-- are idempotent by session, binding segment, input boundary, input hash,
-  analyzer provider and selected model or snapshot, adapter canonicalization
-  version, segmenter and packet-builder versions, prompt version, and schema
-  version.
+- runs from an Observer workspace that is never itself watched;
+- records its provider and session ID and excludes that session from source
+  discovery and semantic input;
+- receives no reasoning, tool arguments/results, attachments, snapshots, child
+  content, or watched-project files in review packets;
+- treats transcript text as untrusted data rather than instructions;
+- writes only the strict semantic-review schema for deterministic validation;
+- processes one packet at a time and obtains the next packet only through the
+  deterministic scheduler;
+- uses idempotent job identity based on session, binding segment, input
+  boundary, input hash, analyzer provider and selected model or snapshot,
+  adapter canonicalization version, segmenter and packet-builder versions,
+  prompt version, and schema version.
 
-V0 does not automatically choose a provider from guessed token availability.
-On a recognized quota or authentication failure, it reports the failure and
-may offer `Retry with Claude` or `Retry with Codex` only when the project's
-allowed source-to-analyzer pairs permit that exact route.
+This is a capability-bearing interactive agent session, not a sandboxed,
+tool-free analyzer process. Prompt instructions and validation constrain its
+role, but do not constitute a security boundary against malicious transcript
+content. The UI discloses that limitation. V0 never grants the analyzer a
+reason to inspect or modify watched projects, and accepted output remains
+schema- and citation-gated.
+
+Starting the loop in Claude or Codex explicitly chooses that provider for the
+lease. V0 does not infer quota availability or automatically switch providers.
+On quota, context, authentication, or session termination, the analyzer records
+why it stopped when possible. The user may start the skill in a new Claude or
+Codex session; the new lease resumes durable cursors for routes already allowed
+by project policy.
 
 ### 7.5 Process lifecycle
 
-V0 is installed as an unprivileged macOS user LaunchAgent and starts at login.
-It records process start, clean shutdown when available, and observer-health
-gaps. The user can disable autostart without losing the watchlist or cached
-projections.
+The skill invocation is the single operational entry point. It performs one
+idempotent `supervisor-begin` operation that:
+
+1. finds the instance rooted in the current dedicated Observer workspace;
+2. invalidates any prior analyzer lease and increments the supervisor epoch;
+3. removes stale runtime records and reconciles the collector and dashboard,
+   preserving healthy sidecars rather than gratuitously changing the URL;
+4. records and excludes the invoking provider session;
+5. returns the authenticated dashboard URL and the first deterministic work
+   item, if one is ready.
+
+The active session then repeatedly calls a bounded `review-next --wait`
+operation. New collection commits wake that wait; they do not wake a Claude or
+Codex session whose turn has already ended. A later invocation supersedes the
+old lease. The old loop exits on its next deterministic call, while the new
+session resumes from committed analysis cursors. V0 does not claim it can kill,
+resume, or asynchronously awaken arbitrary provider sessions.
+
+Collector and dashboard sidecars may outlive the foreground analyzer so factual
+status remains useful. `stop` invalidates the analyzer lease and stops the
+sidecars without deleting durable state. Login-time autostart is deferred; after
+a reboot, invoking the skill reconciles persisted state and exposes the health
+gap before processing new evidence.
 
 ### 7.6 Storage
+
+The dedicated Observer workspace is the instance boundary. By default its
+durable private state lives under `<observer-workspace>/.agent-observer/`, with
+SQLite as the authoritative store and small JSON or PID files permitted only
+for disposable runtime coordination. For the intended setup this is
+`~/personal/dash/.agent-observer/`. The directory must be ignored by version
+control, mode `0700`, and excluded from provider-source discovery.
+
+Keeping state with the Observer workspace lets a replacement Claude or Codex
+session resume the same watchlist, checkpoints, findings, dispositions, and
+analysis cursor. Moving or deleting that directory moves or deletes the
+Observer instance; provider logs remain untouched. An implementation may keep
+a minimal per-user rendezvous pointer outside the workspace solely to locate a
+previous live instance, but it must contain no transcript or semantic content.
 
 SQLite in WAL mode stores:
 
@@ -492,6 +546,9 @@ SQLite in WAL mode stores:
 - append-only assessment revisions, coverage checkpoints, analyzer-job
   metadata, analyzer health, and local review dispositions;
 - adapter and collector health.
+
+It also stores the active supervisor epoch and lease metadata, deterministic
+review queue, per-session analysis cursors, and analyzer heartbeat/status.
 
 Provider traces remain the historical source. V0 does not create another full
 transcript archive. It stores stable evidence pointers and bounded accepted
@@ -675,12 +732,13 @@ newest qualifying evidence.
 
 ## 10. Conversation continuity review
 
-Conversation continuity review is an optional, on-demand feature reached by
-`Find loose ends` on one selected interactive session. It asks a narrow
-question: within a stated transcript range, did an earlier visible proposal,
-question, choice, requested user action, or commitment receive later handling?
-It does not summarize the project, diagnose the worker, or decide what the user
-ought to do.
+Conversation continuity review is a bounded feature run continuously while the
+dedicated Observer session holds the analyzer lease. It asks a narrow question:
+within a stated transcript range, did an earlier visible proposal, question,
+choice, requested user action, or commitment receive later handling? It does
+not summarize the project, diagnose the worker, or decide what the user ought
+to do. `Find loose ends` remains available as a manual priority request, but it
+uses the same deterministic queue, packet, validator, and ledger.
 
 The feature is read-only with respect to the watched project and worker
 session. It may send a minimized transcript packet to the explicitly selected
@@ -832,6 +890,35 @@ known evidence gaps. Supported factual structured-request IDs and their
 deterministically correlated current status may be attached without raw tool
 payloads so the semantic layer links rather than duplicates them.
 
+Queue selection is deterministic and persisted. A reviewable unit is keyed by
+provider session, project-binding segment, source generation, last accepted
+canonical message boundary, and newest complete canonical message boundary.
+The scheduler prioritizes unseen source-backed requests and turn boundaries,
+then sessions whose visible-message boundary advanced beyond a missing or stale
+review. It applies a short complete-message quiescence interval, permits one
+in-flight job per session, coalesces further appends to the newest later cutoff,
+and schedules eligible sessions fairly so one chatty worker cannot consume the
+lease. Activity age alone does not manufacture semantic urgency.
+
+Each binding has a durable analysis cursor. The first automatic review uses at
+most the latest 40 indexed visible messages. A later review supplies only the
+new complete messages since the last accepted cutoff, a bounded overlap of up
+to 12 preceding visible messages, and compact structured ledger entries for
+still-relevant earlier items. The overlap is context, not a new origin range;
+stable refs and job identity prevent duplicate items. No poll with an unchanged
+boundary creates a model work item.
+
+Preparing a packet never advances the analysis cursor. A validated submission
+atomically appends the assessment revision and advances the accepted cutoff and
+input hash. A crash or lease takeover before that commit reproduces the same
+deterministic job; a submission carrying a superseded lease epoch is rejected.
+
+`review-next --wait` reads this queue and returns either one immutable packet,
+an empty timeout, a superseded-lease result, or a typed stop/failure state. It
+never asks the model to discover files, choose projects, parse raw JSONL,
+calculate cutoffs, or decide what changed. Packet extraction and minimization
+are deterministic even when the packet is later judged by Claude or Codex.
+
 Milestones D0 and D1 review only the visible-message index built by the bounded
 initial scan and subsequent incremental observation. They never turn `Find
 loose ends` or `Load earlier` into an unbounded historical transcript scan. The
@@ -866,8 +953,9 @@ The analyzer returns a strict schema containing groups, items, assessment
 states, cited message refs and spans, confidence, and short presentation text.
 The validator rejects nonexistent citations, out-of-range spans, unknown
 states, and output that crosses the selected boundary. Transcript content is
-data, not instructions; analyzer jobs have no tools with which to obey prompt
-injection found inside it.
+data, not instructions. Because the active interactive analyzer remains
+capability-bearing, validation protects the ledger but is not represented as
+complete prompt-injection isolation.
 
 Later jobs also receive the compact structured ledger for existing IDs, item
 types, expected conditions, and prior evidence links. They do not receive old
@@ -1068,7 +1156,8 @@ does not present `Remove` as a secure-wipe control.
 
 Factual observation makes no outbound network requests and sends no transcript
 content to a model or external service. Semantic continuity review is disabled
-by default and is a separate, explicit disclosure boundary.
+until an Observer lease is explicitly started and is a separate disclosure
+boundary.
 
 Each watched project has an explicit set of allowed `(source provider,
 analyzer provider)` pairs drawn from `Claude → Claude`, `Claude → Codex`,
@@ -1076,23 +1165,27 @@ analyzer provider)` pairs drawn from `Claude → Claude`, `Claude → Codex`,
 offer `off` and `same-provider only` presets, but each cross-provider direction
 requires its own grant.
 
-Every review requires the user to choose an allowed analyzer in v0. Watching a
-Claude transcript does not itself authorize `Claude → Codex`; watching Codex
-does not authorize `Codex → Claude`. Visible text may contain secrets and source
-code even after tool payloads and reasoning are removed.
+Starting an Observer lease chooses its analyzer provider for the entire lease.
+That invocation is consent to process eligible queued packets through that
+provider until the turn stops; it is not consent to a previously disallowed
+cross-provider route. Watching a Claude transcript does not itself authorize
+`Claude → Codex`, and watching Codex does not authorize `Codex → Claude`.
+Ineligible packets remain visibly unreviewed rather than silently rerouted.
+Visible text may contain secrets and source code even after tool payloads and
+reasoning are removed.
 
-Before every run, the dashboard shows the source-to-analyzer pair, selected
-model, analysis range, packet categories and byte count, and the fact that the
-provider CLI or service may retain another copy outside Agent Observer's
-SQLite. Analyzer state uses an isolated observer-owned directory and is
-excluded from observation. Observer-owned temporary packet files are cleaned
-up on a best-effort basis. Provider-retained analyzer session traces are
-disclosed but never silently deleted, and neither cleanup is presented as
-forensic erasure.
+At lease start, the agent and dashboard disclose the analyzer provider,
+capability-bearing-session limitation, allowed source routes, packet categories
+and bounds, and the fact that the provider may retain another copy outside
+Agent Observer's SQLite. Each accepted result still exposes its exact source-
+to-analyzer pair, model when known, range, byte count, cutoff, and gaps.
+Observer-owned temporary packet files are cleaned up on a best-effort basis.
+Provider-retained Observer-session traces are disclosed but never silently
+deleted, and neither cleanup is presented as forensic erasure.
 
 The dashboard's only network listener remains loopback-only. Outbound analyzer
-traffic is permitted only for a user-triggered review under the project's
-policy.
+traffic is permitted only while an explicitly invoked lease processes routes
+allowed by project policy.
 
 Required controls:
 
@@ -1104,9 +1197,12 @@ Required controls:
 - SameSite session cookie or equivalent local authorization;
 - restrictive Content Security Policy;
 - contextual escaping of all provider-controlled content;
-- analyzer processes using a verified clean, tool-free profile with no hooks,
-  MCP servers, skills, inherited project configuration, or watched-project
-  filesystem access, and with schema-only accepted output;
+- a dedicated Observer workspace and explicit exclusion of its provider
+  session ID and `.agent-observer` state root;
+- no analyzer-initiated watched-project reads or writes in the review workflow;
+- packet instructions that mark transcript content untrusted, plus schema and
+  citation validation, without misrepresenting the interactive session as a
+  sandbox;
 - packet validation that rejects citations or spans absent from supplied input;
 - explicit exclusion of analyzer session IDs and state roots from collection;
 - no provider content in application logs by default.
@@ -1130,11 +1226,14 @@ of three consecutive malformed records in one source, or no successfully
 recognized record among the latest 20 complete records, marks that source
 degraded. Degradation never masquerades as project silence.
 
-Analyzer health is separate from collector health and includes job state,
-selected provider, queue time, recognized quota or authentication failures,
-schema-validation failures, analyzer version, and last successful review. A
-delayed or failed semantic review never degrades factual collection and never
-turns a stale semantic assessment into a current one.
+Analyzer health is separate from collector and dashboard health. It includes
+`attached`, `waiting`, `analyzing`, `detached`, `expired`, `superseded`,
+`quota-limited`, `context-limited`, and `failed`; the owner provider and session,
+lease epoch and heartbeat, current job and cutoff, queued/coalesced session
+counts, recognized quota or authentication failures, schema-validation
+failures, analyzer version, and last successful review. A delayed, detached, or
+failed semantic reviewer never degrades factual collection and never turns a
+stale semantic assessment into a current one.
 
 ## 16. Performance budgets
 
@@ -1300,12 +1399,12 @@ Conversation continuity additionally requires:
 52. **Manual provider comparison:** a review by another permitted provider maps
     exact source items to stable identities where unambiguous and preserves
     material disagreement rather than choosing a winner.
-53. **Provider policy:** launch is permitted only for an explicitly allowed
-    source-to-analyzer pair; a quota failure offers only a pair-permitted retry.
-54. **Analyzer isolation:** a backend is enabled only after its clean profile
-    proves tools, hooks, MCP, skills, project configuration, project reads, and
-    worker writes unavailable; transcript prompt injection changes no side
-    effect or accepted schema.
+53. **Provider policy:** a lease processes only explicitly allowed source-to-
+    analyzer pairs; a quota failure never silently changes provider.
+54. **Analyzer boundary:** review packets never require watched-project access,
+    the interactive analyzer treats content as untrusted, and only schema- and
+    citation-valid output is published; the UI does not describe this as
+    tool-free isolation.
 55. **Invalid citation:** a nonexistent message ref, out-of-range span, or
     cross-binding citation rejects the analyzer result and exposes failure.
 56. **Self-observation exclusion:** analyzer sessions and observer-owned state
@@ -1353,6 +1452,28 @@ Conversation continuity additionally requires:
 72. **Deterministic group roll-up:** mixed open, partial, terminal,
     indeterminate, snoozed, dismissed, and handled-elsewhere items produce the
     specified assessment and presentation counts without altering item truth.
+73. **Foreground bootstrap:** one skill invocation reconciles healthy sidecars,
+    returns the current dashboard URL before waiting, acquires a fenced lease,
+    and excludes the invoking provider session and workspace state.
+74. **Lease takeover:** a second invocation increments the epoch; the prior
+    loop exits at its next deterministic call and any late prior-epoch
+    submission is rejected without killing a provider process.
+75. **Detached analyzer:** after the interactive turn ends, factual collection
+    and the dashboard remain healthy while analyzer status becomes detached and
+    no claim is made that it can be awakened.
+76. **Durable resume:** a Claude or Codex session started later from the same
+    Observer workspace resumes the watchlist, accepted cutoffs, findings,
+    dispositions, and deterministic pending work.
+77. **Crash-safe cursor:** packet preparation followed by a crash does not
+    advance the accepted cutoff; takeover reproduces the same job identity.
+78. **Coalesced activity:** appends during one in-flight job create at most one
+    later job at the newest complete cutoff and cannot starve quieter sessions.
+79. **Context across delta:** a new reply can update an older open item because
+    the packet includes bounded overlap, its origin block, and compact ledger
+    state; unchanged windows consume no analyzer turn.
+80. **Workspace state boundary:** private SQLite state under the dedicated
+    workspace survives provider-session replacement, is ignored by version
+    control and collection, and its deletion never deletes provider logs.
 
 ## 18. Delivery sequence
 
@@ -1381,12 +1502,17 @@ Conversation continuity additionally requires:
 - evidence-backed `no completion observed` inference;
 - factual acceptance scenarios 1–40 and the performance fixture.
 
-### Milestone D0: disposable continuity experiment
+### Milestone D0: foreground analyzer pump
 
-- opt-in per-project provider policy and per-run disclosure;
-- on-demand review of the latest complete, already indexed visible messages in
-  one session and binding segment;
-- one manually selected allowed analyzer route;
+- workspace-owned state and one fenced analyzer lease;
+- skill bootstrap that ensures sidecars, excludes the invoking session, prints
+  the URL, and enters a bounded deterministic wait loop;
+- lease-duration consent and per-project provider policy;
+- automatic review of the latest complete, already indexed visible messages in
+  one eligible session and binding segment at a time;
+- deterministic eligibility, quiescence, fair scheduling, coalescing, stable
+  job identity, and commit-time analysis cursors;
+- one explicitly invoked analyzer provider with no automatic fallback;
 - deterministic paragraph/list block IDs;
 - at most three prominent questions, decisions, requested user actions, or
   recommendations across the result;
@@ -1396,9 +1522,10 @@ Conversation continuity additionally requires:
   against a boring question/list extractor.
 
 D0 does not implement parent/child item graphs, durable cross-provider identity
-reconciliation, automatic resurfacing, or arbitrary slice navigation. It exits
-only when top-three usefulness, false urgency, missed explicit requests,
-citation validity, and rerun stability beat the baseline enough to justify the
+reconciliation, arbitrary slice navigation, provider-process wake hooks, or
+automatic provider fallback. It exits only when top-three usefulness, false
+urgency, missed explicit requests, citation validity, rerun stability, takeover
+fencing, and crash-safe resume beat the baseline enough to justify the
 additional product state.
 
 ### Milestone D1: continuity productization
@@ -1409,7 +1536,7 @@ additional product state.
   behavior in section 10;
 - source-backed visible-message slice navigation;
 - manual comparison across explicitly permitted analyzer routes;
-- semantic acceptance scenarios 41–72.
+- semantic acceptance scenarios 41–80.
 
 No milestone adds worker communication or remote transport.
 
@@ -1420,7 +1547,8 @@ discarded without migrating its experimental results if it fails the gate.
 
 The following require new designs rather than incidental extension:
 
-- continuous background semantic review;
+- unattended semantic review after the foreground subscription session ends;
+- provider-specific hooks that awaken an idle subscription session;
 - automatic quota or token-based analyzer routing;
 - automatic continuity merging across sessions or project bindings;
 - unbounded deep historical transcript indexing and review;
@@ -1448,12 +1576,20 @@ The narrow scope is deliberate. The most likely six-month failures are:
 8. model reruns rewrite history or disagree without exposing the disagreement;
 9. analyzer sessions recursively appear as work that needs analysis;
 10. tiny evidence excerpts prove a citation but fail to restore conversational
-    context.
+    context;
+11. the UI says analysis is live after the foreground provider turn has ended;
+12. two Observer sessions race and an old lease publishes a late result;
+13. every append triggers a review, exhausting subscription quota while results
+    immediately become stale;
+14. a capability-bearing Observer session obeys malicious transcript content or
+    leaks context across project packets.
 
 The v0 design counters these by preserving session and source-item identity,
 making factual checkpoints transactional, separating model suggestions from
 facts, using item-level and append-only assessments, excluding analyzer
-sessions, surfacing observer and analyzer health separately, and retaining
+sessions and workspace state, fencing one foreground lease, advancing semantic
+cursors only with validated commits, debouncing and coalescing deterministic
+work, surfacing collector/dashboard/analyzer health separately, and retaining
 stable pointers plus bounded evidence instead of a second transcript archive.
 
 Milestones D0 and D1 should not advance merely because their schema works. They

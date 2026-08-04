@@ -20,19 +20,24 @@ vertical slice provides:
 - a recent-project enrollment combobox with bounded session topic cards;
 - project-level attention dismissal and live Activity or static Project sorting;
 - managed collection and server sidecars;
-- an opt-in review loop performed by the Claude or Codex session that invokes
-  the skill, with exact evidence validation before dashboard publication.
+- a fenced foreground analyzer lease driven by the Claude or Codex session that
+  invokes the skill;
+- deterministic changed-session scheduling, bounded review packets, and exact
+  evidence validation before dashboard publication;
+- crash-safe accepted cutoffs and takeover by a replacement Observer session.
 
-The current **interactive D0 model review** is intentionally narrower than the
-isolated analyzer architecture in the full spec: it uses a dedicated active
-Claude or Codex session, selects one worker session and at most 40 visible
-messages, returns at most three suggestions, and discloses its shared context.
-The invoking analyzer session is persistently excluded from collection when its
-provider exposes the session ID. LaunchAgent installation, filesystem
-notifications, durable candidate indexing, deep conversation replay, and the
-productized isolated semantic ledger remain follow-up work. Explicit `add` and
-`rescan` operations may take several seconds with thousands of provider files;
-steady-state scans remain proportional to watched sources.
+The current **interactive D0 model review** uses one dedicated active Claude or
+Codex session, selects one changed worker session and at most 40 visible
+messages per packet, returns at most three suggestions, and discloses its shared
+context. Starting the skill acquires or takes over the analyzer lease, reports
+the dashboard URL, and remains in a deterministic wait/analyze/submit loop. The
+invoking analyzer session is persistently excluded from collection when its
+provider exposes the session ID; its workspace cannot be added to the watchlist.
+
+Filesystem notifications, deep conversation replay, and the full productized
+semantic ledger remain follow-up work. Explicit `add` and `rescan` operations
+may take several seconds with thousands of provider files; steady-state scans
+remain proportional to watched sources.
 
 ### Install and invoke
 
@@ -59,22 +64,24 @@ Codex: $agent-observer:observe
 Claude: /agent-observer:observe
 ```
 
-From a fresh, dedicated Observer session, the command starts the sync daemon and
-dashboard without watching the Observer session's own directory. Use `start
-PATH` or `review PATH` to watch a project and run an evidence-linked review. Use
-`status`, `dashboard`, `add PATH`, `rescan PATH`, or `stop` for narrower
-operations.
+Run the command from a fresh, dedicated Observer workspace such as
+`~/personal/dash`. It starts the collector and dashboard without watching that
+workspace, acquires the analyzer lease, and continuously reviews deterministic
+packets until interrupted. Use the dashboard or `add PATH` to watch projects;
+use `status`, `rescan PATH`, or `stop` for narrower operations.
 
 Run directly from a checkout:
 
 ```sh
-plugins/agent-observer/bin/agent-observer --json start ~/code/ops2 --provider codex
-plugins/agent-observer/bin/agent-observer status
-plugins/agent-observer/bin/agent-observer services
-plugins/agent-observer/bin/agent-observer down
+plugins/agent-observer/bin/agent-observer --workspace ~/personal/dash --json supervisor-begin --provider codex --allow-cross-provider
+plugins/agent-observer/bin/agent-observer --workspace ~/personal/dash supervisor-status
+plugins/agent-observer/bin/agent-observer --workspace ~/personal/dash add ~/code/ops2
+plugins/agent-observer/bin/agent-observer --workspace ~/personal/dash supervisor-stop
 ```
 
-State defaults to `~/.local/state/agent-observer`. Use
+Skill-driven state lives at `<observer-workspace>/.agent-observer/`. Direct CLI
+commands without `--workspace` retain the legacy default
+`~/.local/state/agent-observer`. Use
 `AGENT_OBSERVER_HOME`, `AGENT_OBSERVER_CLAUDE_ROOT`,
 `AGENT_OBSERVER_CODEX_ROOT`, `AGENT_OBSERVER_CODEX_ARCHIVE_ROOT`, or
 `AGENT_OBSERVER_CODEX_SESSION_INDEX` to isolate development and tests. Codex

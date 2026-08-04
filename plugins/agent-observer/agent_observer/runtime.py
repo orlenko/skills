@@ -5,6 +5,7 @@ import os
 import secrets
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,13 @@ def _runtime_dir(config: ObserverConfig) -> Path:
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path, 0o700)
     return path
+
+
+def _instance_registry_path() -> Path:
+    configured = os.environ.get("AGENT_OBSERVER_INSTANCE_REGISTRY")
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".local" / "state" / "agent-observer-active.json"
 
 
 def _atomic_json(path: Path, value: dict[str, Any]) -> None:
@@ -193,6 +201,55 @@ def start_services(config: ObserverConfig) -> dict[str, Any]:
     raise OSError(
         f"observer sidecars did not become ready; inspect the runtime logs in {runtime}"
     )
+
+
+def claim_active_instance(config: ObserverConfig) -> dict[str, Any]:
+    current = str(config.state_dir.resolve())
+    registry = _instance_registry_path()
+    registered = _read_json(registry) or {}
+    candidates: list[Path] = []
+    prior = registered.get("state_dir")
+    if isinstance(prior, str) and prior:
+        candidates.append(Path(prior).expanduser())
+    if not os.environ.get("AGENT_OBSERVER_INSTANCE_REGISTRY"):
+        legacy = Path.home() / ".local" / "state" / "agent-observer"
+        if legacy.exists():
+            candidates.append(legacy)
+    cleaned: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for state_dir in candidates:
+        resolved = str(state_dir.resolve())
+        if resolved == current or resolved in seen:
+            continue
+        seen.add(resolved)
+        old_config = ObserverConfig.defaults(resolved)
+        services = service_status(old_config)
+        if services["server"]["running"] or services["daemon"]["running"]:
+            try:
+                with Observer(old_config) as observer:
+                    observer.db.revoke_supervisor("another workspace took over")
+            except (OSError, sqlite3.DatabaseError, ValueError):
+                pass
+            cleaned.append(
+                {"state_dir": resolved, "services": stop_services(old_config)}
+            )
+    _atomic_json(
+        registry,
+        {"state_dir": current, "claimed_at": time.time(), "pid": os.getpid()},
+    )
+    return {"state_dir": current, "cleaned": cleaned}
+
+
+def release_active_instance(config: ObserverConfig) -> bool:
+    registry = _instance_registry_path()
+    value = _read_json(registry) or {}
+    if value.get("state_dir") != str(config.state_dir.resolve()):
+        return False
+    try:
+        registry.unlink()
+    except OSError:
+        return False
+    return True
 
 
 def _owned_process(pid: int, kind: str) -> bool:

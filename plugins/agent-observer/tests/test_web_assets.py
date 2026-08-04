@@ -76,6 +76,8 @@ class WebAssetTests(unittest.TestCase):
         self.assertIn('projectRemovalButton(project, "row", "Remove")', script)
         self.assertIn('projectRemovalButton(project, "inspector", "Stop watching")', script)
         self.assertIn("session.last_activity_at", script)
+        self.assertIn("state.data?.analyzer", script)
+        self.assertIn("Semantic analyzer is detached", script)
         self.assertNotIn("const signalSession =", script)
         for speculative_control in (
             "Snooze",

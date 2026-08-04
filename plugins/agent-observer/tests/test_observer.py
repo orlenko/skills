@@ -74,6 +74,24 @@ class ObserverTests(unittest.TestCase):
         ):
             self.assertEqual(_config(args).codex_session_index, index)
 
+    def test_workspace_roots_private_state_inside_observer_directory(self):
+        workspace = Path(self.temp.name) / "dash"
+        workspace.mkdir()
+        args = argparse.Namespace(
+            state_dir=None,
+            workspace=str(workspace),
+            claude_root=None,
+            codex_root=None,
+        )
+        config = _config(args)
+        self.assertEqual(config.state_dir, workspace.resolve() / ".agent-observer")
+        self.assertEqual(
+            (config.state_dir / ".gitignore").read_text(encoding="utf-8"), "*\n"
+        )
+        with Observer(config) as observer:
+            with self.assertRaisesRegex(ValueError, "cannot be watched"):
+                observer.add_project(str(workspace))
+
     def test_claude_structured_questions_are_item_correlated(self):
         session = (
             self.claude_root

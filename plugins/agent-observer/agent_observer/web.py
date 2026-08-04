@@ -38,7 +38,7 @@ def _handler(config: ObserverConfig, token: str, port: int):
     }
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "agent-observer/0.2"
+        server_version = "agent-observer/0.3"
 
         def _host_allowed(self) -> bool:
             host = self.headers.get("Host") or ""
@@ -130,6 +130,7 @@ def _handler(config: ObserverConfig, token: str, port: int):
             if parsed.path == "/api/status":
                 with Observer(config) as observer:
                     result = dashboard_projection(observer.status())
+                    result["analyzer"] = observer.db.supervisor_status()
                 result["services"] = service_status(config)
                 self._json(200, result)
                 return
@@ -139,7 +140,10 @@ def _handler(config: ObserverConfig, token: str, port: int):
                 self._json(200, result)
                 return
             if parsed.path == "/api/services":
-                self._json(200, service_status(config))
+                with Observer(config) as observer:
+                    result = service_status(config)
+                    result["analyzer"] = observer.db.supervisor_status()
+                self._json(200, result)
                 return
             asset = STATIC.get(parsed.path)
             if asset:
@@ -200,6 +204,7 @@ def _handler(config: ObserverConfig, token: str, port: int):
                         self._json(404, {"error": "not found"})
                         return
                     result = dashboard_projection(observer.status())
+                    result["analyzer"] = observer.db.supervisor_status()
                 result["services"] = service_status(config)
                 self._json(200, result)
             except (KeyError, OSError, ValueError) as exc:

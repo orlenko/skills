@@ -69,6 +69,9 @@ class Observer:
         self, path: str, *, allow_existing: bool = True
     ) -> dict[str, Any]:
         identity = identify_project(path.strip())
+        workspace_id = self._observer_workspace_project_id()
+        if workspace_id and identity.project_id == workspace_id:
+            raise ValueError("the dedicated Observer workspace cannot be watched")
         try:
             existing = self.db.project(identity.project_id)
         except KeyError:
@@ -87,12 +90,25 @@ class Observer:
 
     def project_candidates(self) -> list[dict[str, object]]:
         watched = {str(project["project_id"]) for project in self.db.projects()}
-        return discover_recent_projects(
-            claude_roots=self.config.claude_roots,
-            codex_roots=self.config.codex_roots,
-            watched_project_ids=watched,
-            codex_session_index=self.config.codex_session_index,
-        )
+        workspace_id = self._observer_workspace_project_id()
+        return [
+            candidate
+            for candidate in discover_recent_projects(
+                claude_roots=self.config.claude_roots,
+                codex_roots=self.config.codex_roots,
+                watched_project_ids=watched,
+                codex_session_index=self.config.codex_session_index,
+            )
+            if candidate.get("project_id") != workspace_id
+        ]
+
+    def _observer_workspace_project_id(self) -> str | None:
+        if self.config.state_dir.name != ".agent-observer":
+            return None
+        try:
+            return identify_project(str(self.config.state_dir.parent)).project_id
+        except ValueError:
+            return None
 
     def _resolve_project(self, value: str) -> dict[str, Any]:
         for project in self.db.projects():

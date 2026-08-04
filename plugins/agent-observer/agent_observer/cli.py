@@ -9,9 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .reviews import prepare_review, submit_review
+from .reviews import next_review, prepare_review, submit_review
 from .runtime import (
+    claim_active_instance,
     issue_bootstrap_token,
+    release_active_instance,
     run_daemon,
     service_status,
     start_services,
@@ -30,6 +32,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
     parser.add_argument("--state-dir")
+    parser.add_argument(
+        "--workspace",
+        help="Root Observer state at WORKSPACE/.agent-observer",
+    )
     parser.add_argument("--claude-root", action="append")
     parser.add_argument("--codex-root", action="append")
     parser.add_argument("--json", action="store_true", dest="as_json")
@@ -88,6 +94,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     submit.add_argument("job_id")
     submit.add_argument("draft_path")
+    submit.add_argument("--lease-token")
+
+    begin = commands.add_parser(
+        "supervisor-begin",
+        help="Ensure sidecars and acquire the foreground analyzer lease",
+    )
+    begin.add_argument("--provider", choices=("claude", "codex"), required=True)
+    begin.add_argument("--model")
+    begin.add_argument("--analyzer-session-id")
+    begin.add_argument("--allow-cross-provider", action="store_true")
+
+    next_command = commands.add_parser(
+        "review-next", help="Wait for one deterministic supervised review packet"
+    )
+    next_command.add_argument("lease_token")
+    next_command.add_argument("--wait", type=float, default=0)
+
+    commands.add_parser(
+        "supervisor-status", help="Show collector, dashboard, and analyzer health"
+    )
+    commands.add_parser(
+        "supervisor-stop", help="Revoke the analyzer lease and stop sidecars"
+    )
 
     serve = commands.add_parser(
         "serve", help="Run the localhost dashboard in the foreground"
@@ -102,7 +131,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _config(args: argparse.Namespace) -> ObserverConfig:
-    defaults = ObserverConfig.defaults(args.state_dir)
+    workspace_value = getattr(args, "workspace", None)
+    if args.state_dir and workspace_value:
+        raise ValueError("use either --state-dir or --workspace, not both")
+    state_dir = args.state_dir
+    if workspace_value:
+        workspace = Path(workspace_value).expanduser().resolve()
+        if not workspace.is_dir():
+            raise ValueError(f"observer workspace does not exist: {workspace}")
+        state = workspace / ".agent-observer"
+        state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(state, 0o700)
+        ignore = state / ".gitignore"
+        if not ignore.exists():
+            ignore.write_text("*\n", encoding="utf-8")
+        state_dir = str(state)
+    defaults = ObserverConfig.defaults(state_dir)
     return ObserverConfig(
         defaults.state_dir,
         tuple(Path(value).expanduser() for value in args.claude_root)
@@ -184,6 +228,19 @@ def run(args: argparse.Namespace) -> int:
             result["dashboard_url"] += f"?bootstrap={issue_bootstrap_token(config)}"
         _print(result, args.as_json)
         return 0
+    if args.command == "supervisor-stop":
+        with Observer(config) as observer:
+            supervisor = observer.db.revoke_supervisor()
+        _print(
+            {
+                "supervisor": supervisor,
+                "services": stop_services(config),
+                "state_dir": str(config.state_dir),
+                "released_active_instance": release_active_instance(config),
+            },
+            args.as_json,
+        )
+        return 0
 
     with Observer(config) as observer:
         if args.command == "add":
@@ -196,6 +253,47 @@ def run(args: argparse.Namespace) -> int:
             result = observer.scan()
         elif args.command == "status":
             result = observer.status()
+        elif args.command == "supervisor-status":
+            services = service_status(config)
+            if services.get("dashboard_url"):
+                services["dashboard_url"] += (
+                    f"?bootstrap={issue_bootstrap_token(config)}"
+                )
+            result = {
+                "state_dir": str(config.state_dir),
+                "services": services,
+                "supervisor": observer.db.supervisor_status(),
+            }
+        elif args.command == "supervisor-begin":
+            analyzer_session_id = args.analyzer_session_id or os.environ.get(
+                "CODEX_THREAD_ID"
+                if args.provider == "codex"
+                else "CLAUDE_SESSION_ID"
+            )
+            if analyzer_session_id:
+                observer.db.exclude_session(
+                    args.provider,
+                    analyzer_session_id,
+                    "foreground Observer analyzer lease owner",
+                )
+            instance = claim_active_instance(config)
+            services = start_services(config)
+            supervisor = observer.db.acquire_supervisor(
+                provider=args.provider,
+                model=args.model,
+                session_id=analyzer_session_id,
+                allow_cross_provider=args.allow_cross_provider,
+            )
+            result = {
+                "state_dir": str(config.state_dir),
+                "services": services,
+                "supervisor": supervisor,
+                "instance": instance,
+            }
+        elif args.command == "review-next":
+            result = next_review(
+                observer, args.lease_token, wait_seconds=args.wait
+            )
         elif args.command == "include-session":
             result = {
                 "included": observer.db.include_session(args.provider, args.session_id),
@@ -265,7 +363,12 @@ def run(args: argparse.Namespace) -> int:
                 target_provider=args.session_provider,
             )
         elif args.command == "review-submit":
-            result = submit_review(observer, args.job_id, args.draft_path)
+            result = submit_review(
+                observer,
+                args.job_id,
+                args.draft_path,
+                lease_token=args.lease_token,
+            )
         else:
             raise AssertionError(args.command)
     _print(result, args.as_json)

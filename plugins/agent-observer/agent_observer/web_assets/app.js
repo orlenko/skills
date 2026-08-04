@@ -939,14 +939,18 @@ const renderServices = () => {
   const service = document.querySelector("#service-state");
   const server = state.data?.services?.server;
   const daemon = state.data?.services?.daemon;
+  const analyzer = state.data?.analyzer;
   const heartbeatAge = daemon?.heartbeat_at && state.data?.generated_at
     ? Math.max(0, state.data.generated_at - daemon.heartbeat_at)
     : null;
   const heartbeatStale = daemon?.running && (heartbeatAge === null || heartbeatAge > 15);
   const healthy = Boolean(server?.running && daemon?.running && !heartbeatStale && !daemon?.error);
-  service.className = `service-state ${healthy ? "healthy" : "issue"}`;
+  const analyzerActive = ["attached", "waiting", "analyzing"].includes(analyzer?.state);
+  service.className = `service-state ${healthy ? (analyzerActive ? "healthy" : "detached") : "issue"}`;
   service.lastElementChild.textContent = healthy
-    ? "Collector and dashboard live"
+    ? (analyzerActive
+      ? `Collector live · ${analyzer.provider || "AI"} ${analyzer.state}`
+      : "Collector live · analyzer detached")
     : (heartbeatStale ? "Collector heartbeat stale" : "Observer needs attention");
 
   const addNotice = (title, copy, kind) => {
@@ -964,6 +968,14 @@ const renderServices = () => {
   }
   if (daemon?.error) {
     addNotice("Collector reported an error", daemon.error, "error");
+  }
+  if (healthy && analyzer && !analyzerActive) {
+    const reason = analyzer.stop_reason ? ` ${analyzer.stop_reason}.` : "";
+    addNotice(
+      "Semantic analyzer is detached",
+      `Factual collection is current, but conversation loose ends are not being reviewed.${reason} Start the Observer skill in Claude or Codex to resume.`,
+      "warning",
+    );
   }
 };
 
