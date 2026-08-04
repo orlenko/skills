@@ -122,8 +122,9 @@ Review only the supplied visible messages and factual findings:
 
 Create the exact JSON response schema named by the packet at `draft_path` using
 the session's file-editing tool. Every item must cite a supplied `message_ref`,
-use its matching `session_id`, and quote an exact substring as
-`evidence_excerpt`. Then run:
+use its matching `session_id`, and copy one `evidence_ref` exactly from that
+message's `evidence_blocks` array. The validator derives the displayed exact
+excerpt from that immutable block. Then run:
 
 ```sh
 /absolute/plugin/bin/agent-observer --workspace "$PWD" --json review-submit \

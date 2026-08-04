@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from .service import Observer
 
 
-PACKET_VERSION = "observer-interactive-review-v1"
+PACKET_VERSION = "observer-interactive-review-v2"
 MAX_MESSAGES = 40
 MAX_ITEMS = 3
 MAX_PACKET_BYTES = 256 * 1024
@@ -28,6 +28,7 @@ MIN_SUBSTANTIAL_ASSISTANT_MESSAGES = 2
 MIN_USER_MESSAGES = 2
 MIN_SUBSTANTIAL_MESSAGE_CHARS = 200
 MIN_ASSISTANT_CHARS = 1_200
+MAX_EVIDENCE_BLOCK_CHARS = 800
 ALLOWED_TYPES = {
     "question",
     "decision",
@@ -102,6 +103,7 @@ def _source_messages(
                     "phase": event.payload.get("phase"),
                     "timestamp": event.source_at,
                     "text": text,
+                    "evidence_blocks": _evidence_blocks(message_ref, text),
                     "byte_start": batch.record.start,
                     "byte_end": batch.record.end,
                 }
@@ -117,6 +119,25 @@ def _source_messages(
             "messages in its bounded tail"
         )
     return messages[-MAX_MESSAGES:], gaps
+
+
+def _evidence_blocks(message_ref: str, text: str) -> list[dict[str, str]]:
+    blocks: list[str] = []
+    for line in text.splitlines() or [text]:
+        remaining = line.strip()
+        while remaining:
+            if len(remaining) <= MAX_EVIDENCE_BLOCK_CHARS:
+                blocks.append(remaining)
+                break
+            boundary = remaining.rfind(" ", 0, MAX_EVIDENCE_BLOCK_CHARS + 1)
+            if boundary < MAX_EVIDENCE_BLOCK_CHARS // 2:
+                boundary = MAX_EVIDENCE_BLOCK_CHARS
+            blocks.append(remaining[:boundary])
+            remaining = remaining[boundary:].lstrip()
+    return [
+        {"evidence_ref": f"{message_ref}:e{index}", "text": block}
+        for index, block in enumerate(blocks)
+    ]
 
 
 def _source_recency(source: dict[str, Any]) -> tuple[float, str, str]:
@@ -345,7 +366,7 @@ def prepare_review(
                     "detail": "bounded explanation",
                     "session_id": "cited session",
                     "message_ref": "cited origin message_ref",
-                    "evidence_excerpt": "exact substring from cited message",
+                    "evidence_ref": "one supplied evidence_blocks[].evidence_ref",
                 }
             ],
             "limitations": ["string"],
@@ -618,6 +639,14 @@ def submit_review(
     messages = {
         str(message["message_ref"]): message for message in packet.get("messages", [])
     }
+    evidence_blocks = {
+        str(block["evidence_ref"]): (message, str(block["text"]))
+        for message in packet.get("messages", [])
+        for block in message.get("evidence_blocks", [])
+        if isinstance(block, dict)
+        and isinstance(block.get("evidence_ref"), str)
+        and isinstance(block.get("text"), str)
+    }
     summary = _bounded_string(value.get("summary"), "summary", 4096, required=True)
     raw_items = value.get("items")
     if not isinstance(raw_items, list) or len(raw_items) > MAX_ITEMS:
@@ -657,16 +686,32 @@ def submit_review(
         )
         if session_id != str(cited["session_id"]):
             raise ValueError(f"items[{index}] session does not match its citation")
-        evidence = _bounded_string(
-            item.get("evidence_excerpt"),
-            f"items[{index}].evidence_excerpt",
+        evidence_ref = _bounded_string(
+            item.get("evidence_ref"),
+            f"items[{index}].evidence_ref",
             2048,
-            required=True,
+            required=False,
         )
-        if evidence not in str(cited["text"]):
-            raise ValueError(
-                f"items[{index}] evidence is absent from its cited message"
+        if evidence_ref:
+            evidence_entry = evidence_blocks.get(evidence_ref)
+            if not evidence_entry or evidence_entry[0] is not cited:
+                raise ValueError(
+                    f"items[{index}] cites an evidence block outside its message"
+                )
+            evidence = evidence_entry[1]
+        else:
+            # Manual v2 drafts may still supply a literal exact excerpt. Automatic
+            # analyzers use evidence_ref so paraphrased quotations cannot enter.
+            evidence = _bounded_string(
+                item.get("evidence_excerpt"),
+                f"items[{index}].evidence_excerpt",
+                2048,
+                required=True,
             )
+            if evidence not in str(cited["text"]):
+                raise ValueError(
+                    f"items[{index}] evidence is absent from its cited message"
+                )
         items.append(
             {
                 "type": item_type,
@@ -680,6 +725,7 @@ def submit_review(
                 "provider": cited["provider"],
                 "session_id": session_id,
                 "message_ref": message_ref,
+                "evidence_ref": evidence_ref or None,
                 "evidence_excerpt": evidence,
                 "timestamp": cited.get("timestamp"),
             }

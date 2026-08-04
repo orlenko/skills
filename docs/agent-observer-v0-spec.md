@@ -466,6 +466,14 @@ read-only provider CLI invocation analyzes that packet and returns a strict
 draft to the deterministic validator. Only accepted, evidence-linked output
 enters the semantic ledger.
 
+Each visible message is deterministically divided into bounded exact evidence
+blocks with stable packet-local references. The analyzer cites a block reference
+rather than reproducing prose. The validator resolves that reference back to
+the immutable exact block, preventing paraphrased quotations from being
+accepted or causing a persistent retry loop. One rejected structured draft may
+receive one bounded repair attempt with the validator error; a second rejection
+degrades analysis until the next explicit retry or hourly opportunity.
+
 The analyzer supervisor:
 
 - runs from an Observer workspace that is never itself watched;

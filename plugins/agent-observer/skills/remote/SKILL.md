@@ -83,7 +83,7 @@ origins, and judge handling only from later supplied visible messages. Use
 
 For an explicitly requested manual packet, write the exact requested JSON
 schema to `draft_path`. Every item must cite a supplied `message_ref` and exact
-`evidence_excerpt`. Submit it with:
+`evidence_ref` from that message's `evidence_blocks` array. Submit it with:
 
 ```sh
 /absolute/plugin/bin/agent-observer --workspace "$PWD" --json review-submit \

@@ -112,7 +112,7 @@ class ReviewAndRuntimeTests(unittest.TestCase):
                         "detail": "The later user message changes topic without choosing either option.",
                         "session_id": sid,
                         "message_ref": origin["message_ref"],
-                        "evidence_excerpt": "Choose SQLite or Postgres",
+                        "evidence_ref": origin["evidence_blocks"][0]["evidence_ref"],
                     }
                 ],
                 "limitations": [
@@ -127,6 +127,14 @@ class ReviewAndRuntimeTests(unittest.TestCase):
             review = projected["projects"][0]["review"]
             self.assertEqual(review["status"], "current")
             self.assertEqual(review["items"][0]["title"], "Choose the database")
+            self.assertEqual(
+                review["items"][0]["evidence_ref"],
+                origin["evidence_blocks"][0]["evidence_ref"],
+            )
+            self.assertEqual(
+                review["items"][0]["evidence_excerpt"],
+                origin["evidence_blocks"][0]["text"],
+            )
             self.assertFalse(Path(prepared["packet_path"]).exists())
 
             rejected = prepare_review(
@@ -142,10 +150,10 @@ class ReviewAndRuntimeTests(unittest.TestCase):
                 if message["role"] == "assistant"
             )
             draft["items"][0]["message_ref"] = bad_origin["message_ref"]
-            draft["items"][0]["evidence_excerpt"] = "text absent from the packet"
+            draft["items"][0]["evidence_ref"] = "absent:evidence:block"
             bad_path = Path(rejected["draft_path"])
             bad_path.write_text(json.dumps(draft), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "evidence is absent"):
+            with self.assertRaisesRegex(ValueError, "evidence block outside"):
                 submit_review(observer, rejected["job_id"], bad_path)
 
     def test_supervisor_takeover_fences_submission_and_resumes_cursor(self):
@@ -309,8 +317,14 @@ class ReviewAndRuntimeTests(unittest.TestCase):
 import json, os, pathlib, sys
 args = sys.argv[1:]
 out = pathlib.Path(args[args.index('--output-last-message') + 1])
-out.write_text(json.dumps({'schema_version': 'observer-interactive-review-v1', 'summary': 'No loose ends.', 'items': [], 'limitations': []}))
 marker = pathlib.Path(os.environ['OBSERVER_TEST_MARKER'])
+packet = json.loads(sys.stdin.read().strip().splitlines()[-1])
+assistant = next(message for message in packet['messages'] if message['role'] == 'assistant')
+if not marker.exists():
+    items = [{'type': 'decision', 'assessment': 'no_later_handling_observed', 'title': 'Test citation', 'detail': 'Exercise bounded repair.', 'session_id': assistant['session_id'], 'message_ref': assistant['message_ref'], 'evidence_ref': 'missing:evidence:block'}]
+else:
+    items = []
+out.write_text(json.dumps({'schema_version': 'observer-interactive-review-v2', 'summary': 'No loose ends.', 'items': items, 'limitations': []}))
 with marker.open('a') as handle:
     handle.write('called\\n')
 """,
@@ -371,11 +385,17 @@ with marker.open('a') as handle:
                 allow_cross_provider=True,
             )
             deadline = time.monotonic() + 5
-            while not marker.exists() and time.monotonic() < deadline:
+            while (
+                (not marker.exists() or len(marker.read_text(encoding="utf-8").splitlines()) < 2)
+                and time.monotonic() < deadline
+            ):
                 time.sleep(0.05)
             self.assertTrue(marker.exists())
             time.sleep(0.5)
-            self.assertEqual(marker.read_text(encoding="utf-8").splitlines(), ["called"])
+            self.assertEqual(
+                marker.read_text(encoding="utf-8").splitlines(),
+                ["called", "called"],
+            )
 
     def test_service_start_replaces_an_incompatible_running_sidecar(self):
         first = start_services(self.config)

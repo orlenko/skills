@@ -266,6 +266,14 @@ def start_analyzer_service(
         or bool(analyzer.get("allow_cross_provider")) != allow_cross_provider
     )
     if mismatch:
+        if analyzer.get("error"):
+            _atomic_json(
+                _runtime_dir(config) / "analyzer-schedule.json",
+                {
+                    "last_model_at": 0,
+                    "retry_reason": "analyzer upgraded after a rejected result",
+                },
+            )
         _stop_service(config, "analyzer")
         status = service_status(config)
     if not status["analyzer"]["running"]:

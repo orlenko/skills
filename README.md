@@ -24,8 +24,8 @@ vertical slice provides:
 - a dormant subscription-backed Claude or Codex analyzer sidecar selected by
   the session that invokes the skill;
 - deterministic activity-volume gating, a ten-minute quiet debounce, hourly
-  model batches, bounded review packets, and exact evidence validation before
-  dashboard publication;
+  model batches, bounded review packets, deterministic evidence-block
+  references, and exact evidence validation before dashboard publication;
 - crash-safe accepted cutoffs and takeover by a replacement Observer session;
 - a dedicated pinned-TLS LAN/Tailscale ingest listener, single-use `ao1.`
   enrollment, and revocable durable remote-node credentials;
