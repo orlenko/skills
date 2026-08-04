@@ -72,6 +72,13 @@ loopback-only dashboard. One dedicated, foreground Claude or Codex Observer
 session may attach to that state and continuously judge deterministic bounded
 review packets while its subscription-backed turn remains active.
 
+V0 observes one machine. A future remote-node milestone keeps this dashboard on
+the home machine while explicitly enrolled Ubuntu machines run their own
+collector, outbound proxy, and foreground subscription-backed analyzer without a
+remote web UI. The same project ledger will then combine local and remote work;
+host identity and remote service health must fit the information architecture
+without turning the overview into infrastructure monitoring.
+
 The intended instance is rooted at `~/personal/dash`; private state defaults to
 `~/personal/dash/.agent-observer/`. A later Claude or Codex session in that
 workspace takes over a fenced analyzer lease and resumes the same SQLite state.
@@ -116,6 +123,10 @@ Primary moments:
   provider, branch, directory and canonical path, activity age, and a bounded
   recent user topic. Typing matches those fields, and watched projects are
   absent.
+- **Connect a remote host (future):** Copy a short-lived enrollment key from the
+  explicitly network-enabled home Observer session, redeem it from the remote
+  machine's dedicated Observer session, and see the resulting host connection
+  and analysis health without a second dashboard.
 
 ## 3. Product principles the design must encode
 
@@ -186,13 +197,47 @@ overlap rather than imply a total partition.
 
 Recommended hierarchy inside a project row:
 
-1. Project identity: display path, branch, provider presence.
+1. Project identity: display path, branch, provider presence, and host when the
+   project is remote.
 2. Highest-priority factual attention, if present.
 3. Exact age of the newest meaningful observation.
 4. Observer issue indicator, independent of attention.
 5. Model-review summary only when it has a prominent item, is running, or failed.
 6. Selection affordance for a persistent inspector containing sessions,
    evidence, changes, and analysis detail.
+
+### 4.1 Future host-aware extension
+
+Remote origin is project identity, not a warning badge. A remote row should show
+the human-readable hostname near the session provider and retain a stable opaque
+host identity in detail views. Add a Host filter when at least one remote node is
+enrolled; do not spend permanent space on it in a local-only installation.
+
+Treat these states independently:
+
+- remote proxy connected or disconnected;
+- remote collector healthy, degraded, or unavailable;
+- remote analyzer attached, waiting, working, or detached;
+- last acknowledged snapshot revision and age;
+- source activity time, home receipt time, and detected clock skew.
+
+An offline host can still have actionable cached findings. Keep those findings
+visible, label their evidence cutoff, and show staleness separately. Never turn
+`remote host unreachable` into `worker stopped`, and never imply that the home
+dashboard can resume, message, or control a remote worker. Remote enrollment,
+credential revocation, reconnection, and backlog status are **concept** controls
+until Milestone E in the behavioral spec is implemented.
+
+The first remote slice manages its project watchlist from the remote Observer
+session. The home enrollment combobox remains local-only; do not mix remote paths
+into it or offer a home-side `Watch` control until an authenticated command path
+has been designed explicitly.
+
+Remote detail initially includes only the exact cited snippets replicated in a
+validated snapshot. When surrounding conversation was not copied to the home
+machine, say `Full context remains on <host>` and direct the operator back to the
+remote session. Do not offer a replay affordance that silently creates an
+on-demand home-to-remote command channel.
 
 ## 5. Current HTTP and security contract
 

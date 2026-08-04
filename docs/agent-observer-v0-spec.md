@@ -1538,10 +1538,124 @@ additional product state.
 - manual comparison across explicitly permitted analyzer routes;
 - semantic acceptance scenarios 41–80.
 
-No milestone adds worker communication or remote transport.
+Milestones A through D1 add neither worker communication nor remote transport.
 
 Milestones A through C remain useful and shippable without D0 or D1. D0 may be
 discarded without migrating its experimental results if it fails the gate.
+
+### Milestone E: remote Observer nodes (future)
+
+Milestone E extends the passive Observer boundary to explicitly enrolled remote
+machines without adding worker communication. It requires a separate design and
+skeptic review before implementation; the requirements below record the intended
+operator experience and the boundaries that the protocol must preserve.
+
+The home machine runs the canonical dashboard and coordinator. After remote
+ingress has been explicitly enabled for that Observer workspace, invoking
+`$agent-observer:observe` in Codex or `/agent-observer:observe` in Claude starts
+or takes over the local Observer as today and also prints a fresh, time-limited
+remote-enrollment key and the exact advertised endpoint. A local-only workspace
+continues to open no network-facing socket. In a dedicated Observer workspace on
+a remote machine, the operator invokes `$agent-observer:remote KEY` or
+`/agent-observer:remote KEY`. The remote invocation starts no dashboard. It
+starts or reconciles that machine's deterministic collector and outbound proxy,
+acquires the remote foreground analyzer lease, and enters the same bounded
+wait/analyze/validate loop used locally.
+
+The enrollment key should reuse the proven Agent Pair *bootstrap shape*, not its
+mailbox protocol: a versioned `ao1.` payload containing reachable home endpoints,
+a short-lived single-use secret, an expiry, and the home server's TLS certificate
+fingerprint. Successful redemption creates a revocable durable remote-node
+credential and stable opaque `node_id`; the display hostname is mutable metadata,
+not identity. A key enrolls exactly one node. If none of the advertised endpoints
+is reachable, enrollment fails visibly; a hosted relay is not implied. Loss of
+the remote credential creates a new node in the first release; hostname matching
+must never reclaim an old identity implicitly.
+
+The remote ingress is a dedicated authenticated protocol endpoint, not the
+loopback dashboard server exposed on another interface. Its certificate identity
+and enrolled-node credentials live in the home Observer workspace and survive
+normal sidecar restart; certificate rotation either preserves a separately
+pinned node identity or requires explicit re-enrollment. Endpoint advertisement
+must be configurable for LAN, VPN, or SSH-forwarded reachability and must never
+guess that a private address is reachable from the Ubuntu host.
+
+After enrollment, the remote proxy makes outbound pinned-TLS connections to the
+home coordinator. It uploads only Observer's normalized, policy-filtered current
+projection: node and source health, source checkpoints, factual observations,
+exact cited snippets with stable remote source references, and semantic-review
+results. It does not mirror raw provider logs, deep conversation replay,
+thinking, arbitrary tool payloads, attachments, credentials, or the remote
+Observer session itself. The home node cannot send worker messages or execute
+commands on the remote host. When fuller evidence is absent, the dashboard says
+that it remains available only on the remote host.
+
+Enrollment does not automatically watch every project on the remote machine.
+Until a separately reviewed command channel exists, the remote watchlist is
+managed from the remote Observer session with the same explicit `add`, `rescan`,
+and `remove` operations used locally. The home candidate combobox must not imply
+that it can discover or enroll arbitrary remote paths. Remote watchlist changes
+are replicated back as facts.
+
+The first remote delivery protocol sends bounded, versioned snapshots of the
+node's current normalized projection, not a general event stream. Each snapshot
+has a node connection epoch, monotonically increasing revision, content hash,
+source and analysis cutoffs, generated-at time, stable remote IDs, and a home
+acknowledgement. The remote outbox retains the newest unacknowledged snapshot
+across network loss and process restart. The home imports facts, cited evidence,
+and referencing semantic results together in one staging transaction, repeats
+schema, bound, citation, and reference validation, then atomically replaces that
+node's current projection. Retrying the same revision is idempotent; an older
+revision or uploader epoch is rejected. This deliberately does not preserve
+every intermediate remote state.
+
+One server-issued active-uploader epoch fences copied remote state so two clones
+of one credential cannot both advance the node. Local collection can continue
+while disconnected. Semantic processing continues only while the remote Claude
+or Codex Observer turn owns its analyzer lease, and the home dashboard must
+distinguish `remote collector connected`, `remote collector disconnected`, and
+`remote analyzer detached`.
+
+The existing local tables keep their current identity model in the first slice;
+remote snapshots land in a separate node-scoped projection and merge only at the
+presentation boundary. At minimum, remote project identity is
+`(node_id, remote_project_id)`, session identity is
+`(node_id, provider, provider_session_id)`, and source/message references include
+`node_id`. Source checkpoints determine order within a node. The dashboard keeps
+source activity time, home receipt time, and detected clock skew separate; a
+future-dated source clock cannot silently float a row above correctly timed work.
+
+The home dashboard merges local and remote projections into the same attention
+views. Each remote project and session prominently shows its host. Host is also a
+filter and sort facet. Host connection health, collector health, and analyzer
+attachment are independent; an unreachable remote host must not be described as
+a worker failure. Removal or credential revocation stops future replication but
+does not silently erase already received findings or local dispositions.
+The ingest boundary enforces per-node payload-size, item-count, rate, retention,
+and schema-version limits so a broken or compromised node cannot consume
+unbounded home resources.
+
+Milestone E is acceptable only when one home macOS machine and one enrolled
+Ubuntu machine demonstrate all of the following:
+
+1. one-time, expiring, TLS-pinned enrollment and explicit revocation;
+2. no remote web UI and no inbound worker control surface;
+3. local and remote projects in one dashboard with unambiguous host identity;
+4. deterministic remote collection plus subscription-backed remote analysis;
+5. disconnect, restart, snapshot retry, stale-snapshot rejection, and duplicate
+   delivery without duplicated findings or cursor regression;
+6. truthful independent health for the remote proxy, collector, and analyzer;
+7. bounded clock-skew reporting and version/capability negotiation;
+8. cloned-credential fencing, payload limits, and atomic evidence/result import;
+9. unchanged read-only treatment of every watched Claude and Codex worker.
+
+The smallest viable Milestone E supports one explicitly advertised LAN or VPN
+endpoint, one Ubuntu node, remote-session watchlist management, batched polling
+of bounded snapshots with acknowledgements, and no home-to-remote command
+channel. Relays, automatic NAT traversal, delta/event replication, certificate
+rotation without re-enrollment, transparent identity recovery, remote project
+enrollment from the home UI, deep remote replay, and multi-home federation
+remain deferred until that slice proves useful and operable.
 
 ## 19. Deferred work
 
@@ -1557,8 +1671,7 @@ The following require new designs rather than incidental extension:
 - process and terminal liveness;
 - terminal focus or safe session resume;
 - worker messaging and approval routing;
-- remote gatherers, authentication, transport, and clock reconciliation;
-- network observation protocol;
+- Milestone E remote transport and host-aware projection described above;
 - additional agent providers;
 - generalized provider plugin SDK.
 
@@ -1582,7 +1695,15 @@ The narrow scope is deliberate. The most likely six-month failures are:
 13. every append triggers a review, exhausting subscription quota while results
     immediately become stale;
 14. a capability-bearing Observer session obeys malicious transcript content or
-    leaks context across project packets.
+    leaks context across project packets;
+15. an enrollment key is valid but every advertised laptop address is
+    unreachable from the actual Ubuntu network;
+16. remote ingestion accidentally exposes the dashboard and its mutation API;
+17. copied or lost node state creates competing writers or duplicate projects;
+18. a remote semantic claim arrives without the exact evidence needed to validate
+    it on the canonical home dashboard;
+19. distributed transport and replay machinery consume the roadmap before one
+    remote node improves the operator's decisions.
 
 The v0 design counters these by preserving session and source-item identity,
 making factual checkpoints transactional, separating model suggestions from
@@ -1591,6 +1712,9 @@ sessions and workspace state, fencing one foreground lease, advancing semantic
 cursors only with validated commits, debouncing and coalescing deterministic
 work, surfacing collector/dashboard/analyzer health separately, and retaining
 stable pointers plus bounded evidence instead of a second transcript archive.
+Milestone E further keeps remote ingress separate, fences one uploader per node,
+imports bounded snapshots atomically, applies hard resource limits, and defers a
+general event stream and deep remote replay.
 
 Milestones D0 and D1 should not advance merely because their schema works. They
 require a sanitized corpus of real derailments and deliberately boring
@@ -1612,8 +1736,9 @@ boundary; the user remains the decision-maker.
   debounce, and narrow polling as collection prior art. Durable offsets,
   generations, partial records, and baseline reconciliation are added here.
 - **Agent Pair:** contributes the lesson that provider, project path, and
-  session identity are distinct. Its mailbox, heartbeat, TLS transport, and
-  worker cooperation are explicitly outside v0.
+  session identity are distinct. Its single-use expiring invite and pinned-TLS
+  bootstrap are prior art for Milestone E, but its mailbox, bounded pair
+  lifecycle, and worker cooperation are not the Observer replication protocol.
 - **`ccnotes`:** contributes provider-aware extraction, stable session/turn
   keys, preserving conversation order independent of selection order, bounded
   search previews, and resolving full message text from source only when

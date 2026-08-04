@@ -35,9 +35,11 @@ invoking analyzer session is persistently excluded from collection when its
 provider exposes the session ID; its workspace cannot be added to the watchlist.
 
 Filesystem notifications, deep conversation replay, and the full productized
-semantic ledger remain follow-up work. Explicit `add` and `rescan` operations
-may take several seconds with thousands of provider files; steady-state scans
-remain proportional to watched sources.
+semantic ledger remain follow-up work. A later remote-node milestone will let a
+home dashboard enroll read-only collector/analyzer nodes on other machines via a
+single-use pinned-TLS key; it is specified but not implemented. Explicit `add`
+and `rescan` operations may take several seconds with thousands of provider
+files; steady-state scans remain proportional to watched sources.
 
 ### Install and invoke
 
