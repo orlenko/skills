@@ -1,6 +1,6 @@
 {
   "name": "agent-observer",
-  "version": "0.2.2+codex.20260804145842",
+  "version": "0.2.3+codex.20260804151825",
   "description": "A passive local dashboard and evidence-linked review loop for Claude and Codex sessions.",
   "author": {
     "name": "Vlad Orlenko",

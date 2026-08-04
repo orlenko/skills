@@ -370,9 +370,16 @@ input::placeholder { color: var(--faint); }
 .project-identity,
 .project-claim,
 .project-age,
+.identity-title,
 .identity-meta,
 .claim-summary,
 .claim-source { display: block; min-width: 0; }
+
+.identity-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+}
 
 .path,
 .session-name,
@@ -384,6 +391,15 @@ input::placeholder { color: var(--faint); }
 
 .path,
 .session-name { font-size: 0.94rem; font-weight: 700; }
+
+.session-provider {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
 
 .identity-meta,
 .claim-source,

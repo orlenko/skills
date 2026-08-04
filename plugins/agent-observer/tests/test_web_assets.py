@@ -56,6 +56,9 @@ class WebAssetTests(unittest.TestCase):
         self.assertIn("const renderMarkdown =", script)
         self.assertIn('el("button", "queue-dismiss")', script)
         self.assertIn("session?.title?.trim()", script)
+        self.assertIn("const latestProjectSession =", script)
+        self.assertIn("session.last_activity_at", script)
+        self.assertNotIn("const signalSession =", script)
         for speculative_control in (
             "Snooze",
             "Still relevant",

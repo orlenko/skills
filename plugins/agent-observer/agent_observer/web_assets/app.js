@@ -259,16 +259,12 @@ const unseenFindings = (project) => project.findings
     return leftPriority - rightPriority || (right.updated_at || 0) - (left.updated_at || 0);
   });
 
-const signalSession = (project, signal) => {
-  const target = signal?.finding || project.review?.target_session;
-  if (target) {
-    const exact = project.sessions.find((session) => (
-      session.provider === target.provider && session.session_id === target.session_id
-    ));
-    if (exact) return exact;
-  }
-  return project.sessions[0] || null;
-};
+const latestProjectSession = (project) => project.sessions.reduce((latest, session) => {
+  if (!latest) return session;
+  const latestActivity = Number(latest.last_activity_at) || 0;
+  const sessionActivity = Number(session.last_activity_at) || 0;
+  return sessionActivity > latestActivity ? session : latest;
+}, null);
 
 const pullRequestLabel = (project) => {
   const raw = project.pull_request_id
@@ -287,8 +283,8 @@ const directoryName = (project) => {
   return parts[parts.length - 1] || project.display_path || "Unknown project";
 };
 
-const projectIdentity = (project, signal = projectSignal(project)) => {
-  const session = signalSession(project, signal);
+const projectIdentity = (project) => {
+  const session = latestProjectSession(project);
   const identifiers = [
     session?.title?.trim() || null,
     project.current_branch || null,
@@ -430,7 +426,7 @@ const renderViews = () => {
 
 const renderProjectRow = (project) => {
   const signal = projectSignal(project);
-  const identityValue = projectIdentity(project, signal);
+  const identityValue = projectIdentity(project);
   const row = el("div", "project-row");
   const selected = project.project_id === state.selectedProjectId;
   if (selected) row.classList.add("selected");
@@ -443,7 +439,12 @@ const renderProjectRow = (project) => {
   button.setAttribute("aria-controls", "inspector");
 
   const identity = el("span", "project-identity");
-  identity.append(el("strong", "session-name", identityValue.primary));
+  const identityTitle = el("span", "identity-title");
+  identityTitle.append(el("strong", "session-name", identityValue.primary));
+  if (identityValue.session) {
+    identityTitle.append(el("span", "session-provider", humanLabel(identityValue.session.provider)));
+  }
+  identity.append(identityTitle);
   const identityMeta = el("span", "identity-meta");
   for (const [index, value] of identityValue.secondary.entries()) {
     if (index) identityMeta.append(document.createTextNode(" · "));
@@ -691,7 +692,10 @@ const renderInspector = (project) => {
 
   const identity = projectIdentity(project);
   const header = el("header", "inspector-header");
-  header.append(el("p", "eyebrow", identity.session ? "SESSION DETAIL" : "PROJECT DETAIL"));
+  const detailLabel = identity.session
+    ? `${humanLabel(identity.session.provider).toLocaleUpperCase()} SESSION DETAIL`
+    : "PROJECT DETAIL";
+  header.append(el("p", "eyebrow", detailLabel));
   header.append(el("h2", "selectable", identity.primary));
   if (identity.secondary.length) {
     header.append(el("p", "inspector-identifiers", identity.secondary.join(" · ")));

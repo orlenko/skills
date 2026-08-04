@@ -972,7 +972,7 @@ look` and carries an observer-issue badge; the issue view also includes it.
 Each project card shows:
 
 - display path and provider badges;
-- focused session title or stable short session ID;
+- most recently active session title or stable short session ID, with provider;
 - known session count and discovery window;
 - exact last-observation age;
 - current Git worktree branch and observation time;
