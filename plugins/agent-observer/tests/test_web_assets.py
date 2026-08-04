@@ -90,6 +90,14 @@ class WebAssetTests(unittest.TestCase):
             contents = (ASSETS / name).read_text(encoding="utf-8")
             self.assertIsNone(re.search(r"https?://", contents), name)
 
+    def test_attention_palette_is_cool_and_red_remains_semantic(self):
+        styles = (ASSETS / "styles.css").read_text(encoding="utf-8")
+        self.assertIn("--surface-selected: oklch(93.6% 0.027 230);", styles)
+        self.assertIn("--accent: oklch(47% 0.105 238);", styles)
+        self.assertIn("--model: oklch(43% 0.09 178);", styles)
+        self.assertIn("--danger: oklch(44% 0.15 27);", styles)
+        self.assertNotIn("--accent: oklch(48% 0.12 43);", styles)
+
 
 if __name__ == "__main__":
     unittest.main()

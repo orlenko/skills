@@ -570,8 +570,10 @@ Do not use a generic toast as the only representation of a durable failure.
 
 ## 10. Visual direction
 
-The current rough draft uses a restrained warm-light palette and system type. It
-is intentionally plain. Specialized design tools may replace it.
+The current rough draft uses warm neutral surfaces with cool blue selection and
+source-backed attention, teal model review, green health, amber caution, and red
+reserved for actual Observer failure or destructive removal. It uses system type
+and is intentionally plain. Specialized design tools may replace it.
 
 The desired feeling is calm, exact, quietly vigilant, and local. Avoid:
 
