@@ -2,6 +2,50 @@
 
 An installable library of skills and plugins shared by Codex and Claude Code.
 
+## Agent Observer
+
+`agent-observer` is the early implementation of the passive, single-machine
+agent dashboard described in
+[`docs/agent-observer-v0-spec.md`](docs/agent-observer-v0-spec.md). The current
+Milestone A vertical slice provides:
+
+- an explicit project watchlist;
+- bounded Claude and Codex session discovery;
+- canonical visible-message and turn-boundary parsing;
+- item-correlated Claude `AskUserQuestion` findings;
+- durable SQLite byte checkpoints and partial-record recovery;
+- source replacement/truncation generations;
+- read-only Git branch sampling;
+- collector health and a local CLI status surface.
+
+It does not yet install a LaunchAgent, use filesystem notifications, serve the
+web dashboard, or run semantic continuity analysis. The `run` command performs
+narrow polling of already tracked sources and does not rescan provider trees.
+Explicit `add` and `rescan` operations may take several seconds when provider
+history contains thousands of session files; indexed discovery is follow-up
+work, while steady-state scans remain proportional to watched sources.
+
+Run directly from a checkout:
+
+```sh
+agent-observer/bin/agent-observer add ~/code/ops2
+agent-observer/bin/agent-observer status
+agent-observer/bin/agent-observer run
+```
+
+State defaults to `~/.local/state/agent-observer`. Use
+`AGENT_OBSERVER_HOME`, `AGENT_OBSERVER_CLAUDE_ROOT`,
+`AGENT_OBSERVER_CODEX_ROOT`, or `AGENT_OBSERVER_CODEX_ARCHIVE_ROOT` to isolate
+development and tests. The state directory is mode `0700`; the SQLite database
+is mode `0600`.
+
+For an editable installation:
+
+```sh
+python3 -m pip install -e agent-observer
+agent-observer --help
+```
+
 ## Agent Pair
 
 `agent-pair` connects exactly two agent sessions through a direct, durable text
@@ -122,6 +166,7 @@ plugins/agent-pair/
 ## Development
 
 ```sh
+python3 -m unittest discover -s agent-observer/tests -v
 python3 -m unittest discover -s plugins/agent-pair/tests -v
 python3 path/to/skill-creator/scripts/quick_validate.py \
   plugins/agent-pair/skills/pair

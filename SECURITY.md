@@ -5,6 +5,24 @@
 Please report vulnerabilities privately to the repository owner through
 GitHub's private vulnerability reporting feature.
 
+## Agent Observer threat model
+
+The current Agent Observer collector reads local Claude and Codex session logs
+for projects the user explicitly watches. It makes no model calls and no
+outbound network requests. Provider content is untrusted: plain terminal output
+replaces control characters, while JSON output is intended for trusted local
+consumers that perform their own contextual escaping.
+
+Observer state contains source paths, byte checkpoints, current bounded message
+excerpts, and explicit finding evidence. It does not retain every message body
+in the observation ledger. The state directory is mode `0700` and the SQLite
+database is mode `0600`; it should not be shared between OS users.
+
+Removing a project deletes its active Observer-owned rows and checkpoints but
+is not forensic erasure. SQLite pages, filesystem snapshots, provider-owned
+logs, and backups may retain bytes. The current CLI has no web listener,
+worker-message channel, session-resume action, or semantic analyzer.
+
 ## Agent Pair threat model
 
 Agent Pair is intended for two mutually expected agents on one machine or a
