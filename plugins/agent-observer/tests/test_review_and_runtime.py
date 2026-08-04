@@ -298,6 +298,20 @@ class ReviewAndRuntimeTests(unittest.TestCase):
         self.assertEqual(rejected_error.exception.code, 403)
         rejected_error.exception.close()
 
+        remove = urllib.request.Request(
+            clean_url + "api/projects/remove",
+            data=json.dumps({"project": added["projects"][0]["project_id"]}).encode(),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Origin": clean_url.rstrip("/"),
+                "X-Agent-Observer": "1",
+            },
+        )
+        with opener.open(remove, timeout=5) as response:
+            removed = json.loads(response.read())
+        self.assertEqual(removed["projects"], [])
+
         port = int(services["server"]["port"])
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         connection.request("GET", "/api/status", headers={"Host": "attacker.invalid"})

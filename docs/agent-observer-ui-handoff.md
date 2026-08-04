@@ -460,6 +460,7 @@ Implemented now:
 - mark a factual finding seen;
 - rescan a project;
 - add a project by path;
+- stop watching a project after inline confirmation;
 - copy a project path;
 - copy a provider-scoped session ID.
 
@@ -469,7 +470,6 @@ Specified next:
 - dismiss;
 - mark handled elsewhere;
 - still relevant;
-- remove project;
 - launch a review after provider and disclosure confirmation.
 
 These actions update Observer-owned state only. Never phrase them as messages to

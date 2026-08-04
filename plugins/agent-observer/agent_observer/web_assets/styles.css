@@ -358,6 +358,24 @@ input::placeholder { color: var(--faint); }
   color: var(--healthy);
 }
 
+.queue-remove {
+  margin-right: 0.42rem;
+  padding: 0.38rem 0.28rem;
+  border-color: var(--strong-rule);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.67rem;
+}
+
+.queue-remove:hover,
+.queue-remove.armed,
+.stop-watching:hover,
+.stop-watching.armed {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
 .checkbox-mark {
   width: 0.9rem;
   height: 0.9rem;
@@ -705,7 +723,8 @@ input::placeholder { color: var(--faint); }
     padding: 0.85rem 0.45rem;
   }
   .project-claim { grid-column: 1 / -1; grid-row: 2; }
-  .queue-dismiss { margin-right: 0.3rem; }
+  .queue-dismiss,
+  .queue-remove { margin-right: 0.3rem; }
   .form-row { flex-direction: column; }
   .notice { align-items: flex-start; flex-direction: column; }
 }

@@ -51,12 +51,20 @@ class WebAssetTests(unittest.TestCase):
             self.assertNotIn(unsafe_operation, script)
         self.assertEqual(
             set(re.findall(r'post\("([^\"]+)"', script)),
-            {"/api/projects", "/api/rescan", "/api/findings/seen"},
+            {
+                "/api/projects",
+                "/api/projects/remove",
+                "/api/rescan",
+                "/api/findings/seen",
+            },
         )
         self.assertIn("const renderMarkdown =", script)
         self.assertIn('el("button", "queue-dismiss")', script)
         self.assertIn("session?.title?.trim()", script)
         self.assertIn("const latestProjectSession =", script)
+        self.assertIn("const projectRemovalButton =", script)
+        self.assertIn('projectRemovalButton(project, "row", "Remove")', script)
+        self.assertIn('projectRemovalButton(project, "inspector", "Stop watching")', script)
         self.assertIn("session.last_activity_at", script)
         self.assertNotIn("const signalSession =", script)
         for speculative_control in (

@@ -1,6 +1,6 @@
 ---
 name: observe
-description: Start and use the local Agent Observer dashboard from a Claude or Codex session, watch a project, inspect factual session status, or run an opt-in evidence-linked review for conversational loose ends. Use when the user wants one view of local Claude/Codex work, asks what needs attention, wants to recover missed proposals or questions, or needs to start, check, rescan, or stop Observer sidecars.
+description: Start and use the local Agent Observer dashboard from a Claude or Codex session, watch or remove a project, inspect factual session status, or run an opt-in evidence-linked review for conversational loose ends. Use when the user wants one view of local Claude/Codex work, asks what needs attention, wants to recover missed proposals or questions, or needs to start, check, rescan, or stop Observer sidecars.
 ---
 
 # Observe agent work
@@ -14,7 +14,11 @@ worker through Observer.
 
 ## Route the request
 
-- No arguments, `start`, or `review [PROJECT]`: run
+- No arguments or `dashboard`: run `--json up`, then `--json status`. Return the
+  authenticated dashboard URL and summarize current attention. Do not add the
+  current working directory to the watchlist; a dedicated Observer session is a
+  control surface, not automatically a worker project.
+- `start [PROJECT]` or `review [PROJECT]`: run
   `--json start PROJECT --provider PROVIDER`. Default `PROJECT` to the current
   working directory. This adds it when necessary, starts the sync daemon and
   localhost dashboard, and returns a bounded review job.
@@ -25,8 +29,9 @@ worker through Observer.
 - `status`: run `--json services`, then `--json status`. Summarize sidecar,
   project, session, factual finding, review, and observer-health state.
 - `add PROJECT`: run `--json add PROJECT`, then `--json up`.
+- `remove PROJECT`: run `--json remove PROJECT`. Explain that this deletes only
+  Observer-owned cached state and never worker files or transcripts.
 - `rescan PROJECT`: run `--json rescan PROJECT`.
-- `dashboard`: run `--json up` and return its authenticated dashboard URL.
 - `stop`: run `--json down`.
 
 Keep global flags before the subcommand, for example:

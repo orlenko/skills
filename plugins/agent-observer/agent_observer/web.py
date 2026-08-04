@@ -168,6 +168,11 @@ def _handler(config: ObserverConfig, token: str, port: int):
                         if not isinstance(path, str) or not path.strip():
                             raise ValueError("path is required")
                         observer.add_project(path)
+                    elif parsed.path == "/api/projects/remove":
+                        project = value.get("project")
+                        if not isinstance(project, str):
+                            raise ValueError("project is required")
+                        observer.remove_project(project)
                     elif parsed.path == "/api/rescan":
                         project = value.get("project")
                         if not isinstance(project, str):

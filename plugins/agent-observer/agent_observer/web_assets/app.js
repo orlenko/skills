@@ -8,6 +8,7 @@ const state = {
   selectedProjectId: null,
   projectOrder: [],
   focusAfterRender: null,
+  pendingRemovalProjectId: null,
   error: null,
 };
 
@@ -312,6 +313,65 @@ const markFindingSeen = async (finding, project, control) => {
   }
 };
 
+const removeProject = async (project, control) => {
+  const priorIndex = state.data.projects.findIndex((item) => item.project_id === project.project_id);
+  try {
+    control.disabled = true;
+    state.data = await post("/api/projects/remove", { project: project.project_id });
+    state.pendingRemovalProjectId = null;
+    if (state.selectedProjectId === project.project_id) {
+      const next = state.data.projects[Math.min(priorIndex, state.data.projects.length - 1)] || null;
+      state.selectedProjectId = next?.project_id || null;
+      state.focusAfterRender = next ? `project:${next.project_id}` : "watch-toggle";
+    }
+    toast("Stopped watching project; worker files were not changed");
+    render({ forceSort: true });
+  } catch (error) {
+    showError(error);
+  } finally {
+    control.disabled = false;
+  }
+};
+
+const projectRemovalButton = (project, location, label) => {
+  const armed = state.pendingRemovalProjectId === project.project_id;
+  const control = el(
+    "button",
+    `${location === "row" ? "queue-remove" : "quiet-button stop-watching"}${armed ? " armed" : ""}`,
+    armed ? "Confirm" : label,
+  );
+  control.type = "button";
+  control.dataset.focusKey = `remove:${location}:${project.project_id}`;
+  control.setAttribute("aria-label", armed
+    ? `Confirm stop watching ${directoryName(project)}`
+    : `Stop watching ${directoryName(project)}`);
+  control.title = armed
+    ? "Confirm removal of Observer-owned state"
+    : "Stops observation and removes cached Observer state; worker files are untouched";
+  control.addEventListener("click", () => {
+    if (armed) {
+      removeProject(project, control);
+      return;
+    }
+    state.pendingRemovalProjectId = project.project_id;
+    state.focusAfterRender = `remove:${location}:${project.project_id}`;
+    render();
+    window.setTimeout(() => {
+      if (state.pendingRemovalProjectId !== project.project_id) return;
+      state.pendingRemovalProjectId = null;
+      render();
+    }, 6000);
+  });
+  return control;
+};
+
+const isEmptyUnavailableProject = (project) => (
+  project.facets.health === "unavailable"
+  && project.sessions.length === 0
+  && project.sources.length === 0
+  && project.findings.length === 0
+);
+
 const projectSignal = (project) => {
   const finding = unseenFindings(project)[0];
   if (finding) {
@@ -482,6 +542,8 @@ const renderProjectRow = (project) => {
     dismiss.append(el("span", "checkbox-mark", ""), el("span", "", "Seen"));
     dismiss.addEventListener("click", () => markFindingSeen(signal.finding, project, dismiss));
     row.append(dismiss);
+  } else if (isEmptyUnavailableProject(project)) {
+    row.append(projectRemovalButton(project, "row", "Remove"));
   } else {
     row.append(el("span", "queue-action-empty", ""));
   }
@@ -722,7 +784,7 @@ const renderInspector = (project) => {
       rescan.disabled = false;
     }
   });
-  actions.append(copyPath, rescan);
+  actions.append(copyPath, rescan, projectRemovalButton(project, "inspector", "Stop watching"));
   header.append(actions);
   inspector.append(header, renderFacets(project));
 

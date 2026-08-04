@@ -58,10 +58,10 @@ Claude: /agent-observer:observe
 ```
 
 From a fresh, dedicated Observer session, the command starts the sync daemon and
-dashboard, watches the current project, reviews one worker's bounded
-visible-message packet, validates the cited evidence, and publishes the review
-to the dashboard. Use `status`, `dashboard`, `add PATH`, `rescan PATH`, or
-`stop` as arguments for narrower operations.
+dashboard without watching the Observer session's own directory. Use `start
+PATH` or `review PATH` to watch a project and run an evidence-linked review. Use
+`status`, `dashboard`, `add PATH`, `rescan PATH`, or `stop` for narrower
+operations.
 
 Run directly from a checkout:
 
