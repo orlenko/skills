@@ -1,6 +1,7 @@
 import json
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -248,8 +249,9 @@ class RemoteObserverTests(unittest.TestCase):
         stop_services(self.remote)
         restarted = start_remote_services(self.remote)
         self.assertTrue(restarted["listener"]["running"])
+        time.sleep(0.21)  # Respect the dashboard's 200 ms snapshot flood limit.
         resumed = pull_snapshot(self.home, load_pull_connections(self.home)[0])
-        self.assertEqual(resumed["state"], "received")
+        self.assertEqual(resumed["state"], "received", resumed)
         self.assertGreater(resumed["revision"], pulled["revision"])
 
         second_home = ObserverConfig(

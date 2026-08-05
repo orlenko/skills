@@ -1,5 +1,18 @@
 "use strict";
 
+const viewsBreakpoint = window.matchMedia("(max-width: 74rem)");
+const viewsPreferenceKey = "agent-observer:views-collapsed";
+
+const initialViewsCollapsed = () => {
+  try {
+    const stored = window.localStorage.getItem(viewsPreferenceKey);
+    if (stored === "true" || stored === "false") return stored === "true";
+  } catch (_error) {
+    // A blocked storage API should not prevent the dashboard from loading.
+  }
+  return viewsBreakpoint.matches;
+};
+
 const state = {
   data: null,
   view: "all",
@@ -14,6 +27,7 @@ const state = {
   candidatesLoading: false,
   candidateActiveIndex: -1,
   openDetails: new Set(),
+  viewsCollapsed: initialViewsCollapsed(),
   error: null,
 };
 
@@ -630,6 +644,28 @@ const renderViews = () => {
   }
 };
 
+const syncViewsDisclosure = () => {
+  const collapsed = viewsBreakpoint.matches && state.viewsCollapsed;
+  const shell = document.querySelector(".shell");
+  const nav = document.querySelector("#views");
+  const toggle = document.querySelector("#views-toggle");
+  shell.classList.toggle("views-collapsed", collapsed);
+  nav.hidden = collapsed;
+  toggle.hidden = !viewsBreakpoint.matches;
+  toggle.setAttribute("aria-expanded", String(!collapsed));
+  toggle.textContent = collapsed ? "Show views" : "Hide views";
+};
+
+const setViewsCollapsed = (collapsed) => {
+  state.viewsCollapsed = collapsed;
+  try {
+    window.localStorage.setItem(viewsPreferenceKey, String(collapsed));
+  } catch (_error) {
+    // Keep the in-memory preference when storage is unavailable.
+  }
+  syncViewsDisclosure();
+};
+
 const renderProjectRow = (project) => {
   const signal = projectSignal(project);
   const identityValue = projectIdentity(project);
@@ -1156,6 +1192,7 @@ const render = () => {
   const inspectorScroll = inspector.scrollTop;
 
   renderViews();
+  syncViewsDisclosure();
   renderSortControls();
   const projects = orderedProjects();
   if (!projects.some((project) => project.project_id === state.selectedProjectId)) {
@@ -1220,6 +1257,12 @@ document.querySelector("#search").addEventListener("input", (event) => {
   state.search = event.target.value;
   render();
 });
+
+document.querySelector("#views-toggle").addEventListener("click", () => {
+  setViewsCollapsed(!state.viewsCollapsed);
+});
+
+viewsBreakpoint.addEventListener("change", syncViewsDisclosure);
 
 for (const control of document.querySelectorAll("[data-sort]")) {
   control.addEventListener("click", () => {
@@ -1318,5 +1361,6 @@ document.querySelector("#add-form").addEventListener("submit", async (event) => 
   }
 });
 
+syncViewsDisclosure();
 refresh();
 window.setInterval(refresh, 3000);

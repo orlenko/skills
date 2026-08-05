@@ -306,6 +306,18 @@ input::placeholder { color: var(--faint); }
 
 .workspace { min-width: 0; }
 
+.workspace-title {
+  min-width: 0;
+  display: flex;
+  align-items: end;
+  gap: 0.7rem;
+}
+
+.views-toggle {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .workspace-heading {
   display: flex;
   align-items: end;
@@ -826,6 +838,7 @@ input::placeholder { color: var(--faint); }
 }
 
 @media (max-width: 74rem) {
+  .shell.views-collapsed { grid-template-columns: minmax(0, 1fr); }
   .attention-layout { grid-template-columns: 1fr; }
   .inspector { position: static; max-height: none; }
 }
@@ -848,6 +861,7 @@ input::placeholder { color: var(--faint); }
   .view-button { min-width: max-content; gap: 0.7rem; }
   .workspace-tools { align-items: stretch; flex-direction: column; }
   .workspace-tools input { width: 100%; }
+  .workspace-title { align-items: flex-start; }
   .ledger-columns { display: none; }
   .project-list { border-top-color: var(--ink); }
   .project-row {

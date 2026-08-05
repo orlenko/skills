@@ -43,6 +43,7 @@ class WebAssetTests(unittest.TestCase):
                 "add-form",
                 "project-options",
                 "search",
+                "views-toggle",
             }.issubset(parser.ids)
         )
 
@@ -64,6 +65,10 @@ class WebAssetTests(unittest.TestCase):
         self.assertIn("const persistentDetails =", script)
         self.assertIn('node.addEventListener("toggle"', script)
         self.assertIn("review-notes:${project.project_id}", script)
+        self.assertIn('window.matchMedia("(max-width: 74rem)")', script)
+        self.assertIn('window.localStorage.getItem(viewsPreferenceKey)', script)
+        self.assertIn("const syncViewsDisclosure =", script)
+        self.assertIn("setViewsCollapsed(!state.viewsCollapsed)", script)
         self.assertIn('el("button", "queue-dismiss")', script)
         self.assertIn("const renderProjectOptions =", script)
         self.assertIn('fetch("/api/project-candidates"', script)
@@ -113,6 +118,10 @@ class WebAssetTests(unittest.TestCase):
         self.assertIn("--model: oklch(43% 0.09 178);", styles)
         self.assertIn("--danger: oklch(44% 0.15 27);", styles)
         self.assertNotIn("--accent: oklch(48% 0.12 43);", styles)
+
+    def test_narrow_layout_can_release_the_navigation_column(self):
+        styles = (ASSETS / "styles.css").read_text(encoding="utf-8")
+        self.assertIn(".shell.views-collapsed { grid-template-columns: minmax(0, 1fr); }", styles)
 
 
 if __name__ == "__main__":

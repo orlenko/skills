@@ -1120,6 +1120,11 @@ The dashboard preserves expanded and collapsed disclosure state across polling
 refreshes. New data may update the contents of an open section, but must not
 close it.
 
+At the breakpoint where project detail stacks below the ledger, the project-view
+rail is collapsible and initially yields its width to the ledger. Its explicit
+show/hide preference survives polling and page reloads. The rail remains visible
+on wide layouts regardless of the narrow-layout preference.
+
 Project cards do not badge the normal `not analyzed` or `stale` states. They
 surface continuity only when a user-triggered job is active or failed, the
 latest review has a prominent unsuppressed candidate, or the user opens the

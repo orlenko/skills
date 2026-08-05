@@ -54,9 +54,13 @@
       <nav class="views" aria-label="Project views" id="views"></nav>
       <section class="workspace" aria-labelledby="workspace-heading">
         <div class="workspace-heading">
-          <div>
-            <p class="eyebrow" id="view-kicker">ALL WATCHED PROJECTS</p>
-            <h2 id="workspace-heading">What deserves attention</h2>
+          <div class="workspace-title">
+            <button class="quiet-button views-toggle" id="views-toggle" type="button"
+                    aria-controls="views" aria-expanded="false" hidden>Show views</button>
+            <div>
+              <p class="eyebrow" id="view-kicker">ALL WATCHED PROJECTS</p>
+              <h2 id="workspace-heading">What deserves attention</h2>
+            </div>
           </div>
           <div class="workspace-tools">
             <label class="sr-only" for="search">Filter projects</label>

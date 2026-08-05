@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-05T02:12:10Z",
+  "title": "Design System: Agent Observer",
+  "extensions": {
+    "colorMeta": {
+      "page": {"role": "neutral", "displayName": "Paper Ground", "tonalRamp": ["oklch(15% 0.009 78)", "oklch(25% 0.009 78)", "oklch(35% 0.009 78)", "oklch(45% 0.009 78)", "oklch(55% 0.009 78)", "oklch(65% 0.009 78)", "oklch(80% 0.009 78)", "oklch(95% 0.009 78)"]},
+      "surface": {"role": "neutral", "displayName": "Instrument Surface", "tonalRamp": ["oklch(15% 0.006 78)", "oklch(25% 0.006 78)", "oklch(35% 0.006 78)", "oklch(45% 0.006 78)", "oklch(55% 0.006 78)", "oklch(65% 0.006 78)", "oklch(80% 0.006 78)", "oklch(95% 0.006 78)"]},
+      "surface-muted": {"role": "neutral", "displayName": "Quiet Wash", "tonalRamp": ["oklch(15% 0.013 76)", "oklch(25% 0.013 76)", "oklch(35% 0.013 76)", "oklch(45% 0.013 76)", "oklch(55% 0.013 76)", "oklch(65% 0.013 76)", "oklch(80% 0.013 76)", "oklch(95% 0.013 76)"]},
+      "surface-selected": {"role": "primary", "displayName": "Selected Sky Wash", "tonalRamp": ["oklch(15% 0.027 230)", "oklch(25% 0.027 230)", "oklch(35% 0.027 230)", "oklch(45% 0.027 230)", "oklch(55% 0.027 230)", "oklch(65% 0.027 230)", "oklch(80% 0.027 230)", "oklch(95% 0.027 230)"]},
+      "ink": {"role": "neutral", "displayName": "Deep Ink", "tonalRamp": ["oklch(15% 0.022 52)", "oklch(25% 0.022 52)", "oklch(35% 0.022 52)", "oklch(45% 0.022 52)", "oklch(55% 0.022 52)", "oklch(65% 0.022 52)", "oklch(80% 0.022 52)", "oklch(95% 0.022 52)"]},
+      "muted": {"role": "neutral", "displayName": "Warm Graphite", "tonalRamp": ["oklch(15% 0.022 55)", "oklch(25% 0.022 55)", "oklch(35% 0.022 55)", "oklch(45% 0.022 55)", "oklch(55% 0.022 55)", "oklch(65% 0.022 55)", "oklch(80% 0.022 55)", "oklch(95% 0.022 55)"]},
+      "faint": {"role": "neutral", "displayName": "Faint Graphite", "tonalRamp": ["oklch(15% 0.017 62)", "oklch(25% 0.017 62)", "oklch(35% 0.017 62)", "oklch(45% 0.017 62)", "oklch(55% 0.017 62)", "oklch(65% 0.017 62)", "oklch(80% 0.017 62)", "oklch(95% 0.017 62)"]},
+      "rule": {"role": "neutral", "displayName": "Hairline Rule", "tonalRamp": ["oklch(15% 0.018 68)", "oklch(25% 0.018 68)", "oklch(35% 0.018 68)", "oklch(45% 0.018 68)", "oklch(55% 0.018 68)", "oklch(65% 0.018 68)", "oklch(80% 0.018 68)", "oklch(95% 0.018 68)"]},
+      "strong-rule": {"role": "neutral", "displayName": "Strong Rule", "tonalRamp": ["oklch(15% 0.024 58)", "oklch(25% 0.024 58)", "oklch(35% 0.024 58)", "oklch(45% 0.024 58)", "oklch(55% 0.024 58)", "oklch(65% 0.024 58)", "oklch(80% 0.024 58)", "oklch(95% 0.024 58)"]},
+      "accent": {"role": "primary", "displayName": "Instrument Blue", "tonalRamp": ["oklch(15% 0.105 238)", "oklch(25% 0.105 238)", "oklch(35% 0.105 238)", "oklch(45% 0.105 238)", "oklch(55% 0.105 238)", "oklch(65% 0.105 238)", "oklch(80% 0.105 238)", "oklch(95% 0.105 238)"]},
+      "accent-soft": {"role": "primary", "displayName": "Instrument Blue Wash", "tonalRamp": ["oklch(15% 0.032 232)", "oklch(25% 0.032 232)", "oklch(35% 0.032 232)", "oklch(45% 0.032 232)", "oklch(55% 0.032 232)", "oklch(65% 0.032 232)", "oklch(80% 0.032 232)", "oklch(95% 0.032 232)"]},
+      "model": {"role": "secondary", "displayName": "Review Teal", "tonalRamp": ["oklch(15% 0.09 178)", "oklch(25% 0.09 178)", "oklch(35% 0.09 178)", "oklch(45% 0.09 178)", "oklch(55% 0.09 178)", "oklch(65% 0.09 178)", "oklch(80% 0.09 178)", "oklch(95% 0.09 178)"]},
+      "model-soft": {"role": "secondary", "displayName": "Review Teal Wash", "tonalRamp": ["oklch(15% 0.026 178)", "oklch(25% 0.026 178)", "oklch(35% 0.026 178)", "oklch(45% 0.026 178)", "oklch(55% 0.026 178)", "oklch(65% 0.026 178)", "oklch(80% 0.026 178)", "oklch(95% 0.026 178)"]},
+      "healthy": {"role": "tertiary", "displayName": "Healthy Green", "tonalRamp": ["oklch(15% 0.09 147)", "oklch(25% 0.09 147)", "oklch(35% 0.09 147)", "oklch(45% 0.09 147)", "oklch(55% 0.09 147)", "oklch(65% 0.09 147)", "oklch(80% 0.09 147)", "oklch(95% 0.09 147)"]},
+      "healthy-soft": {"role": "tertiary", "displayName": "Healthy Green Wash", "tonalRamp": ["oklch(15% 0.025 147)", "oklch(25% 0.025 147)", "oklch(35% 0.025 147)", "oklch(45% 0.025 147)", "oklch(55% 0.025 147)", "oklch(65% 0.025 147)", "oklch(80% 0.025 147)", "oklch(95% 0.025 147)"]},
+      "warning": {"role": "tertiary", "displayName": "Watchful Amber", "tonalRamp": ["oklch(15% 0.105 82)", "oklch(25% 0.105 82)", "oklch(35% 0.105 82)", "oklch(45% 0.105 82)", "oklch(55% 0.105 82)", "oklch(65% 0.105 82)", "oklch(80% 0.105 82)", "oklch(95% 0.105 82)"]},
+      "warning-soft": {"role": "tertiary", "displayName": "Watchful Amber Wash", "tonalRamp": ["oklch(15% 0.045 87)", "oklch(25% 0.045 87)", "oklch(35% 0.045 87)", "oklch(45% 0.045 87)", "oklch(55% 0.045 87)", "oklch(65% 0.045 87)", "oklch(80% 0.045 87)", "oklch(95% 0.045 87)"]},
+      "danger": {"role": "tertiary", "displayName": "Failure Red", "tonalRamp": ["oklch(15% 0.15 27)", "oklch(25% 0.15 27)", "oklch(35% 0.15 27)", "oklch(45% 0.15 27)", "oklch(55% 0.15 27)", "oklch(65% 0.15 27)", "oklch(80% 0.15 27)", "oklch(95% 0.15 27)"]},
+      "danger-soft": {"role": "tertiary", "displayName": "Failure Red Wash", "tonalRamp": ["oklch(15% 0.035 28)", "oklch(25% 0.035 28)", "oklch(35% 0.035 28)", "oklch(45% 0.035 28)", "oklch(55% 0.035 28)", "oklch(65% 0.035 28)", "oklch(80% 0.035 28)", "oklch(95% 0.035 28)"]},
+      "focus": {"role": "primary", "displayName": "Keyboard Focus Blue", "tonalRamp": ["oklch(15% 0.13 242)", "oklch(25% 0.13 242)", "oklch(35% 0.13 242)", "oklch(45% 0.13 242)", "oklch(55% 0.13 242)", "oklch(65% 0.13 242)", "oklch(80% 0.13 242)", "oklch(95% 0.13 242)"]}
+    },
+    "typographyMeta": {
+      "display": {"displayName": "Product Identity", "purpose": "The Agent Observer name in the top bar."},
+      "headline": {"displayName": "Workspace Headline", "purpose": "Major workspace and inspector headings."},
+      "title": {"displayName": "Attention Title", "purpose": "Project, claim, and section titles."},
+      "body": {"displayName": "Operational Body", "purpose": "Readable explanations and rendered conversation context."},
+      "label": {"displayName": "Provenance Label", "purpose": "Badges, timestamps, hosts, providers, and structural eyebrows."}
+    },
+    "shadows": [
+      {"name": "ambient-overlay", "value": "0 1.2rem 3.5rem oklch(25% 0.02 52 / 0.12)", "purpose": "Autocomplete and transient toast surfaces only."}
+    ],
+    "motion": [
+      {"name": "control-state", "value": "140ms ease", "purpose": "Background and border feedback on interactive controls; disabled under reduced motion."}
+    ],
+    "breakpoints": [
+      {"name": "detail-stack", "value": "74rem"},
+      {"name": "navigation-row", "value": "52rem"},
+      {"name": "compact-ledger", "value": "38rem"},
+      {"name": "minimum-shell", "value": "27rem"}
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Starts a deliberate workflow such as project enrollment.",
+      "html": "<button class=\"ds-button-primary\">Watch project</button>",
+      "css": ".ds-button-primary { background: var(--ink); color: var(--surface); border: 1px solid var(--ink); border-radius: var(--radius); padding: 0.5rem 0.72rem; font: inherit; transition: background-color 140ms ease, border-color 140ms ease; } .ds-button-primary:hover { background: var(--accent); border-color: var(--accent); } .ds-button-primary:focus-visible { outline: 3px solid color-mix(in oklch, var(--focus) 72%, transparent); outline-offset: 2px; }"
+    },
+    {
+      "name": "Quiet Button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "Secondary actions that stay available without competing with attention claims.",
+      "html": "<button class=\"ds-button-quiet\">Rescan sources</button>",
+      "css": ".ds-button-quiet { background: var(--surface); color: var(--ink); border: 1px solid var(--rule); border-radius: var(--radius); padding: 0.36rem 0.54rem; font: 0.76rem -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; transition: background-color 140ms ease, border-color 140ms ease; } .ds-button-quiet:hover { background: var(--surface-muted); border-color: var(--strong-rule); } .ds-button-quiet:focus-visible { outline: 3px solid color-mix(in oklch, var(--focus) 72%, transparent); outline-offset: 2px; }"
+    },
+    {
+      "name": "Search Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "A familiar compact field for filtering projects, paths, and sessions.",
+      "html": "<input class=\"ds-input\" type=\"search\" placeholder=\"Filter paths or sessions\">",
+      "css": ".ds-input { background: var(--surface); color: var(--ink); border: 1px solid var(--rule); border-radius: var(--radius); padding: 0.57rem 0.7rem; font: 0.925rem -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; } .ds-input::placeholder { color: var(--faint); } .ds-input:focus-visible { outline: 3px solid color-mix(in oklch, var(--focus) 72%, transparent); outline-offset: 2px; }"
+    },
+    {
+      "name": "Active View",
+      "kind": "nav",
+      "refersTo": "navigation-active",
+      "description": "The selected project filter, with its count kept secondary.",
+      "html": "<button class=\"ds-view-active\"><span>Needs a look</span><span class=\"ds-view-count\">4</span></button>",
+      "css": ".ds-view-active { width: 100%; display: flex; justify-content: space-between; gap: 1rem; background: var(--ink); color: var(--surface); border: 0; border-radius: var(--radius); padding: 0.55rem 0.62rem; font: 0.925rem -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; } .ds-view-count { opacity: 0.78; font: 0.7rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; } .ds-view-active:focus-visible { outline: 3px solid color-mix(in oklch, var(--focus) 72%, transparent); outline-offset: 2px; }"
+    },
+    {
+      "name": "Observed Badge",
+      "kind": "chip",
+      "refersTo": "badge-observed",
+      "description": "Marks a source-backed fact or request.",
+      "html": "<span class=\"ds-badge-observed\">Observed</span>",
+      "css": ".ds-badge-observed { display: inline-block; background: var(--accent-soft); color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent) 42%, var(--rule)); border-radius: var(--radius); padding: 0.12rem 0.32rem; font: 0.7rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0.035em; }"
+    },
+    {
+      "name": "Model Review Badge",
+      "kind": "chip",
+      "refersTo": "badge-model",
+      "description": "Marks a model-suggested loose end without impersonating observation.",
+      "html": "<span class=\"ds-badge-model\">Model review</span>",
+      "css": ".ds-badge-model { display: inline-block; background: var(--model-soft); color: var(--model); border: 1px dashed color-mix(in oklch, var(--model) 55%, var(--rule)); border-radius: var(--radius); padding: 0.12rem 0.32rem; font: 0.7rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0.035em; }"
+    },
+    {
+      "name": "Selected Attention Row",
+      "kind": "custom",
+      "description": "A calm ledger row that keeps the actionable claim visually dominant.",
+      "html": "<article class=\"ds-attention-row\"><strong>Supply authoritative cut telemetry</strong><span>1h ago · Stale</span></article>",
+      "css": ".ds-attention-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; background: var(--surface-selected); color: var(--ink); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); padding: 0.95rem 0.72rem; font: 0.925rem -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; } .ds-attention-row span { color: var(--muted); font-size: 0.78rem; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Quiet Operations Desk",
+    "overview": "Agent Observer should feel like a dependable instrument placed beside a bank of terminals: warm enough for prolonged use, exact enough to trust, and quiet until human judgment is genuinely useful. Its restrained surfaces and typographic density support quick scanning without turning supervision into surveillance. The system leads with attention, then exposes evidence and diagnostics through progressive disclosure.",
+    "keyCharacteristics": [
+      "Warm, low-chroma paper surfaces with one cool observed-fact accent.",
+      "Strong information hierarchy without decorative illustration or avatars.",
+      "Dense ledgers, familiar controls, and evidence revealed in place.",
+      "Responsive structure that yields navigation and detail space to the primary task.",
+      "Color, labels, and provenance working together so meaning never depends on hue alone."
+    ],
+    "rules": [
+      {"name": "The Evidence Color Rule", "body": "Blue is reserved for observed evidence and direct input requests. Teal never impersonates observation.", "section": "colors"},
+      {"name": "The Alarm Rationing Rule", "body": "Amber and red are scarce. Staleness alone is neutral; red means an actual failure, never ordinary attention.", "section": "colors"},
+      {"name": "The Two-Voice Rule", "body": "Human-readable meaning uses the system sans; compact machine provenance uses monospace. Never render entire messages in monospace.", "section": "typography"},
+      {"name": "The Flat Instrument Rule", "body": "Ledgers, inspector sections, notices, and navigation stay on the document plane. If a static region casts a shadow, remove it.", "section": "elevation"}
+    ],
+    "dos": [
+      "Do lead every screen with unresolved human attention, then activity and diagnostics.",
+      "Do distinguish observed facts, derived facets, and model suggestions in both words and color.",
+      "Do preserve keyboard focus, disclosure state, navigation preference, and scroll position across polling.",
+      "Do use progressive disclosure so five to ten projects remain calm at a glance.",
+      "Do collapse structural navigation before compressing the attention ledger at narrow widths.",
+      "Do keep exact evidence selectable and rendered as readable Markdown."
+    ],
+    "donts": [
+      "Don't resemble a generic infrastructure-monitoring wall.",
+      "Don't turn the product into a chat transcript inbox or a celebratory project-management board.",
+      "Don't use decorative agent avatars, gamified activity, or noisy equal-weight alert cards.",
+      "Don't use invented certainty or make model inference look as authoritative as source-backed facts.",
+      "Don't use red or amber for ordinary attention, selection, quiet work, or staleness alone.",
+      "Don't use colored side-stripe borders, gradient text, glassmorphism, nested cards, or decorative motion.",
+      "Don't hide the primary attention claim behind provider lifecycle language or raw serialized output."
+    ]
+  }
+}

@@ -183,6 +183,9 @@ changes, observer diagnostics, analysis limits, and conversation slices as the
 operator drills in. Do not solve density with nested cards or a wall of badges.
 Disclosure state is local interface state: background data refreshes must not
 collapse sections the operator has opened.
+At narrow laptop widths, the project-view navigation is collapsible so the
+attention ledger can use the full viewport. The operator's choice persists
+across polling refreshes and page reloads; wide layouts keep the rail visible.
 
 ## 4. Information architecture
 
