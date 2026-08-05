@@ -248,8 +248,10 @@ stay on the document plane. If a static region casts a shadow, remove it.
 ### Attention Ledger
 
 Rows are the product's signature component. They prioritize session name, actionable
-claim, and activity age; branch, provider, host, and provenance recede. Selection uses
-a calm blue wash, not an alarm color. Dismissal is always a prominent row-level action.
+claim, request age, and activity age; branch, provider, host, and provenance recede.
+Request age sits directly below its claim in quiet monospace, while the exact timestamp
+remains supporting detail. Selection uses a calm blue wash, not an alarm color.
+Dismissal is always a prominent row-level action.
 
 ## Do's and Don'ts
 

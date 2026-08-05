@@ -185,6 +185,27 @@ const absoluteTime = (value) => {
   }).format(date);
 };
 
+const relativeRequestAge = (value) => {
+  if (value === null || value === undefined) return null;
+  const milliseconds = typeof value === "number"
+    ? value * 1000
+    : new Date(value).getTime();
+  if (!Number.isFinite(milliseconds)) return null;
+  const seconds = Math.max(0, (Date.now() - milliseconds) / 1000);
+  if (seconds < 90) return "just now";
+  const units = [
+    [365 * 86400, "year"],
+    [30 * 86400, "month"],
+    [7 * 86400, "week"],
+    [86400, "day"],
+    [3600, "hour"],
+    [60, "minute"],
+  ];
+  const [size, unit] = units.find(([threshold]) => seconds >= threshold);
+  const count = Math.max(1, Math.round(seconds / size));
+  return `${count} ${unit}${count === 1 ? "" : "s"} ago`;
+};
+
 const post = async (path, body) => {
   const response = await fetch(path, {
     method: "POST",
@@ -752,7 +773,17 @@ const attentionTypeLabel = (attention) => {
 const renderAttentionItem = (attention, project) => {
   const row = el("article", `attention-item truth-${attention.truth}`);
   const heading = el("div", "item-heading");
-  heading.append(el("h4", "", attention.title || attentionTypeLabel(attention)));
+  const title = el("div", "attention-title");
+  title.append(el("h4", "", attention.title || attentionTypeLabel(attention)));
+  const requestAge = relativeRequestAge(attention.requested_at);
+  const requested = el(
+    "p",
+    "attention-requested",
+    requestAge ? `Requested ${requestAge}` : "Request time unavailable",
+  );
+  if (attention.requested_at) requested.title = absoluteTime(attention.requested_at);
+  title.append(requested);
+  heading.append(title);
   heading.append(badge(
     attention.truth === "observed" ? "Observed request" : "Model review",
     attention.truth === "observed" ? "truth-observed" : "truth-model",

@@ -118,7 +118,32 @@ class AttentionProjectionTests(unittest.TestCase):
             result["primary_attention"]["title"],
             "Decide whether to rerun overflowed validators",
         )
+        self.assertEqual(
+            result["primary_attention"]["requested_at"],
+            "2026-08-04T12:01:00Z",
+        )
         self.assertIsNone(result["primary_finding"])
+
+    def test_observed_attention_uses_original_request_time(self):
+        project = self.project()
+        project["findings"].append(
+            {
+                "finding_id": "decision:codex:worker-session:request-1",
+                "provider": "codex",
+                "session_id": "worker-session",
+                "kind": "decision_requested",
+                "state": "open",
+                "seen": 0,
+                "created_at": 700,
+                "updated_at": 999,
+                "summary": "Choose the deployment window",
+                "details": {"items": {}},
+            }
+        )
+        projected = dashboard_projection({"generated_at": 1000, "projects": [project]})
+        attention = projected["projects"][0]["primary_attention"]
+        self.assertEqual(attention["requested_at"], 700)
+        self.assertEqual(attention["updated_at"], 999)
 
     def test_dismissed_review_stays_clear_when_only_lifecycle_changes(self):
         project = self.project()

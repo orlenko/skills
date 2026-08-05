@@ -650,7 +650,14 @@ input::placeholder { color: var(--faint); }
 .attention-item.truth-observed { border-left: 2px solid var(--accent); padding-left: 0.7rem; }
 .attention-count { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 45%, var(--rule)); }
 .item-heading { align-items: flex-start; justify-content: space-between; gap: 0.75rem; }
+.attention-title { min-width: 0; }
 .item-heading h4 { overflow-wrap: anywhere; }
+.attention-requested {
+  margin-top: 0.18rem;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.7rem;
+}
 .item-summary { margin-top: 0.35rem; overflow-wrap: anywhere; }
 
 .message-markdown {

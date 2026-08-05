@@ -38,7 +38,7 @@ def _handler(config: ObserverConfig, token: str, port: int):
     }
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "agent-observer/0.6.3"
+        server_version = "agent-observer/0.6.4"
 
         def _host_allowed(self) -> bool:
             host = self.headers.get("Host") or ""

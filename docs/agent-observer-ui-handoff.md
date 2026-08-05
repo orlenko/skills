@@ -183,6 +183,9 @@ changes, observer diagnostics, analysis limits, and conversation slices as the
 operator drills in. Do not solve density with nested cards or a wall of badges.
 Disclosure state is local interface state: background data refreshes must not
 collapse sections the operator has opened.
+Every item under `Needs your input` shows when that specific request originated
+as a quiet relative age, with its exact timestamp available as supporting detail.
+Request age must not be inferred from project activity or review submission time.
 At narrow laptop widths, the project-view navigation is collapsible so the
 attention ledger can use the full viewport. The operator's choice persists
 across polling refreshes and page reloads; wide layouts keep the rail visible.

@@ -1120,6 +1120,12 @@ The dashboard preserves expanded and collapsed disclosure state across polling
 refreshes. New data may update the contents of an open section, but must not
 close it.
 
+Each unresolved human-input item exposes its source-backed origin time as a
+human-readable relative age such as `Requested 2 days ago`, with the exact local
+date and time available on hover. Observed requests use the finding's original
+creation time; semantic-review items use the cited message timestamp. Project
+activity and review submission time are not substitutes for request age.
+
 At the breakpoint where project detail stacks below the ledger, the project-view
 rail is collapsible and initially yields its width to the ledger. Its explicit
 show/hide preference survives polling and page reloads. The rail remains visible
