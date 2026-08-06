@@ -13,13 +13,24 @@ vertical slice provides:
 - bounded Claude and Codex session discovery;
 - canonical visible-message and turn-boundary parsing;
 - item-correlated Claude `AskUserQuestion` findings;
+- bounded silence detection: a session that owes a completion and has been quiet
+  for ten minutes becomes observed attention, and the claim retires itself after
+  six hours rather than becoming permanent backlog;
+- opt-in harness signals from Claude's `Notification` hook and Codex `notify`,
+  so a session blocked on a permission prompt surfaces in seconds — printed by
+  `signal-hooks`, never installed on the operator's behalf;
+- sentinels over the operator's own background automation, with file-freshness
+  and queue-backlog probes and mandatory re-affirmation so a check for a retired
+  system asks to be removed instead of alarming;
 - durable SQLite byte checkpoints and partial-record recovery;
 - source replacement/truncation generations;
 - read-only Git branch sampling;
 - collector health and a local CLI status surface;
 - a private authenticated localhost dashboard;
 - a recent-project enrollment combobox with bounded session topic cards;
-- project-level attention dismissal and live Activity or static Project sorting;
+- per-item and project-level attention dismissal, where reviewed loose ends are
+  dismissed by content fingerprint and return only if their substance changes;
+- live Activity or static Project sorting;
 - managed collection and server sidecars;
 - a dormant subscription-backed Claude or Codex analyzer sidecar selected by
   the session that invokes the skill;
@@ -45,8 +56,14 @@ uses no tokens. The invoking Observer session is persistently excluded from
 collection when its provider exposes the session ID; its workspace cannot be
 added to the watchlist.
 
-Filesystem notifications, deep remote conversation replay, and the full
-productized semantic ledger remain follow-up work. Remote transport deliberately
+The 0.7 milestone that widened observed attention is described in
+[`docs/agent-observer-0.7-attention-sources.md`](docs/agent-observer-0.7-attention-sources.md),
+including what it deliberately left unbuilt.
+
+Sentinels are machine-scoped and are not carried in remote snapshots, because
+the snapshot validator rejects unknown fields and would break a peer that has
+not upgraded. Filesystem notifications, deep remote conversation replay, and the
+full productized semantic ledger remain follow-up work. Remote transport deliberately
 supports only addresses directly reachable over a LAN or Tailscale; it contains
 no relay or NAT-traversal service. Explicit `add` and `rescan` operations may
 take several seconds with thousands of provider files; steady-state scans remain

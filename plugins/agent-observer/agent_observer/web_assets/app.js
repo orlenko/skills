@@ -463,6 +463,24 @@ const dismissProjectAttention = async (project, control) => {
   }
 };
 
+const dismissAttentionItem = async (project, attention, control) => {
+  try {
+    control.disabled = true;
+    state.data = await post("/api/attention/dismiss", {
+      project: project.project_id,
+      kind: attention.dismiss_kind,
+      ref: attention.dismiss_ref,
+    });
+    state.focusAfterRender = `seen:${project.project_id}`;
+    toast("Item dismissed; a changed or newer request will surface it again");
+    render();
+  } catch (error) {
+    showError(error);
+  } finally {
+    control.disabled = false;
+  }
+};
+
 const removeProject = async (project, control) => {
   const priorIndex = state.data.projects.findIndex((item) => item.project_id === project.project_id);
   try {
@@ -528,13 +546,7 @@ const projectSignal = (project) => {
     const observed = attention.truth === "observed";
     return {
       kind: observed ? "observed" : "model",
-      label: attention.type === "decision"
-        ? "Decision to make"
-        : attention.type === "question"
-          ? "Question to answer"
-          : attention.type === "requested_user_action"
-            ? "Action requested"
-            : "Input requested",
+      label: signalLabel(attention),
       summary: plainPreview(attention.title),
       source: observed
         ? `${attention.provider} · ${attention.session_id.slice(0, 8)}`
@@ -767,8 +779,18 @@ const attentionTypeLabel = (attention) => {
   if (attention.type === "decision") return "Decision";
   if (attention.type === "question") return "Question";
   if (attention.type === "requested_user_action") return "Requested action";
+  if (attention.type === "no_completion_observed") return "No completion observed";
   return "Input requested";
 };
+
+const signalLabel = (attention) => ({
+  decision: "Decision to make",
+  question: "Question to answer",
+  requested_user_action: "Action requested",
+  decision_requested: "Decision requested",
+  input_requested: "Input requested",
+  no_completion_observed: "No completion observed",
+}[attention.type] || "Input requested");
 
 const renderAttentionItem = (attention, project) => {
   const row = el("article", `attention-item truth-${attention.truth}`);
@@ -840,6 +862,16 @@ const renderAttentionItem = (attention, project) => {
   }
   evidence.append(el("p", "provenance", source.join(" · ")));
   row.append(evidence);
+  if (attention.dismiss_ref && !project.node) {
+    const dismiss = el("button", "quiet-button item-dismiss", "Dismiss this item");
+    dismiss.type = "button";
+    dismiss.dataset.focusKey = `dismiss-item:${project.project_id}:${attention.attention_id}`;
+    dismiss.title = attention.truth === "observed"
+      ? "Dismiss this request; a newer request from the session will surface it again"
+      : "Dismiss this reviewed loose end; it returns only if its substance changes";
+    dismiss.addEventListener("click", () => dismissAttentionItem(project, attention, dismiss));
+    row.append(dismiss);
+  }
   return row;
 };
 
@@ -856,7 +888,7 @@ const renderAttention = (project) => {
     return section;
   }
   for (const item of items) section.append(renderAttentionItem(item, project));
-  const dismiss = el("button", "quiet-button", "Dismiss current attention");
+  const dismiss = el("button", "quiet-button", "Dismiss all current attention");
   dismiss.type = "button";
   dismiss.dataset.focusKey = `seen:${project.project_id}`;
   dismiss.title = "Dismiss this attention set; a newer observed request or review will surface it again";
@@ -884,7 +916,9 @@ const renderReview = (project) => {
     const target = `${review.target_session.provider}:${review.target_session.session_id.slice(0, 8)}`;
     const count = review.coverage?.message_count ?? 0;
     const limit = review.coverage?.message_limit ?? 40;
-    section.append(el("p", "coverage", `Target ${target}. Reviewed ${count} of at most ${limit} visible messages.`));
+    const tail = review.coverage?.tail_bytes_for_target_source;
+    const bound = tail ? ` Bounded to the last ${Math.round(tail / 1048576)} MiB of the source.` : "";
+    section.append(el("p", "coverage", `Target ${target}. Reviewed ${count} of at most ${limit} visible messages.${bound}`));
   }
   for (const gap of review.coverage?.gaps || []) {
     section.append(el("p", "coverage issue-text", `Coverage gap: ${gap}`));
@@ -1189,6 +1223,17 @@ const renderServices = () => {
     );
   } else if (analyzerService?.error) {
     addNotice("Semantic analyzer reported an error", analyzerService.error, "warning");
+  }
+  for (const sentinel of state.data?.sentinels?.entries || []) {
+    if (sentinel.status === "healthy") continue;
+    const expired = sentinel.status === "expired";
+    addNotice(
+      expired
+        ? `${sentinel.label} check needs re-affirming`
+        : `${sentinel.label} is not reporting`,
+      `${sentinel.detail} · ${sentinel.target}`,
+      expired ? "warning" : "error",
+    );
   }
   for (const node of state.data?.remote_nodes || []) {
     if (["connected", "revoked"].includes(node.transport_state)) continue;

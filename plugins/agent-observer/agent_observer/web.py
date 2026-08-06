@@ -38,7 +38,7 @@ def _handler(config: ObserverConfig, token: str, port: int):
     }
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "agent-observer/0.6.4"
+        server_version = "agent-observer/0.7.0"
 
         def _host_allowed(self) -> bool:
             host = self.headers.get("Host") or ""
@@ -131,6 +131,7 @@ def _handler(config: ObserverConfig, token: str, port: int):
                 with Observer(config) as observer:
                     result = dashboard_projection(observer.status())
                     result["analyzer"] = observer.db.supervisor_status()
+                    result["sentinels"] = observer.db.evaluate_sentinels()
                 result["services"] = service_status(config)
                 self._json(200, result)
                 return
@@ -193,6 +194,14 @@ def _handler(config: ObserverConfig, token: str, port: int):
                             raise ValueError("finding_id is required")
                         if not observer.db.mark_finding_seen(finding_id):
                             raise KeyError("finding not found")
+                    elif parsed.path == "/api/attention/dismiss":
+                        project = value.get("project")
+                        kind = value.get("kind")
+                        ref = value.get("ref")
+                        if not isinstance(project, str) or not isinstance(ref, str):
+                            raise ValueError("project and ref are required")
+                        if not observer.dismiss_attention_item(project, kind, ref):
+                            raise KeyError("attention item not found")
                     elif parsed.path == "/api/projects/dismiss-attention":
                         project = value.get("project")
                         if not isinstance(project, str):
@@ -204,6 +213,7 @@ def _handler(config: ObserverConfig, token: str, port: int):
                         return
                     result = dashboard_projection(observer.status())
                     result["analyzer"] = observer.db.supervisor_status()
+                    result["sentinels"] = observer.db.evaluate_sentinels()
                 result["services"] = service_status(config)
                 self._json(200, result)
             except (KeyError, OSError, ValueError) as exc:

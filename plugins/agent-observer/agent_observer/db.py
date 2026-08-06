@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .model import MEANINGFUL_KINDS, NormalizedEvent, ProjectIdentity
+from .sentinels import PROBES as SENTINEL_PROBES
+from .sentinels import evaluate as evaluate_sentinel
 
 
 def _source_epoch(value: str | None) -> float | None:
@@ -26,6 +28,20 @@ def _source_epoch(value: str | None) -> float | None:
         except ValueError:
             return None
     return numeric / 1000.0 if numeric > 10_000_000_000 else numeric
+
+
+_STALL_SUMMARIES = {
+    "user_message": "No agent response observed since your last message",
+    "tool_started": "Waiting on a tool call that has not reported back",
+    "tool_finished": "No agent response observed after the last tool result",
+    "turn_started": "No completion observed since the turn started",
+}
+
+
+def _stall_summary(last_kind: str) -> str:
+    return _STALL_SUMMARIES.get(
+        last_kind, "No completion observed since the last recorded event"
+    )
 
 
 SCHEMA = """
@@ -210,6 +226,25 @@ CREATE TABLE IF NOT EXISTS remote_nodes (
     snapshot_json TEXT,
     snapshot_generated_at REAL,
     snapshot_received_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS attention_dismissals (
+    project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    fingerprint TEXT NOT NULL,
+    dismissed_at REAL NOT NULL,
+    PRIMARY KEY(project_id, fingerprint)
+);
+
+CREATE TABLE IF NOT EXISTS sentinels (
+    sentinel_id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    probe TEXT NOT NULL,
+    target TEXT NOT NULL,
+    max_age_seconds REAL NOT NULL,
+    created_at REAL NOT NULL,
+    affirmed_at REAL NOT NULL,
+    expires_at REAL,
+    note TEXT
 );
 
 CREATE TABLE IF NOT EXISTS remote_project_state (
@@ -805,6 +840,241 @@ class ObserverDB:
             )
         self.connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
+    def add_sentinel(
+        self,
+        *,
+        sentinel_id: str,
+        label: str,
+        probe: str,
+        target: str,
+        max_age_seconds: float,
+        expires_at: float | None,
+        note: str | None,
+    ) -> dict[str, Any]:
+        if probe not in SENTINEL_PROBES:
+            raise ValueError(f"unsupported probe: {probe}")
+        if max_age_seconds <= 0:
+            raise ValueError("max age must be positive")
+        now = time.time()
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO sentinels(
+                    sentinel_id, label, probe, target, max_age_seconds,
+                    created_at, affirmed_at, expires_at, note
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(sentinel_id) DO UPDATE SET
+                    label = excluded.label,
+                    probe = excluded.probe,
+                    target = excluded.target,
+                    max_age_seconds = excluded.max_age_seconds,
+                    affirmed_at = excluded.affirmed_at,
+                    expires_at = excluded.expires_at,
+                    note = excluded.note
+                """,
+                (
+                    sentinel_id,
+                    label,
+                    probe,
+                    target,
+                    float(max_age_seconds),
+                    now,
+                    now,
+                    expires_at,
+                    note,
+                ),
+            )
+        return self.sentinel(sentinel_id)
+
+    def sentinel(self, sentinel_id: str) -> dict[str, Any]:
+        row = self.connection.execute(
+            "SELECT * FROM sentinels WHERE sentinel_id = ?", (sentinel_id,)
+        ).fetchone()
+        if not row:
+            raise KeyError(f"sentinel not found: {sentinel_id}")
+        return dict(row)
+
+    def sentinels(self) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in self.connection.execute(
+                "SELECT * FROM sentinels ORDER BY label, sentinel_id"
+            ).fetchall()
+        ]
+
+    def remove_sentinel(self, sentinel_id: str) -> bool:
+        with self.connection:
+            cursor = self.connection.execute(
+                "DELETE FROM sentinels WHERE sentinel_id = ?", (sentinel_id,)
+            )
+        return bool(cursor.rowcount)
+
+    def affirm_sentinel(self, sentinel_id: str, expires_at: float | None) -> dict[str, Any]:
+        self.sentinel(sentinel_id)
+        with self.connection:
+            self.connection.execute(
+                "UPDATE sentinels SET affirmed_at = ?, expires_at = ? WHERE sentinel_id = ?",
+                (time.time(), expires_at, sentinel_id),
+            )
+        return self.sentinel(sentinel_id)
+
+    def evaluate_sentinels(self, now: float | None = None) -> dict[str, Any]:
+        moment = now if now is not None else time.time()
+        entries = [evaluate_sentinel(row, moment) for row in self.sentinels()]
+        return {
+            "entries": entries,
+            "failing": sum(1 for item in entries if item["status"] == "failing"),
+            "expired": sum(1 for item in entries if item["status"] == "expired"),
+        }
+
+    def record_input_request(
+        self,
+        *,
+        project_id: str,
+        provider: str,
+        session_id: str,
+        requested_at: float,
+        summary: str,
+        details: dict[str, Any],
+    ) -> bool:
+        """Record that a harness asked this session's operator for input.
+
+        One claim per session stays open at a time. While the same wait
+        continues the original request time is preserved, so the ledger reports
+        how long the operator has actually been holding the session up.
+        """
+        finding_id = f"input:{provider}:{session_id}"
+        with self.connection:
+            # Knowing why a session is quiet retires the guess that it is quiet.
+            self.connection.execute(
+                """
+                UPDATE findings SET state = 'superseded', updated_at = ?
+                WHERE provider = ? AND session_id = ?
+                  AND kind = 'no_completion_observed' AND state = 'open'
+                """,
+                (requested_at, provider, session_id),
+            )
+            cursor = self.connection.execute(
+                """
+                INSERT INTO findings(
+                    finding_id, project_id, provider, session_id, kind, state,
+                    seen, created_at, updated_at, evidence_observation_id,
+                    summary, details_json
+                ) VALUES (?, ?, ?, ?, 'input_requested', 'open', 0, ?, ?, NULL,
+                          ?, ?)
+                ON CONFLICT(finding_id) DO UPDATE SET
+                    created_at = CASE WHEN findings.state = 'open'
+                        THEN findings.created_at ELSE excluded.created_at END,
+                    seen = CASE WHEN findings.state = 'open'
+                        THEN findings.seen ELSE 0 END,
+                    state = 'open',
+                    project_id = excluded.project_id,
+                    updated_at = excluded.updated_at,
+                    summary = excluded.summary,
+                    details_json = excluded.details_json
+                WHERE excluded.updated_at >= findings.updated_at
+                """,
+                (
+                    finding_id,
+                    project_id,
+                    provider,
+                    session_id,
+                    requested_at,
+                    requested_at,
+                    summary[:4096],
+                    json.dumps(details, separators=(",", ":"), sort_keys=True),
+                ),
+            )
+        return bool(cursor.rowcount)
+
+    def reconcile_stalled_sessions(
+        self,
+        now: float,
+        *,
+        debounce_seconds: float,
+        window_seconds: float,
+    ) -> int:
+        """Record sessions that owe a completion and have gone quiet.
+
+        The claim is deliberately bounded on both sides. Silence shorter than
+        the debounce is ordinary work, and silence longer than the window is an
+        abandoned session that the stale view already describes, so keeping it
+        in the attention ledger would only accumulate debt.
+        """
+        opened = 0
+        with self.connection:
+            self.connection.execute(
+                """
+                UPDATE findings SET state = 'superseded', updated_at = ?
+                WHERE kind = 'no_completion_observed' AND state = 'open'
+                  AND created_at < ?
+                """,
+                (now, now - window_seconds),
+            )
+            rows = self.connection.execute(
+                """
+                SELECT s.project_id, s.provider, s.session_id, s.last_activity_at,
+                       s.awaiting_since, s.last_kind, s.last_message_excerpt
+                FROM sessions AS s
+                LEFT JOIN excluded_sessions AS x
+                  ON x.provider = s.provider AND x.session_id = s.session_id
+                WHERE s.awaiting_completion = 1
+                  AND s.last_activity_at IS NOT NULL
+                  AND x.session_id IS NULL
+                  AND s.last_activity_at <= ?
+                  AND s.last_activity_at >= ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM findings AS f
+                      WHERE f.provider = s.provider AND f.session_id = s.session_id
+                        AND f.kind = 'input_requested' AND f.state = 'open'
+                  )
+                """,
+                (now - debounce_seconds, now - window_seconds),
+            ).fetchall()
+            for row in rows:
+                quiet_since = float(row["last_activity_at"])
+                finding_id = (
+                    f"stall:{row['provider']}:{row['session_id']}"
+                    f":{int(quiet_since * 1000)}"
+                )
+                evidence = self.connection.execute(
+                    """
+                    SELECT observation_id FROM observations
+                    WHERE project_id = ? AND provider = ? AND session_id = ?
+                    ORDER BY observed_at DESC LIMIT 1
+                    """,
+                    (row["project_id"], row["provider"], row["session_id"]),
+                ).fetchone()
+                details = {
+                    "last_kind": row["last_kind"],
+                    "awaiting_since": row["awaiting_since"],
+                    "quiet_since": quiet_since,
+                    "quiet_seconds": now - quiet_since,
+                }
+                cursor = self.connection.execute(
+                    """
+                    INSERT OR IGNORE INTO findings(
+                        finding_id, project_id, provider, session_id, kind, state,
+                        created_at, updated_at, evidence_observation_id, summary,
+                        details_json
+                    ) VALUES (?, ?, ?, ?, 'no_completion_observed', 'open',
+                              ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        finding_id,
+                        row["project_id"],
+                        row["provider"],
+                        row["session_id"],
+                        quiet_since,
+                        quiet_since,
+                        evidence["observation_id"] if evidence else None,
+                        _stall_summary(str(row["last_kind"] or "")),
+                        json.dumps(details, separators=(",", ":"), sort_keys=True),
+                    ),
+                )
+                opened += cursor.rowcount
+        return opened
+
     def mark_finding_seen(self, finding_id: str) -> bool:
         with self.connection:
             cursor = self.connection.execute(
@@ -812,6 +1082,34 @@ class ObserverDB:
                 (finding_id,),
             )
         return bool(cursor.rowcount)
+
+    def dismiss_attention_item(self, project_id: str, fingerprint: str) -> bool:
+        if not fingerprint:
+            return False
+        with self.connection:
+            row = self.connection.execute(
+                "SELECT 1 FROM projects WHERE project_id = ?", (project_id,)
+            ).fetchone()
+            if not row:
+                return False
+            self.connection.execute(
+                """
+                INSERT OR REPLACE INTO attention_dismissals(
+                    project_id, fingerprint, dismissed_at
+                ) VALUES (?, ?, ?)
+                """,
+                (project_id, fingerprint, time.time()),
+            )
+        return True
+
+    def dismissed_attention(self, project_id: str) -> list[str]:
+        return [
+            str(row["fingerprint"])
+            for row in self.connection.execute(
+                "SELECT fingerprint FROM attention_dismissals WHERE project_id = ?",
+                (project_id,),
+            ).fetchall()
+        ]
 
     def dismiss_project_findings(self, project_id: str) -> bool:
         dismissed_at = time.time()
@@ -1649,13 +1947,17 @@ class ObserverDB:
         provider = str(source["provider"])
         session_id = str(source["session_id"])
         if event.kind in MEANINGFUL_KINDS:
+            # Only work newer than the claim retires it. Collection lags the
+            # harness by a scan interval, so an older record arriving late must
+            # not clear a request the operator has not answered yet.
             self.connection.execute(
                 """
                 UPDATE findings SET state = 'superseded', updated_at = ?
                 WHERE project_id = ? AND provider = ? AND session_id = ?
-                  AND kind = 'no_completion_observed' AND state = 'open'
+                  AND kind IN ('no_completion_observed', 'input_requested')
+                  AND state = 'open' AND created_at < ?
                 """,
-                (observed_at, project_id, provider, session_id),
+                (observed_at, project_id, provider, session_id, observed_at),
             )
         if event.kind == "user_message":
             self.connection.execute(
@@ -1841,6 +2143,9 @@ class ObserverDB:
                     "sources": sources,
                     "changes": changes,
                     "review": reviews.get(str(project["project_id"])),
+                    "dismissed_attention": self.dismissed_attention(
+                        str(project["project_id"])
+                    ),
                 }
             )
         return {"generated_at": now, "projects": projects}

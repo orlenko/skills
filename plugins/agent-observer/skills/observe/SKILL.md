@@ -47,6 +47,21 @@ database. The workspace itself must never be watched.
   uploads are rejected, the credential tombstone remains for security, and the
   intentionally removed node's cached projects leave operational dashboard
   views.
+- `blocked-sessions`, `hooks`, or `signals`: run `--json signal-hooks` and show
+  the operator the exact configuration to paste. Explain that it is opt-in and
+  that Observer never edits their settings files. Never apply it for them
+  without an explicit instruction to edit that file.
+- `sentinel add ...`: run `--json sentinel-add ID --label L --probe
+  file_freshness|queue_backlog --target PATH --max-age 26h`. Choose a target the
+  job only touches when it *succeeds*; a log that records failures stays fresh
+  while the job is broken.
+- `sentinels`: run `--json sentinel-list`. Report `failing` and `expired`
+  separately: expired means the check was never re-affirmed, so confirm the
+  system still exists before treating it as an outage.
+- `sentinel affirm ID`: run `--json sentinel-affirm ID`. Use when a check is
+  expired but its system is still live.
+- `sentinel remove ID`: run `--json sentinel-remove ID`. Use when the watched
+  system is genuinely retired, so it stops asserting anything.
 - `stop`: run `--json supervisor-stop`.
 
 Keep global flags before the subcommand, for example:

@@ -3,12 +3,19 @@ from __future__ import annotations
 from typing import Any
 
 from .attention import (
+    OBSERVED_KIND_ORDER,
     actionable_findings,
     actionable_review_items,
+    review_item_fingerprint,
     suggested_review_items,
 )
 
 REVIEW_TYPE_ORDER = {"decision": 0, "question": 1, "requested_user_action": 2}
+OBSERVED_FALLBACK_TITLES = {
+    "decision_requested": "Decision requested",
+    "input_requested": "Input requested",
+    "no_completion_observed": "No completion observed",
+}
 
 
 def _activity(project: dict[str, Any]) -> tuple[str, float | None]:
@@ -81,6 +88,12 @@ def _review(project: dict[str, Any]) -> dict[str, Any] | None:
     return safe
 
 
+def _observed_fallback(finding: dict[str, Any]) -> str:
+    return OBSERVED_FALLBACK_TITLES.get(
+        str(finding.get("kind")), "Attention requested"
+    )
+
+
 def _attention_items(
     project: dict[str, Any], review: dict[str, Any] | None
 ) -> list[dict[str, Any]]:
@@ -89,25 +102,34 @@ def _attention_items(
             "attention_id": f"finding:{finding['finding_id']}",
             "truth": "observed",
             "type": str(finding["kind"]),
-            "title": str(finding.get("summary") or "Decision requested"),
-            "detail": str(finding.get("summary") or "Decision requested"),
+            "title": str(finding.get("summary") or _observed_fallback(finding)),
+            "detail": str(finding.get("summary") or _observed_fallback(finding)),
             "provider": finding.get("provider"),
             "session_id": finding.get("session_id"),
             "requested_at": finding.get("created_at"),
             "updated_at": finding.get("updated_at"),
             "details": finding.get("details") or {},
             "finding_id": finding.get("finding_id"),
+            "dismiss_kind": "finding",
+            "dismiss_ref": finding.get("finding_id"),
         }
         for finding in sorted(
             actionable_findings(project),
-            key=lambda item: -float(item.get("updated_at") or 0),
+            key=lambda item: (
+                OBSERVED_KIND_ORDER.get(str(item.get("kind")), 9),
+                -float(item.get("updated_at") or 0),
+            ),
         )
     ]
     if project.get("remote_attention_dismissed"):
         return observed
+    dismissed = set(project.get("dismissed_attention") or [])
     model: list[dict[str, Any]] = []
     for index, item in enumerate((review or {}).get("items") or []):
         if item not in actionable_review_items(review):
+            continue
+        fingerprint = review_item_fingerprint(review or {}, item)
+        if fingerprint in dismissed:
             continue
         model.append(
             {
@@ -127,6 +149,8 @@ def _attention_items(
                 "review_item_index": index,
                 "review_job_id": review.get("job_id"),
                 "review_status": review.get("status"),
+                "dismiss_kind": "review",
+                "dismiss_ref": fingerprint,
             }
         )
     model.sort(
@@ -151,10 +175,15 @@ def dashboard_projection(raw: dict[str, Any]) -> dict[str, Any]:
         review = _review(project)
         attention_items = _attention_items(project, review)
         attention = attention_items[0] if attention_items else None
+        dismissed = set(project.get("dismissed_attention") or [])
         suggested = (
             []
             if project.get("remote_attention_dismissed")
-            else suggested_review_items(review)
+            else [
+                item
+                for item in suggested_review_items(review)
+                if review_item_fingerprint(review or {}, item) not in dismissed
+            ]
         )
         views: list[str] = []
         if attention:
@@ -180,7 +209,9 @@ def dashboard_projection(raw: dict[str, Any]) -> dict[str, Any]:
                     "activity_age_seconds": activity_age,
                     "health": health,
                     "continuity": (review or {}).get("status", "not_analyzed"),
-                    "prominent_review_items": len(actionable_review_items(review)),
+                    "prominent_review_items": sum(
+                        1 for item in attention_items if item["truth"] == "model"
+                    ),
                     "suggested_review_items": len(suggested),
                 },
                 "primary_attention": attention,

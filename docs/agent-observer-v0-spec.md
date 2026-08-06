@@ -251,17 +251,20 @@ The closed v0 observation vocabulary is:
 - `turn_aborted`;
 - `decision_requested`;
 - `decision_response`;
-- `child_activity`;
 - `session_title_changed`;
 - `git_branch_sampled`;
 - `source_health_changed`;
 - `unknown_record`.
 
-Messages, tool activity, turn boundaries, decision requests and responses, and
-attached `child_activity` count as meaningful session activity. Duplicate
-metadata, snapshots, usage records, Git samples, health events, and unknown
-records do not. Child activity resets the parent activity clock but never
-creates an attention finding or changes the focused interactive session.
+Messages, tool activity, turn boundaries, and decision requests and responses
+count as meaningful session activity. Duplicate metadata, snapshots, usage
+records, Git samples, health events, and unknown records do not.
+
+`child_activity` was withdrawn in 0.7.0. Collection excludes subagent
+transcripts outright, so no parent session ever received attached child
+activity and the kind existed only as an unreachable branch. Restoring it means
+first deciding whether subagent traces are evidence at all, which section 19
+still lists as unresolved.
 
 ### 5.5 Projection
 
@@ -1293,11 +1296,20 @@ Initial engineering budgets are:
 - bounded startup reconciliation complete within 10 seconds;
 - a complete appended record reflected in the UI within 2 seconds at p95.
 
-Semantic analysis has a concurrency limit of one job in v0. It is always
-user-triggered, never blocks collection or the cached dashboard, and displays
-its selected message count, byte bound, and provider before launch. Provider
-token use, latency, and monetary cost are measured per job but are not included
-in the idle collector budgets.
+Semantic analysis has a concurrency limit of one job in v0. It never blocks
+collection or the cached dashboard. Provider token use, latency, and monetary
+cost are measured per job but are not included in the idle collector budgets.
+
+This clause originally required analysis to be *user-triggered* and to display
+its selected message count, byte bound, and provider *before launch*. As built,
+D0 is unattended: the operator consents once by attaching an analyzer session,
+and the deterministic gate then decides when a batch runs, so there is no
+pre-launch moment in which to show a disclosure. The consent requirement stands;
+its placement moved. The dashboard's analyzer panel carries the same three
+facts after the fact, per job, and the operator can detach the analyzer at any
+time to stop all model calls. A genuinely user-triggered launch remains
+specified for D1, where a manual `Find loose ends` control restores the
+pre-launch disclosure for on-demand runs.
 
 These numbers become release gates only after the benchmark records the exact
 hardware, OS version, filesystem, fixture-generator revision, measurement

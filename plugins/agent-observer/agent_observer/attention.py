@@ -5,7 +5,18 @@ import json
 from typing import Any
 
 
-ACTIONABLE_FINDING_KINDS = {"decision_requested"}
+ACTIONABLE_FINDING_KINDS = {
+    "decision_requested",
+    "input_requested",
+    "no_completion_observed",
+}
+# A direct ask outranks an inference drawn from silence, even though both are
+# observed facts. Ordering keeps the weaker claim from burying the stronger one.
+OBSERVED_KIND_ORDER = {
+    "decision_requested": 0,
+    "input_requested": 1,
+    "no_completion_observed": 5,
+}
 HUMAN_REVIEW_TYPES = {"question", "decision", "requested_user_action"}
 IMMEDIATE_REVIEW_ASSESSMENTS = {
     "no_later_handling_observed",
@@ -65,31 +76,57 @@ def suggested_review_items(review: dict[str, Any] | None) -> list[dict[str, Any]
     ]
 
 
-def attention_fingerprint(project: dict[str, Any]) -> str:
-    """Identify the current human-attention set for home-side remote dismissal."""
-    current: list[tuple[Any, ...]] = [
-        (
-            "finding",
-            str(item.get("finding_id") or ""),
-            float(item.get("updated_at") or 0),
-        )
-        for item in actionable_findings(project)
-    ]
+def _digest(identity: tuple[Any, ...]) -> str:
+    return hashlib.sha256(
+        json.dumps(identity, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def finding_identity(finding: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        "finding",
+        str(finding.get("finding_id") or ""),
+        float(finding.get("updated_at") or 0),
+    )
+
+
+def review_item_identity(
+    review: dict[str, Any], item: dict[str, Any]
+) -> tuple[Any, ...]:
+    return (
+        "review",
+        str(review.get("job_id") or ""),
+        str(item.get("message_ref") or ""),
+        str(item.get("type") or ""),
+        str(item.get("assessment") or ""),
+    )
+
+
+def review_item_fingerprint(review: dict[str, Any], item: dict[str, Any]) -> str:
+    """Content-address one reviewed loose end.
+
+    Dismissal stores this hash rather than a row keyed by position, so an item
+    resurfaces exactly when its substance changes and never merely because a
+    later review renumbered it.
+    """
+    return _digest(review_item_identity(review, item))
+
+
+def attention_identities(project: dict[str, Any]) -> list[tuple[Any, ...]]:
+    identities = [finding_identity(item) for item in actionable_findings(project)]
     review = project.get("review")
     if isinstance(review, dict):
-        for item in actionable_review_items(review):
-            current.append(
-                (
-                    "review",
-                    str(review.get("job_id") or ""),
-                    str(item.get("message_ref") or ""),
-                    str(item.get("type") or ""),
-                    str(item.get("assessment") or ""),
-                )
-            )
+        identities.extend(
+            review_item_identity(review, item)
+            for item in actionable_review_items(review)
+        )
+    return identities
+
+
+def attention_fingerprint(project: dict[str, Any]) -> str:
+    """Identify the current human-attention set for home-side remote dismissal."""
+    current = attention_identities(project)
     if not current:
         return ""
     current.sort()
-    return hashlib.sha256(
-        json.dumps(current, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    return _digest(tuple(current))

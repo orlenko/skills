@@ -783,6 +783,7 @@ input::placeholder { color: var(--faint); }
 .issue-text { color: var(--danger); }
 .empty-copy { color: var(--muted); font-size: 0.84rem; }
 .finding .quiet-button { margin-top: 0.62rem; }
+.item-dismiss { margin-top: 0.55rem; align-self: flex-start; }
 
 .structured-questions { margin-top: 0.65rem; }
 .structured-question { padding: 0.55rem 0; border-top: 1px solid var(--rule); }

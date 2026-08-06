@@ -62,5 +62,4 @@ MEANINGFUL_KINDS = {
     "turn_aborted",
     "decision_requested",
     "decision_response",
-    "child_activity",
 }

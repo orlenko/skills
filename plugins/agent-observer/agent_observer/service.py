@@ -15,6 +15,11 @@ from .identity import current_branch, cwd_matches_project, identify_project
 from .jsonl import read_append, read_window
 from .model import MEANINGFUL_KINDS, ReadWindow, SourceCandidate
 from .providers import normalize_records
+from .signals import drain_signals, spool_path
+
+
+STALL_DEBOUNCE_SECONDS = 10 * 60.0
+STALL_WINDOW_SECONDS = 6 * 3600.0
 
 
 @dataclass(frozen=True)
@@ -23,6 +28,7 @@ class ObserverConfig:
     claude_roots: tuple[Path, ...]
     codex_roots: tuple[Path, ...]
     codex_session_index: Path | None = None
+    signal_spool: Path | None = None
 
     @classmethod
     def defaults(cls, state_dir: str | None = None) -> "ObserverConfig":
@@ -47,7 +53,7 @@ class ObserverConfig:
             os.environ.get("AGENT_OBSERVER_CODEX_SESSION_INDEX")
             or home / ".codex" / "session_index.jsonl"
         ).expanduser()
-        return cls(state, (claude,), (codex, archived), session_index)
+        return cls(state, (claude,), (codex, archived), session_index, spool_path())
 
 
 class Observer:
@@ -180,9 +186,44 @@ class Observer:
             if self._scan_source(source):
                 changed += 1
         changed += self._sync_codex_titles()
+        signals = self._apply_signals()
         for project in self.db.projects():
             self._sample_branch(project)
-        return {"sources_checked": checked, "sources_changed": changed}
+        stalled = self.db.reconcile_stalled_sessions(
+            time.time(),
+            debounce_seconds=STALL_DEBOUNCE_SECONDS,
+            window_seconds=STALL_WINDOW_SECONDS,
+        )
+        return {
+            "sources_checked": checked,
+            "sources_changed": changed,
+            "signals_applied": signals,
+            "stalls_opened": stalled,
+        }
+
+    def _apply_signals(self) -> int:
+        """Turn pending harness notices into observed attention."""
+        applied = 0
+        for signal in drain_signals(self.config.signal_spool):
+            project = self._match_project(signal["cwd"])
+            if project is None:
+                continue
+            if self.db.session_is_excluded(signal["provider"], signal["session_id"]):
+                continue
+            self.db.record_input_request(
+                project_id=str(project["project_id"]),
+                provider=signal["provider"],
+                session_id=signal["session_id"],
+                requested_at=float(signal["at"]),
+                summary=signal["detail"] or "Session is waiting for your input",
+                details={
+                    "origin": signal["origin"],
+                    "cwd": signal["cwd"],
+                    "signal_kind": signal["kind"],
+                },
+            )
+            applied += 1
+        return applied
 
     def status(self, *, now: float | None = None) -> dict[str, Any]:
         moment = now or time.time()
@@ -200,6 +241,22 @@ class Observer:
         if len(parts) != 3 or not parts[1] or not parts[2]:
             return None
         return parts[1], parts[2]
+
+    def dismiss_attention_item(self, value: str, kind: Any, ref: str) -> bool:
+        """Dismiss one claim without silencing the rest of a project.
+
+        Remote projects are re-materialized from an immutable snapshot, so they
+        keep the whole-project fingerprint they already had; only local claims
+        carry per-item state.
+        """
+        if self._remote_project_identity(value):
+            return False
+        project_id = str(self._resolve_project(value)["project_id"])
+        if kind == "finding":
+            return self.db.mark_finding_seen(ref)
+        if kind == "review":
+            return self.db.dismiss_attention_item(project_id, ref)
+        raise ValueError(f"unsupported attention kind: {kind}")
 
     def dismiss_project_attention(self, value: str) -> bool:
         remote = self._remote_project_identity(value)

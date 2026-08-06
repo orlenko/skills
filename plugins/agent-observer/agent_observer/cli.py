@@ -40,7 +40,9 @@ from .runtime import (
     start_services,
     stop_services,
 )
+from .sentinels import PROBES as SENTINEL_PROBES
 from .service import Observer, ObserverConfig
+from .signals import MAX_LINE_BYTES, append_signal, normalize_hook_payload
 from .web import run_server
 
 
@@ -70,6 +72,57 @@ def build_parser() -> argparse.ArgumentParser:
 
     rescan = commands.add_parser("rescan", help="Rediscover bounded provider sources")
     rescan.add_argument("project")
+
+    signal = commands.add_parser(
+        "signal",
+        help="Record that a harness asked this session's operator for input",
+    )
+    signal.add_argument("provider", choices=("claude", "codex"))
+    signal.add_argument("payload", nargs="?", help="Hook JSON; stdin is used if absent")
+    signal.add_argument("--session-id")
+    signal.add_argument("--cwd")
+    signal.add_argument("--detail")
+    signal.add_argument(
+        "--strict",
+        action="store_true",
+        help="Report rejection instead of exiting quietly (for setup checks)",
+    )
+
+    sentinel_add = commands.add_parser(
+        "sentinel-add",
+        help="Watch a background job's own evidence on disk for silent failure",
+    )
+    sentinel_add.add_argument("sentinel_id")
+    sentinel_add.add_argument("--label", required=True)
+    sentinel_add.add_argument(
+        "--probe", choices=sorted(SENTINEL_PROBES), default="file_freshness"
+    )
+    sentinel_add.add_argument("--target", required=True)
+    sentinel_add.add_argument(
+        "--max-age", required=True, help="Duration such as 90m, 26h, or 3d"
+    )
+    sentinel_add.add_argument(
+        "--expires-in",
+        default="90d",
+        help="When this check must be re-affirmed; 'never' opts out",
+    )
+    sentinel_add.add_argument("--note")
+
+    commands.add_parser("sentinel-list", help="Evaluate every enrolled health probe")
+    sentinel_remove = commands.add_parser(
+        "sentinel-remove", help="Retire one health probe"
+    )
+    sentinel_remove.add_argument("sentinel_id")
+    sentinel_affirm = commands.add_parser(
+        "sentinel-affirm", help="Confirm a health probe still describes a live system"
+    )
+    sentinel_affirm.add_argument("sentinel_id")
+    sentinel_affirm.add_argument("--expires-in", default="90d")
+
+    commands.add_parser(
+        "signal-hooks",
+        help="Print the harness configuration that reports blocked sessions",
+    )
 
     commands.add_parser("scan", help="Read newly appended records once")
     commands.add_parser(
@@ -252,6 +305,7 @@ def _config(args: argparse.Namespace) -> ObserverConfig:
         if args.codex_root
         else defaults.codex_roots,
         defaults.codex_session_index,
+        defaults.signal_spool,
     )
 
 
@@ -302,8 +356,137 @@ def _terminal_text(value: Any) -> str:
     return "".join(character if character.isprintable() else "�" for character in text)
 
 
+_DURATION_UNITS = {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
+
+
+def _duration(value: str) -> float:
+    text = value.strip().lower()
+    if not text:
+        raise ValueError("duration is required")
+    unit = _DURATION_UNITS.get(text[-1])
+    number = text[:-1] if unit else text
+    try:
+        amount = float(number)
+    except ValueError as exc:
+        raise ValueError(f"not a duration: {value}") from exc
+    if amount <= 0:
+        raise ValueError("duration must be positive")
+    return amount * (unit or 1.0)
+
+
+def _expiry(value: str) -> float | None:
+    if value.strip().lower() in {"never", "none", ""}:
+        return None
+    return time.time() + _duration(value)
+
+
+def _signal_hook_config(config: ObserverConfig) -> dict[str, Any]:
+    """Describe the opt-in harness wiring, without editing anyone's settings."""
+    executable = str(Path(__file__).resolve().parents[1] / "bin" / "agent-observer")
+    return {
+        "spool": str(config.signal_spool or ""),
+        "claude": {
+            "file": "~/.claude/settings.json",
+            "merge_into": "hooks",
+            "config": {
+                "Notification": [
+                    {
+                        "matcher": "",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": f"{executable} signal claude",
+                            }
+                        ],
+                    }
+                ]
+            },
+        },
+        "codex": {
+            "file": "~/.codex/config.toml",
+            "config": f'notify = ["{executable}", "signal", "codex"]',
+            "note": (
+                "Codex reports approval requests only when its notice carries a "
+                "session id and cwd; anything else is ignored rather than guessed."
+            ),
+        },
+        "verify": f"echo '{{}}' | {executable} signal claude --strict",
+    }
+
+
+def _record_signal(config: ObserverConfig, args: argparse.Namespace) -> int:
+    """Record a harness notice. Quiet by default: a hook must never fail a session."""
+    raw = args.payload
+    if raw is None and not sys.stdin.isatty():
+        try:
+            raw = sys.stdin.read(MAX_LINE_BYTES)
+        except (OSError, UnicodeDecodeError, ValueError):
+            raw = ""
+    payload: dict[str, Any] = {}
+    if raw:
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            decoded = None
+        if isinstance(decoded, dict):
+            payload = decoded
+    cwd = (
+        (args.cwd or "").strip()
+        or str(payload.get("cwd") or "").strip()
+        or os.getcwd()
+    )
+    record = normalize_hook_payload(
+        args.provider,
+        payload,
+        session_id=(args.session_id or "").strip(),
+        cwd=cwd,
+        detail=(args.detail or "").strip(),
+    )
+    recorded = bool(record) and append_signal(record, path=config.signal_spool)
+    if not recorded and args.strict:
+        print(
+            "agent-observer: signal not recorded (no session id, or lifecycle-only)",
+            file=sys.stderr,
+        )
+        return 1
+    if recorded and args.strict:
+        _print(record, args.as_json)
+    return 0
+
+
 def run(args: argparse.Namespace) -> int:
     config = _config(args)
+    if args.command == "signal":
+        return _record_signal(config, args)
+    if args.command == "signal-hooks":
+        _print(_signal_hook_config(config), args.as_json)
+        return 0
+    if args.command in {
+        "sentinel-add",
+        "sentinel-list",
+        "sentinel-remove",
+        "sentinel-affirm",
+    }:
+        with Observer(config) as observer:
+            if args.command == "sentinel-add":
+                observer.db.add_sentinel(
+                    sentinel_id=args.sentinel_id,
+                    label=args.label,
+                    probe=args.probe,
+                    target=args.target,
+                    max_age_seconds=_duration(args.max_age),
+                    expires_at=_expiry(args.expires_in),
+                    note=args.note,
+                )
+            elif args.command == "sentinel-remove":
+                if not observer.db.remove_sentinel(args.sentinel_id):
+                    raise KeyError(f"sentinel not found: {args.sentinel_id}")
+            elif args.command == "sentinel-affirm":
+                observer.db.affirm_sentinel(
+                    args.sentinel_id, _expiry(args.expires_in)
+                )
+            _print(observer.db.evaluate_sentinels(), args.as_json)
+        return 0
     if args.command == "serve":
         return run_server(config, port=args.port)
     if args.command == "daemon":

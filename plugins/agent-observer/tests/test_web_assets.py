@@ -54,6 +54,7 @@ class WebAssetTests(unittest.TestCase):
         self.assertEqual(
             set(re.findall(r'post\("([^\"]+)"', script)),
             {
+                "/api/attention/dismiss",
                 "/api/projects",
                 "/api/projects/dismiss-attention",
                 "/api/projects/remove",
