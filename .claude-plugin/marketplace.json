@@ -11,7 +11,7 @@
       "displayName": "Agent Pair",
       "source": "./plugins/agent-pair",
       "description": "Direct, durable two-agent messaging across one machine or a reachable LAN.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": {
         "name": "Vlad Orlenko",
         "url": "https://github.com/orlenko"
