@@ -36,6 +36,10 @@ from .core import (
 
 
 DEFAULT_TTL_SECONDS = 24 * 60 * 60
+PEER_STALE_SECONDS = 120
+_HANDLED_RETRY_SECONDS = 60
+_HANDLED_RETRIES_PER_PASS = 10
+_UNSYNCABLE_STATUSES = frozenset({400, 403, 404, 410})
 _BACKGROUND_PROCESSES: list[subprocess.Popen[bytes]] = []
 
 
@@ -540,6 +544,7 @@ def monitor_loop(endpoint_id: str) -> None:
     delay = 0.25
     while float(endpoint.get("expires_at", 0)) > now() and not endpoint.get("closed_at"):
         try:
+            flush_handled(endpoint)
             flush_outbox(endpoint)
             result = api_request(
                 endpoint,
@@ -647,6 +652,77 @@ def pending_count(endpoint: dict[str, Any]) -> int:
     )
 
 
+def _needs_sync(done: dict[str, Any]) -> bool:
+    return done.get("sync_state") == "unsynced"
+
+
+def _sync_handled(endpoint: dict[str, Any], done: dict[str, Any]) -> dict[str, Any]:
+    endpoint_id = str(endpoint["endpoint_id"])
+    message_id = str(done["id"])
+    done["sync_attempts"] = int(done.get("sync_attempts", 0)) + 1
+    done["last_sync_attempt_at"] = now()
+    try:
+        remote = api_request(endpoint, "POST", f"/v1/messages/{message_id}/handled", {})
+    except APIError as exc:
+        done["sync_state"] = "abandoned" if exc.status in _UNSYNCABLE_STATUSES else "unsynced"
+        done["sync_error"] = str(exc)[:300]
+    except AgentPairError as exc:
+        done["sync_state"] = "unsynced"
+        done["sync_error"] = str(exc)[:300]
+    else:
+        done["handled_at"] = remote.get("handled_at") or done.get("handled_at") or now()
+        done["sync_state"] = "synced"
+        done["sync_error"] = None
+        done["synced_at"] = now()
+    atomic_write_json(inbox_dir(endpoint_id, "done") / f"{message_id}.json", done)
+    return done
+
+
+def _finish_result(done: dict[str, Any], prefix: str | None = None) -> dict[str, Any]:
+    sync_state = str(done.get("sync_state", "synced"))
+    result: dict[str, Any] = {
+        "id": done["id"],
+        "state": "handled" if sync_state == "synced" else "handled-locally",
+        "handled_at": done.get("handled_at"),
+        "sync": sync_state,
+    }
+    notes = [note for note in (prefix, _sync_note(sync_state, done.get("sync_error"))) if note]
+    if notes:
+        result["detail"] = "; ".join(notes)
+    return result
+
+
+def _sync_note(sync_state: str, error: str | None) -> str | None:
+    if sync_state == "unsynced":
+        return f"handled locally, could not notify peer (will retry): {error}"
+    if sync_state == "abandoned":
+        return f"handled locally, peer will never record it: {error}"
+    return None
+
+
+def unsynced_handled(endpoint_id: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in sorted(inbox_dir(endpoint_id, "done").glob("*.json")):
+        try:
+            done = read_json(path)
+        except AgentPairError:
+            continue
+        if _needs_sync(done):
+            rows.append(done)
+    return rows
+
+
+def flush_handled(endpoint: dict[str, Any]) -> list[dict[str, Any]]:
+    """Retry the peer 'handled' notices that a local finish could not deliver."""
+    endpoint_id = str(endpoint["endpoint_id"])
+    due = [
+        done
+        for done in unsynced_handled(endpoint_id)
+        if now() - float(done.get("last_sync_attempt_at", 0)) >= _HANDLED_RETRY_SECONDS
+    ]
+    return [_sync_handled(endpoint, done) for done in due[:_HANDLED_RETRIES_PER_PASS]]
+
+
 def finish_messages(endpoint: dict[str, Any], message_ids: list[str]) -> list[dict[str, Any]]:
     endpoint_id = str(endpoint["endpoint_id"])
     results: list[dict[str, Any]] = []
@@ -657,20 +733,33 @@ def finish_messages(endpoint: dict[str, Any], message_ids: list[str]) -> list[di
             if candidate.exists():
                 source = candidate
                 break
+        done_path = inbox_dir(endpoint_id, "done") / f"{message_id}.json"
         if source is None:
-            raise AgentPairError(f"Local message not found: {message_id}")
+            if not done_path.exists():
+                raise AgentPairError(f"Local message not found: {message_id}")
+            done = read_json(done_path)
+            if _needs_sync(done):
+                done = _sync_handled(endpoint, done)
+            results.append(_finish_result(done, "was already handled locally"))
+            continue
         record = read_json(source)
-        remote = api_request(endpoint, "POST", f"/v1/messages/{message_id}/handled", {})
         done = {
             "id": message_id,
             "from": record.get("from"),
             "sent_at": record.get("sent_at"),
             "received_at": record.get("received_at"),
-            "handled_at": remote.get("handled_at") or now(),
+            "handled_at": now(),
+            "sync_state": "unsynced",
+            "sync_error": None,
+            "synced_at": None,
+            "sync_attempts": 0,
+            "last_sync_attempt_at": 0,
         }
-        atomic_write_json(inbox_dir(endpoint_id, "done") / f"{message_id}.json", done)
+        atomic_write_json(done_path, done)
         source.unlink(missing_ok=True)
-        results.append(remote)
+        results.append(_finish_result(_sync_handled(endpoint, done)))
+    if any(item.get("sync") == "synced" for item in results):
+        flush_handled(endpoint)
     return results
 
 
@@ -684,6 +773,29 @@ def wait_for_messages(endpoint: dict[str, Any], timeout: float, *, claim: bool) 
         time.sleep(min(0.2, deadline - time.monotonic()))
 
 
+def peer_presence(remote: dict[str, Any] | None) -> dict[str, Any]:
+    """Peer liveness from its last heartbeat, so a host cannot mistake its own
+    reachable loopback server for a peer that is still on the other end."""
+    if remote is None:
+        return {"state": "unreachable", "last_seen_at": None, "last_seen_age": None}
+    peer = remote.get("peer")
+    if not peer:
+        return {"state": "not-joined", "last_seen_at": None, "last_seen_age": None}
+    last_seen = float(peer.get("last_seen_at") or 0)
+    age = max(0.0, now() - last_seen) if last_seen else None
+    if age is None:
+        state = "unknown"
+    else:
+        state = "connected" if age <= PEER_STALE_SECONDS else "stale"
+    return {
+        "state": state,
+        "name": peer.get("name"),
+        "provider": peer.get("provider"),
+        "last_seen_at": last_seen or None,
+        "last_seen_age": round(age, 1) if age is not None else None,
+    }
+
+
 def pair_status(endpoint: dict[str, Any]) -> dict[str, Any]:
     ensure_monitor(endpoint)
     remote: dict[str, Any] | None = None
@@ -692,6 +804,8 @@ def pair_status(endpoint: dict[str, Any]) -> dict[str, Any]:
         remote = api_request(endpoint, "GET", "/v1/status")
     except AgentPairError as exc:
         error = str(exc)
+    if remote is not None:
+        flush_handled(endpoint)
     endpoint_id = str(endpoint["endpoint_id"])
     monitor_state: dict[str, Any] = {}
     try:
@@ -708,10 +822,12 @@ def pair_status(endpoint: dict[str, Any]) -> dict[str, Any]:
             "pid": monitor_state.get("pid"),
             "last_error": monitor_state.get("last_error"),
         },
+        "peer": peer_presence(remote),
         "local": {
             "pending": len(list(inbox_dir(endpoint_id, "pending").glob("*.json"))),
             "claimed": len(list(inbox_dir(endpoint_id, "claimed").glob("*.json"))),
             "outbox": len(list(inbox_dir(endpoint_id, "outbox").glob("*.json"))),
+            "unsynced_handled": len(unsynced_handled(endpoint_id)),
         },
         "remote": remote,
         "remote_error": error,
@@ -719,9 +835,29 @@ def pair_status(endpoint: dict[str, Any]) -> dict[str, Any]:
 
 
 def close_pair(endpoint: dict[str, Any]) -> dict[str, Any]:
-    result = api_request(endpoint, "POST", "/v1/close", {})
-    endpoint["closed_at"] = result.get("closed_at") or now()
+    """Close locally whatever the peer does; a host that never comes back must
+    not keep the pair open on this side."""
+    remote: dict[str, Any] | None = None
+    detail: str | None = None
+    try:
+        remote = api_request(endpoint, "POST", "/v1/close", {})
+    except APIError as exc:
+        if exc.status == 410:
+            remote = {"ok": True, "closed_at": None}
+        else:
+            detail = str(exc)
+    except AgentPairError as exc:
+        detail = str(exc)
+    closed_at = (remote or {}).get("closed_at") or now()
+    endpoint["closed_at"] = closed_at
     atomic_write_json(endpoint_path(str(endpoint["endpoint_id"])), endpoint)
+    result: dict[str, Any] = {
+        "ok": True,
+        "closed_at": closed_at,
+        "state": "closed" if remote is not None else "closed-locally",
+    }
+    if detail:
+        result["detail"] = f"closed locally, could not notify peer: {detail}"
     return result
 
 

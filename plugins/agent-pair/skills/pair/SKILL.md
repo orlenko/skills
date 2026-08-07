@@ -21,7 +21,11 @@ same-provider sessions working in the same directory.
   - If no pair exists, run `host --json` and give the complete `ap1.` invite to
     the user for the other agent.
   - If a pair exists, summarize its monitor, peer-presence, inbox, outbox, and
-    delivery state.
+    delivery state. Read peer presence from `peer.state`, not from the absence
+    of an error: a host reaches its own server even after the peer is gone, so
+    only `connected` means mail is flowing. `stale` reports the seconds since
+    the peer last checked in and means the link is down; say so plainly and
+    offer to `close`.
 - An argument beginning with `ap1.`: run `accept INVITE --json`. Report the peer,
   expiry, and monitor PID.
 - `send MESSAGE`: compose the message as described in "Message format", then
@@ -33,6 +37,13 @@ same-provider sessions working in the same directory.
   above.
 - `status`: run `status --json`.
 - `close`: run `close --json`.
+
+Handling is a local fact, so `finish` always retires the message on this side.
+A reachable peer returns `handled`; an unreachable one returns `handled-locally`
+with a `detail`, and the monitor delivers the notice when the peer returns.
+Report the local outcome as done and never re-process a `handled-locally`
+message. `close` behaves the same way: an unreachable peer yields
+`closed-locally`, which ends the pair here regardless.
 
 Append the retained `--endpoint-id ID` to `send`, `inbox`, `finish`, `wait`,
 `status`, `close`, and `monitor` commands.

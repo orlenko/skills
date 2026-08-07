@@ -1,6 +1,7 @@
 import os
 import shutil
 import signal
+import socket
 import tempfile
 import threading
 import time
@@ -11,20 +12,41 @@ from pathlib import Path
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 os.sys.path.insert(0, str(PLUGIN_ROOT))
 
+from agent_pair import client  # noqa: E402
 from agent_pair.client import (  # noqa: E402
     _reap_spawned_processes,
+    _spawn_module,
     accept_pair,
     close_pair,
     create_pair,
     finish_messages,
+    flush_handled,
     hook_stop,
     hook_wait,
     load_endpoint,
     pair_status,
+    pending_count,
     send_message,
+    unsynced_handled,
     wait_for_messages,
 )
-from agent_pair.core import AgentPairError, decode_invite, encode_invite  # noqa: E402
+from agent_pair.core import (  # noqa: E402
+    AgentPairError,
+    decode_invite,
+    encode_invite,
+    inbox_dir,
+    read_json,
+    runtime_dir,
+)
+
+
+def _free_port() -> int:
+    probe = socket.socket()
+    try:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+    finally:
+        probe.close()
 
 
 class EndToEndTests(unittest.TestCase):
@@ -35,6 +57,9 @@ class EndToEndTests(unittest.TestCase):
         self.server_pid = None
 
     def tearDown(self):
+        _reap_spawned_processes(
+            [process.pid for process in client._BACKGROUND_PROCESSES], timeout=0
+        )
         if self.server_pid:
             try:
                 os.kill(self.server_pid, signal.SIGTERM)
@@ -140,6 +165,164 @@ class EndToEndTests(unittest.TestCase):
         _reap_spawned_processes(
             [host["server_pid"], host["monitor_pid"], guest["monitor_pid"]]
         )
+        self.server_pid = None
+
+    def test_finish_and_close_survive_a_dead_peer(self):
+        port = _free_port()
+        host = create_pair(
+            provider="test",
+            cwd="/tmp/agent-pair-host",
+            name="Ubuntu Codex",
+            advertise=["127.0.0.1"],
+            port=port,
+            ttl_seconds=300,
+        )
+        self.server_pid = host["server_pid"]
+        guest = accept_pair(
+            host["invite"],
+            provider="test",
+            cwd="/tmp/agent-pair-guest",
+            name="macOS Claude",
+        )
+        host_endpoint = load_endpoint(host["endpoint_id"])
+        guest_endpoint = load_endpoint(guest["endpoint_id"])
+
+        send_message(host_endpoint, "Handle this before I vanish")
+        incoming = wait_for_messages(guest_endpoint, 8, claim=True)
+        message_id = incoming[0]["id"]
+
+        _reap_spawned_processes([host["server_pid"], host["monitor_pid"]], timeout=0)
+        self.server_pid = None
+
+        results = finish_messages(guest_endpoint, [message_id])
+        self.assertEqual(results[0]["state"], "handled-locally")
+        self.assertEqual(results[0]["sync"], "unsynced")
+        self.assertIn("could not notify peer", results[0]["detail"])
+
+        guest_id = guest["endpoint_id"]
+        self.assertFalse((inbox_dir(guest_id, "claimed") / f"{message_id}.json").exists())
+        self.assertTrue((inbox_dir(guest_id, "done") / f"{message_id}.json").exists())
+        self.assertEqual(pending_count(guest_endpoint), 0)
+        self.assertEqual(
+            hook_stop(
+                "test",
+                {
+                    "cwd": "/tmp/agent-pair-guest",
+                    "session_id": "guest-dead-peer-session",
+                    "hook_event_name": "Stop",
+                    "stop_hook_active": False,
+                },
+            ),
+            {},
+        )
+
+        repeated = finish_messages(guest_endpoint, [message_id])
+        self.assertIn("already handled locally", repeated[0]["detail"])
+        with self.assertRaisesRegex(AgentPairError, "not found"):
+            finish_messages(guest_endpoint, ["m_neverseenbefore"])
+
+        state = pair_status(guest_endpoint)
+        self.assertEqual(state["peer"]["state"], "unreachable")
+        self.assertEqual(state["local"]["unsynced_handled"], 1)
+
+        closed = close_pair(guest_endpoint)
+        self.assertEqual(closed["state"], "closed-locally")
+        self.assertIn("could not notify peer", closed["detail"])
+        self.assertTrue(load_endpoint(guest_id)["closed_at"])
+        _reap_spawned_processes([guest["monitor_pid"]])
+
+    def test_host_status_reports_a_silent_peer_as_stale(self):
+        host = create_pair(
+            provider="test",
+            cwd="/tmp/agent-pair-host",
+            name="Ubuntu Codex",
+            advertise=["127.0.0.1"],
+            ttl_seconds=300,
+        )
+        self.server_pid = host["server_pid"]
+        guest = accept_pair(
+            host["invite"],
+            provider="test",
+            cwd="/tmp/agent-pair-guest",
+            name="macOS Claude",
+        )
+        host_endpoint = load_endpoint(host["endpoint_id"])
+
+        fresh = pair_status(host_endpoint)
+        self.assertEqual(fresh["peer"]["state"], "connected")
+        self.assertEqual(fresh["peer"]["name"], "macOS Claude")
+
+        _reap_spawned_processes([guest["monitor_pid"]], timeout=0)
+        previous_stale = client.PEER_STALE_SECONDS
+        client.PEER_STALE_SECONDS = 0.5
+        self.addCleanup(setattr, client, "PEER_STALE_SECONDS", previous_stale)
+        time.sleep(0.7)
+
+        silent = pair_status(host_endpoint)
+        self.assertIsNotNone(silent["remote"])
+        self.assertIsNone(silent["remote_error"])
+        self.assertEqual(silent["peer"]["state"], "stale")
+        self.assertGreater(silent["peer"]["last_seen_age"], 0.5)
+
+        close_pair(host_endpoint)
+        _reap_spawned_processes([host["server_pid"], host["monitor_pid"]])
+        self.server_pid = None
+
+    def test_handled_notice_resyncs_after_the_peer_returns(self):
+        previous_gate = client._HANDLED_RETRY_SECONDS
+        client._HANDLED_RETRY_SECONDS = 0
+        self.addCleanup(setattr, client, "_HANDLED_RETRY_SECONDS", previous_gate)
+
+        port = _free_port()
+        host = create_pair(
+            provider="test",
+            cwd="/tmp/agent-pair-host",
+            name="Ubuntu Codex",
+            advertise=["127.0.0.1"],
+            port=port,
+            ttl_seconds=300,
+        )
+        self.server_pid = host["server_pid"]
+        guest = accept_pair(
+            host["invite"],
+            provider="test",
+            cwd="/tmp/agent-pair-guest",
+            name="macOS Claude",
+        )
+        host_endpoint = load_endpoint(host["endpoint_id"])
+        guest_endpoint = load_endpoint(guest["endpoint_id"])
+
+        send_message(host_endpoint, "Survive a restart")
+        message_id = wait_for_messages(guest_endpoint, 8, claim=True)[0]["id"]
+
+        pair_id = host["pair_id"]
+        _reap_spawned_processes([host["server_pid"], host["monitor_pid"]], timeout=0)
+        self.server_pid = None
+
+        finish_messages(guest_endpoint, [message_id])
+        self.assertEqual(len(unsynced_handled(guest["endpoint_id"])), 1)
+
+        restarted = _spawn_module(
+            ["serve", "--pair-id", pair_id], runtime_dir() / f"{pair_id}.restart.log"
+        )
+        self.server_pid = restarted
+
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            flush_handled(guest_endpoint)
+            if not unsynced_handled(guest["endpoint_id"]):
+                break
+            time.sleep(0.2)
+        self.assertEqual(unsynced_handled(guest["endpoint_id"]), [])
+
+        done = read_json(inbox_dir(guest["endpoint_id"], "done") / f"{message_id}.json")
+        self.assertEqual(done["sync_state"], "synced")
+
+        state = pair_status(host_endpoint)
+        self.assertEqual(state["remote"]["messages"][0]["state"], "handled")
+
+        close_pair(guest_endpoint)
+        _reap_spawned_processes([restarted, guest["monitor_pid"]])
         self.server_pid = None
 
 

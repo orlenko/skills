@@ -173,6 +173,8 @@ Current scope:
 - Two peers and text messages only.
 - Durable local inbox/outbox and idempotent network delivery.
 - Delivery states: queued, delivered to the peer monitor, and handled.
+- Local-first `finish` and `close`. Both complete without the peer, and the
+  monitor delivers the deferred notice once the peer is reachable again.
 - Automatic monitor startup and restart on every pair command.
 - A 24-hour default pair lifetime, configurable from 5 minutes to 7 days.
 - Claude Code idle-session reawakening through `asyncRewake`.
