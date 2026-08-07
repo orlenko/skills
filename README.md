@@ -266,6 +266,55 @@ open when mail is already waiting at `Stop`.
 Peer message bodies are never injected by hooks. Agents explicitly claim them
 from the local inbox and must treat them as untrusted peer input.
 
+## Undrudge Apply
+
+`undrudge-apply` is the acting half of [`undrudge`](https://github.com/orlenko/undrudge),
+a background watchman that mines shell history and agent transcripts for
+automation opportunities. Recommendations accumulate because acting on one
+normally means abandoning whatever the session is doing, and `undrudge dispatch`
+pushes work into a repository clone that may already be occupied or dirty.
+
+`undrudge here` inverts that: it reports which open recommendations belong to
+the repository a session is already standing in. This plugin is the part that
+acts on one of them.
+
+Each invocation disposes of exactly one recommendation — implemented behind a
+draft pull request, dismissed with a reason, or handed back as needing a human —
+and flips its status in the same session so the pile actually shrinks. It
+refuses to implement anything when the working tree is dirty, but still names
+the recommendation it would have taken, because losing that observation is the
+problem it exists to solve.
+
+It requires the `undrudge` CLI on `PATH` and a git repository. Cross-cutting and
+agent-global recommendations are out of scope; those are triaged by hand through
+`undrudge browse` and `undrudge copy`.
+
+### Install and invoke
+
+Claude Code:
+
+```sh
+claude plugin marketplace add orlenko/skills
+claude plugin install undrudge-apply@orlenko-skills
+```
+
+Codex:
+
+```sh
+codex plugin marketplace add orlenko/skills
+codex plugin add undrudge-apply@orlenko-skills
+```
+
+From a session inside the target repository:
+
+```text
+Codex: $undrudge-apply:undrudge-apply
+Claude: /undrudge-apply:undrudge-apply
+```
+
+Pass a rec id to work that recommendation instead of the best match, and re-run
+to take the next one.
+
 ## Repository layout
 
 ```text
@@ -281,6 +330,15 @@ plugins/agent-observer/
   .claude-plugin/plugin.json
   skills/observe/SKILL.md
   bin/agent-observer
+plugins/design-skeptic/
+  .codex-plugin/plugin.json
+  .claude-plugin/plugin.json
+  skills/design-skeptic/SKILL.md
+  agents/design-skeptic.md
+plugins/undrudge-apply/
+  .codex-plugin/plugin.json
+  .claude-plugin/plugin.json
+  skills/undrudge-apply/SKILL.md
 ```
 
 ## Development
@@ -292,12 +350,15 @@ python3 path/to/skill-creator/scripts/quick_validate.py \
   plugins/agent-pair/skills/pair
 python3 path/to/skill-creator/scripts/quick_validate.py \
   plugins/agent-observer/skills/observe
+python3 path/to/skill-creator/scripts/quick_validate.py \
+  plugins/undrudge-apply/skills/undrudge-apply
 python3 path/to/plugin-creator/scripts/validate_plugin.py \
   plugins/agent-pair
 python3 path/to/plugin-creator/scripts/validate_plugin.py \
   plugins/agent-observer
 claude plugin validate plugins/agent-pair
 claude plugin validate plugins/agent-observer
+claude plugin validate plugins/undrudge-apply
 ```
 
 The validator script locations depend on the local Codex installation; replace

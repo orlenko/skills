@@ -31,6 +31,10 @@ jobs:
           python -m json.tool plugins/agent-pair/hooks/claude-hooks.json >/dev/null
           python -m json.tool plugins/agent-observer/.codex-plugin/plugin.json >/dev/null
           python -m json.tool plugins/agent-observer/.claude-plugin/plugin.json >/dev/null
+          python -m json.tool plugins/design-skeptic/.codex-plugin/plugin.json >/dev/null
+          python -m json.tool plugins/design-skeptic/.claude-plugin/plugin.json >/dev/null
+          python -m json.tool plugins/undrudge-apply/.codex-plugin/plugin.json >/dev/null
+          python -m json.tool plugins/undrudge-apply/.claude-plugin/plugin.json >/dev/null
       - name: Run tests
         run: |
           python -W error::ResourceWarning -m unittest discover -s plugins/agent-observer/tests -v

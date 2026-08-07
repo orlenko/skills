@@ -44,6 +44,19 @@
       },
       "category": "productivity",
       "tags": ["agents", "observer", "dashboard", "codex", "claude"]
+    },
+    {
+      "name": "undrudge-apply",
+      "displayName": "Undrudge Apply",
+      "source": "./plugins/undrudge-apply",
+      "description": "Clear exactly one open undrudge recommendation belonging to the repository you are already in.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Vlad Orlenko",
+        "url": "https://github.com/orlenko"
+      },
+      "category": "productivity",
+      "tags": ["undrudge", "automation", "backlog", "codex", "claude"]
     }
   ]
 }

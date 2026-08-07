@@ -1,0 +1,4 @@
+interface:
+  display_name: "Undrudge Apply"
+  short_description: "Clear one undrudge rec for the repo you are in"
+  default_prompt: "Use $undrudge-apply to clear one open undrudge recommendation for this repository."

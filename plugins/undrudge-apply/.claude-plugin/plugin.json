@@ -1,0 +1,15 @@
+{
+  "name": "undrudge-apply",
+  "displayName": "Undrudge Apply",
+  "version": "0.1.0",
+  "description": "Clear exactly one open undrudge recommendation belonging to the repository you are already in.",
+  "author": {
+    "name": "Vlad Orlenko",
+    "url": "https://github.com/orlenko"
+  },
+  "homepage": "https://github.com/orlenko/skills/tree/main/plugins/undrudge-apply",
+  "repository": "https://github.com/orlenko/skills",
+  "license": "MIT",
+  "keywords": ["undrudge", "automation", "backlog", "codex", "claude"],
+  "skills": "./skills/"
+}
