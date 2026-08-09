@@ -1,0 +1,28 @@
+{
+  "name": "peer-message",
+  "version": "0.1.0",
+  "description": "Write agent-to-agent messages that end the thread instead of starting another round trip.",
+  "author": {
+    "name": "Vlad Orlenko",
+    "url": "https://github.com/orlenko"
+  },
+  "homepage": "https://github.com/orlenko/skills/tree/main/plugins/peer-message",
+  "repository": "https://github.com/orlenko/skills",
+  "license": "MIT",
+  "keywords": ["agents", "collaboration", "messaging", "codex", "claude"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Peer Message",
+    "shortDescription": "Write messages another agent will read.",
+    "longDescription": "A transport-neutral format for agent-to-agent messages: an ACT/RE/NEED/REF header, claims marked verified or unverified, pointers instead of payloads, anchors that survive compaction, and the discipline to send nothing when a message would change nothing.",
+    "developerName": "Vlad Orlenko",
+    "category": "Productivity",
+    "capabilities": ["Interactive"],
+    "websiteURL": "https://github.com/orlenko/skills",
+    "defaultPrompt": [
+      "Write this handoff as a message for another agent.",
+      "Send the other session what it needs to unblock.",
+      "Draft a dissent to my peer's conclusion."
+    ]
+  }
+}

@@ -17,6 +17,18 @@
       "category": "Productivity"
     },
     {
+      "name": "peer-message",
+      "source": {
+        "source": "local",
+        "path": "./plugins/peer-message"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    },
+    {
       "name": "design-skeptic",
       "source": {
         "source": "local",
