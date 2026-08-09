@@ -1,8 +1,8 @@
 {
   "name": "agent-pair",
   "displayName": "Agent Pair",
-  "version": "0.3.0",
-  "description": "Direct, durable two-agent messaging across one machine or a reachable LAN.",
+  "version": "0.4.0",
+  "description": "Durable cross-provider messaging between two agent sessions, across machines and containers.",
   "author": {
     "name": "Vlad Orlenko",
     "url": "https://github.com/orlenko"

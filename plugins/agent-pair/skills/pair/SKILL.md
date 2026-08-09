@@ -1,6 +1,6 @@
 ---
 name: pair
-description: Connect exactly two coding-agent sessions through a direct, TLS-pinned, durable text mailbox on one machine or a reachable network. Use when Codex or Claude should pair with another agent, accept an ap1 invite, exchange task context or handoffs, check a paired inbox, inspect delivery state, or close an active pair.
+description: Connect exactly two coding-agent sessions through a direct, TLS-pinned, durable text mailbox that survives a peer restart and crosses machine, container, and network boundaries. Use when a Codex session and a Claude session must work together, when messages must queue for a peer that is not running yet, when the peers cannot see one another's filesystem, or when the user asks to pair, accept an ap1 invite, check a paired inbox, inspect delivery state, or close a pair. For two Claude Code sessions on one machine, prefer Claude Code's own cross-session messaging instead.
 ---
 
 # Agent Pair
@@ -12,6 +12,25 @@ current working directory unchanged; it identifies this session's pair.
 Retain the `endpoint_id` returned by `host` or `accept` in conversation context
 and pass `--endpoint-id ID` on every later command. This disambiguates two
 same-provider sessions working in the same directory.
+
+## Check that this is the right transport
+
+Use this skill when at least one of these holds:
+
+- The two agents run on different providers, such as Codex and Claude.
+- A message must survive the peer being closed or restarted, or must wait in a
+  durable inbox until the peer comes back.
+- The peers cannot see one another's filesystem, such as a session inside a
+  container and a session on the host, or two machines on a LAN.
+- The work needs delivery states and a claim-and-finish inbox rather than
+  fire-and-forget text.
+
+For two Claude Code sessions on one machine, Claude Code's own cross-session
+messaging reaches them with no plugin, no invite, and no monitor: discover peers
+with `ListAgents` and send with `SendMessage`. Say so and use it rather than
+hosting a pair. That path carries plain text only, needs both sessions running,
+and cannot start a conversation with a session on another machine; when any of
+those matters, come back here.
 
 ## Route the request
 
@@ -61,14 +80,13 @@ Do not send credentials, invite strings, or unrelated private context.
 
 ## Message format
 
-Every message is read by another agent and never by a person. Optimize for
-ending the thread rather than for brevity: a message that omits what the peer
-needs costs both sides another full turn, which dwarfs anything saved by terse
-phrasing.
+Compose every message under the `peer-message` skill, which holds the full
+rules and applies to any agent-to-agent transport. Pipe the composed text
+through `send --stdin` with a quoted heredoc (`<<'EOF'`) so newlines survive and
+the shell leaves backticks and `$` in the body alone.
 
-Send a header block, a blank line, then a free-form body. Pipe it through
-`send --stdin` with a quoted heredoc (`<<'EOF'`) so newlines survive and the
-shell leaves backticks and `$` in the body alone.
+Where that skill is not installed, use its core form: a header block, a blank
+line, then a free-form body.
 
     ACT   done
     RE    m_7f2a
@@ -84,31 +102,11 @@ shell leaves backticks and `$` in the body alone.
 (finished work plus its evidence), `block` (stuck, with the reason), or
 `dissent` (the peer's claim does not hold). Keep `dissent` in active use;
 a peer that only ever agrees is worth nothing. `RE` carries the message id
-being answered and is omitted otherwise.
-
-Write the body under these rules:
-
-- Make `NEED` a shape, not an invitation. "yes/no: land before the refactor?"
-  costs the peer one line; "let me know what you think" costs an essay.
-- Anchor claims in `REF` so the peer can check them cheaply: paths with line
-  ranges, commit shas, runnable commands. Neither agent can verify the other's
-  confidence, so an assertion is worth far less than something falsifiable.
-  Prefer a commit sha; where the repository records session rationale, the sha
-  resolves to that reasoning as well as to the diff.
-- Mark every claim `Verified:` or `Unverified:`. Cut greetings, thanks, praise,
-  and offers of further help, but keep every word of genuine uncertainty.
-- Send pointers, not payloads. Both sides hold the same working tree, so send
-  `git:a91c3de` rather than the diff it contains. Write anything large to a
-  file and send its path.
-- Use durable anchors only. Sessions are compacted, so "the function we
-  discussed" may be unresolvable by the time it is read; a message must stay
-  decodable from this skill and the repository alone. Never agree private
-  shorthand with the peer, whose context is compacted independently.
-
-Stay silent whenever a message would not change what the peer does. Send no
-bare acknowledgement unless `NEED ack` asked for one, batch findings into a
-single message instead of sending each as it surfaces, and do not narrate
-progress on work the peer is not waiting on.
+being answered and is omitted otherwise. Make `NEED` a shape rather than an
+invitation, anchor claims in `REF` so the peer can check them cheaply, mark
+every claim `Verified:` or `Unverified:`, send pointers rather than payloads,
+and use anchors that stay decodable after compaction. Stay silent whenever a
+message would not change what the peer does.
 
 The inbox monitor starts automatically on host and accept. Every later command
 checks and restarts it if needed. Claude Code's installed hook can reawaken an

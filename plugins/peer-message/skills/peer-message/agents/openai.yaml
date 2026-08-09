@@ -1,0 +1,7 @@
+interface:
+  display_name: "Peer Message"
+  short_description: "Write messages another agent will read"
+  default_prompt: "Use $peer-message to compose this message for another agent."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,7 +1,7 @@
 {
   "name": "agent-pair",
-  "version": "0.3.0",
-  "description": "Direct, durable two-agent messaging across one machine or a reachable LAN.",
+  "version": "0.4.0",
+  "description": "Durable cross-provider messaging between two agent sessions, across machines and containers.",
   "author": {
     "name": "Vlad Orlenko",
     "url": "https://github.com/orlenko"
@@ -13,8 +13,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Agent Pair",
-    "shortDescription": "Connect two coding agents directly.",
-    "longDescription": "A direct TLS-pinned mailbox for two coding agents on one machine or a reachable network, with durable delivery and inbox monitoring.",
+    "shortDescription": "Pair a Codex session with a Claude session.",
+    "longDescription": "A direct TLS-pinned mailbox for two coding agents that survives a peer restart and crosses machine and container boundaries, with durable delivery states, a claim-and-finish inbox, and monitoring. For two Claude Code sessions on one machine, Claude Code's own cross-session messaging is the lighter path.",
     "developerName": "Vlad Orlenko",
     "category": "Productivity",
     "capabilities": ["Interactive"],

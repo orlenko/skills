@@ -10,14 +10,27 @@
       "name": "agent-pair",
       "displayName": "Agent Pair",
       "source": "./plugins/agent-pair",
-      "description": "Direct, durable two-agent messaging across one machine or a reachable LAN.",
-      "version": "0.3.0",
+      "description": "Durable cross-provider messaging between two agent sessions, across machines and containers.",
+      "version": "0.4.0",
       "author": {
         "name": "Vlad Orlenko",
         "url": "https://github.com/orlenko"
       },
       "category": "productivity",
       "tags": ["agents", "collaboration", "pairing"]
+    },
+    {
+      "name": "peer-message",
+      "displayName": "Peer Message",
+      "source": "./plugins/peer-message",
+      "description": "Write agent-to-agent messages that end the thread instead of starting another round trip.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Vlad Orlenko",
+        "url": "https://github.com/orlenko"
+      },
+      "category": "productivity",
+      "tags": ["agents", "collaboration", "messaging"]
     },
     {
       "name": "design-skeptic",

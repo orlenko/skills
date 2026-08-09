@@ -168,6 +168,28 @@ mailbox. It works on one machine or between machines that can reach the host on
 the network. The transport uses a temporary self-signed TLS certificate pinned
 in a single-use `ap1.` invite; no central relay or account is required.
 
+### When to use it
+
+Claude Code v2.1.224 added cross-session messaging: `ListAgents` and
+`SendMessage` reach your other local Claude Code sessions over a per-session
+socket, on by default, with no plugin. For two Claude sessions on one machine
+that is the lighter path, and `agent-pair` no longer claims that case.
+
+Use `agent-pair` when at least one of these holds:
+
+- **Cross-provider.** A Codex session and a Claude session working together.
+- **Durability.** The message must wait for a peer that is closed, restarted,
+  or not up yet, and `finish` and `close` must complete without the peer.
+- **Boundaries.** Container to host, or machine to machine on a LAN, with no
+  third party in the data path and either side able to initiate.
+- **Lifecycle.** Delivery states and a claim-and-finish inbox, rather than
+  fire-and-forget text.
+
+[`docs/agent-pair-transport-comparison.md`](docs/agent-pair-transport-comparison.md)
+compares it against Claude Code cross-session messaging and
+[`wire`](https://github.com/SlanchaAI/wire) in full, and records the open
+questions each one raises.
+
 Current scope:
 
 - Two peers and text messages only.
@@ -268,6 +290,48 @@ open when mail is already waiting at `Stop`.
 Peer message bodies are never injected by hooks. Agents explicitly claim them
 from the local inbox and must treat them as untrusted peer input.
 
+## Peer Message
+
+`peer-message` governs what goes *in* a message whose reader is another agent
+rather than a person. It is transport-neutral: the same format applies over
+Claude Code's `SendMessage`, an agent-team teammate, a subagent, an
+`agent-pair` peer, or any other agent-to-agent channel. Every one of those
+transports documents how to deliver text and none of them says what to write.
+
+It specifies an `ACT`/`RE`/`NEED`/`REF` header, an `ACT` vocabulary that keeps
+`dissent` in active use, claims marked `Verified:` or `Unverified:`, pointers
+instead of payloads, anchors that stay decodable after a session is compacted,
+and the discipline to send nothing when a message would not change what the peer
+does.
+
+It began inside the `agent-pair` skill. It was extracted because it is useful
+wherever agents talk to each other, and installing a whole transport to get it
+was the wrong trade. `agent-pair` now defers to it and keeps a compact fallback
+form for installations that do not have it.
+
+### Install and invoke
+
+Claude Code:
+
+```sh
+claude plugin marketplace add orlenko/skills
+claude plugin install peer-message@orlenko-skills
+```
+
+Codex:
+
+```sh
+codex plugin marketplace add orlenko/skills
+codex plugin add peer-message@orlenko-skills
+```
+
+The skill applies whenever a message is being composed for another agent:
+
+```text
+Codex: $peer-message
+Claude: /peer-message:peer-message
+```
+
 ## Undrudge Apply
 
 `undrudge-apply` is the acting half of [`undrudge`](https://github.com/orlenko/undrudge),
@@ -332,6 +396,10 @@ plugins/agent-observer/
   .claude-plugin/plugin.json
   skills/observe/SKILL.md
   bin/agent-observer
+plugins/peer-message/
+  .codex-plugin/plugin.json
+  .claude-plugin/plugin.json
+  skills/peer-message/SKILL.md
 plugins/design-skeptic/
   .codex-plugin/plugin.json
   .claude-plugin/plugin.json
@@ -354,6 +422,8 @@ python3 path/to/skill-creator/scripts/quick_validate.py \
   plugins/agent-observer/skills/observe
 python3 path/to/skill-creator/scripts/quick_validate.py \
   plugins/undrudge-apply/skills/undrudge-apply
+python3 path/to/skill-creator/scripts/quick_validate.py \
+  plugins/peer-message/skills/peer-message
 python3 path/to/plugin-creator/scripts/validate_plugin.py \
   plugins/agent-pair
 python3 path/to/plugin-creator/scripts/validate_plugin.py \
@@ -361,6 +431,7 @@ python3 path/to/plugin-creator/scripts/validate_plugin.py \
 claude plugin validate plugins/agent-pair
 claude plugin validate plugins/agent-observer
 claude plugin validate plugins/undrudge-apply
+claude plugin validate plugins/peer-message
 ```
 
 The validator script locations depend on the local Codex installation; replace

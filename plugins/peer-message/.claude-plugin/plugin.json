@@ -1,0 +1,15 @@
+{
+  "name": "peer-message",
+  "displayName": "Peer Message",
+  "version": "0.1.0",
+  "description": "Write agent-to-agent messages that end the thread instead of starting another round trip.",
+  "author": {
+    "name": "Vlad Orlenko",
+    "url": "https://github.com/orlenko"
+  },
+  "homepage": "https://github.com/orlenko/skills/tree/main/plugins/peer-message",
+  "repository": "https://github.com/orlenko/skills",
+  "license": "MIT",
+  "keywords": ["agents", "collaboration", "messaging", "codex", "claude"],
+  "skills": "./skills/"
+}
