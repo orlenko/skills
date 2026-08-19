@@ -21,6 +21,7 @@ from agent_pair.client import (  # noqa: E402
     create_pair,
     finish_messages,
     flush_handled,
+    hook_context,
     hook_stop,
     hook_wait,
     load_endpoint,
@@ -160,6 +161,111 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(reply["state"], "queued")
         host_inbox = wait_for_messages(host_endpoint, 8, claim=True)
         self.assertEqual(host_inbox[0]["text"], "Reviewed; no blockers")
+
+        close_pair(guest_endpoint)
+        _reap_spawned_processes(
+            [host["server_pid"], host["monitor_pid"], guest["monitor_pid"]]
+        )
+        self.server_pid = None
+
+    def test_hooks_ignore_sessions_beyond_the_first_bound_one(self):
+        host = create_pair(
+            provider="test",
+            cwd="/tmp/agent-pair-host",
+            name="Ubuntu Codex",
+            advertise=["127.0.0.1"],
+            ttl_seconds=300,
+        )
+        self.server_pid = host["server_pid"]
+        guest = accept_pair(
+            host["invite"],
+            provider="test",
+            cwd="/tmp/agent-pair-guest",
+            name="macOS Claude",
+        )
+        host_endpoint = load_endpoint(host["endpoint_id"])
+        guest_endpoint = load_endpoint(guest["endpoint_id"])
+
+        owner_payload = {
+            "cwd": "/tmp/agent-pair-guest",
+            "session_id": "owner-session",
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+        }
+        self.assertEqual(hook_stop("test", owner_payload), {})
+        owner_bindings = sorted(runtime_dir().glob("binding-*.json"))
+        self.assertEqual(len(owner_bindings), 1)
+
+        child_payload = {
+            "cwd": "/tmp/agent-pair-guest",
+            "session_id": "print-mode-child",
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+        }
+        child_codes = []
+        child_watcher = threading.Thread(
+            target=lambda: child_codes.append(hook_wait("test", child_payload)),
+            daemon=True,
+        )
+        child_watcher.start()
+        child_watcher.join(timeout=5)
+        self.assertFalse(child_watcher.is_alive(), "hook_wait parked a non-owner session")
+        self.assertEqual(child_codes, [0])
+
+        send_message(host_endpoint, "Mail addressed to the owner session")
+        self.assertTrue(wait_for_messages(guest_endpoint, 8, claim=False))
+        self.assertEqual(hook_stop("test", child_payload), {})
+        self.assertEqual(hook_context("test", child_payload), {})
+        self.assertEqual(hook_stop("test", owner_payload)["decision"], "block")
+        self.assertEqual(sorted(runtime_dir().glob("binding-*.json")), owner_bindings)
+
+        close_pair(guest_endpoint)
+        _reap_spawned_processes(
+            [host["server_pid"], host["monitor_pid"], guest["monitor_pid"]]
+        )
+        self.server_pid = None
+
+    def test_no_wait_environment_keeps_hooks_inert(self):
+        host = create_pair(
+            provider="test",
+            cwd="/tmp/agent-pair-host",
+            name="Ubuntu Codex",
+            advertise=["127.0.0.1"],
+            ttl_seconds=300,
+        )
+        self.server_pid = host["server_pid"]
+        guest = accept_pair(
+            host["invite"],
+            provider="test",
+            cwd="/tmp/agent-pair-guest",
+            name="macOS Claude",
+        )
+        host_endpoint = load_endpoint(host["endpoint_id"])
+        guest_endpoint = load_endpoint(guest["endpoint_id"])
+
+        os.environ["AGENT_PAIR_NO_WAIT"] = "1"
+        self.addCleanup(os.environ.pop, "AGENT_PAIR_NO_WAIT", None)
+        payload = {
+            "cwd": "/tmp/agent-pair-guest",
+            "session_id": "harness-child",
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+        }
+        watcher = threading.Thread(
+            target=lambda: hook_wait("test", payload), daemon=True
+        )
+        watcher.start()
+        watcher.join(timeout=5)
+        self.assertFalse(watcher.is_alive(), "hook_wait parked despite AGENT_PAIR_NO_WAIT")
+
+        send_message(host_endpoint, "Mail that must not surface through hooks")
+        self.assertTrue(wait_for_messages(guest_endpoint, 8, claim=False))
+        self.assertEqual(hook_stop("test", payload), {})
+        self.assertEqual(hook_context("test", payload), {})
+        self.assertEqual(list(runtime_dir().glob("binding-*.json")), [])
+
+        os.environ.pop("AGENT_PAIR_NO_WAIT", None)
+        self.assertEqual(hook_stop("test", payload)["decision"], "block")
 
         close_pair(guest_endpoint)
         _reap_spawned_processes(

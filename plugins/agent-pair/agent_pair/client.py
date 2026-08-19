@@ -870,7 +870,14 @@ def hook_input() -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _hooks_disabled() -> bool:
+    value = os.environ.get("AGENT_PAIR_NO_WAIT", "").strip().lower()
+    return value not in {"", "0", "false", "no"}
+
+
 def hook_endpoint(provider: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    if _hooks_disabled():
+        return None
     cwd = str(payload.get("cwd") or os.getcwd())
     session_id = str(payload.get("session_id") or "")
     try:
@@ -912,10 +919,17 @@ def _bound_hook_endpoint(provider: str, cwd: str, session_id: str) -> dict[str, 
             bound_ids.add(str(read_json(binding_path)["endpoint_id"]))
         except (AgentPairError, KeyError):
             continue
+    # An endpoint some session already bound belongs to that session. Hooks in
+    # every other session sharing the directory — print-mode children, second
+    # terminals — must stay inert instead of adopting it: adopting is what
+    # parked headless children for hours and injected inbox nags into their
+    # final messages.
     endpoint = next(
         (item for item in rows if str(item["endpoint_id"]) not in bound_ids),
-        rows[0],
+        None,
     )
+    if endpoint is None:
+        raise AgentPairError("Every active endpoint is bound to another session")
     atomic_write_json(
         path,
         {

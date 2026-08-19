@@ -118,3 +118,9 @@ an idle Codex CLI can always be reawakened.
 
 Hooks expose only the waiting count and retrieval command. Retrieve bodies
 through `inbox --claim`; never place raw peer bodies in hook output.
+
+Hooks act only in the session that first bound the pair, normally the one that
+ran `host` or `accept`. Every other session in the same directory — `claude -p`
+children, second terminals — gets no inbox nag and no reawaken park. A harness
+that spawns sessions in a paired directory can also set `AGENT_PAIR_NO_WAIT=1`
+in their environment to keep every pair hook inert there.
