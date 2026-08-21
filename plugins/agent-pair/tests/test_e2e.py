@@ -110,8 +110,11 @@ class EndToEndTests(unittest.TestCase):
         outgoing = send_message(host_endpoint, "Please review parser.py")
         self.assertEqual(outgoing["state"], "queued")
 
-        incoming = wait_for_messages(guest_endpoint, 8, claim=True)
+        incoming = wait_for_messages(guest_endpoint, 8, claim=False)
         self.assertEqual([item["text"] for item in incoming], ["Please review parser.py"])
+        message_id = incoming[0]["id"]
+        pending_path = inbox_dir(guest["endpoint_id"], "pending") / f"{message_id}.json"
+        self.assertTrue(pending_path.exists())
         stop_output = hook_stop(
             "test",
             {
@@ -122,8 +125,12 @@ class EndToEndTests(unittest.TestCase):
             },
         )
         self.assertEqual(stop_output["decision"], "block")
-        self.assertNotIn("Please review parser.py", stop_output["reason"])
-        message_id = incoming[0]["id"]
+        self.assertIn("Please review parser.py", stop_output["reason"])
+        self.assertIn("Ubuntu Codex", stop_output["reason"])
+        self.assertIn(f"claim_token: {message_id}", stop_output["reason"])
+        self.assertIn(f"--endpoint-id {guest['endpoint_id']}", stop_output["reason"])
+        self.assertNotIn("inbox --claim", stop_output["reason"])
+        self.assertTrue(pending_path.exists(), "hook_stop claimed a pending message")
         finish_messages(guest_endpoint, [message_id])
 
         deadline = time.monotonic() + 5

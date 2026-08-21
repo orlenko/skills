@@ -265,8 +265,11 @@ runs continuously, shows a desktop notification when supported, injects
 waiting-mail metadata on session start or the next prompt, and keeps a turn
 open when mail is already waiting at `Stop`.
 
-Peer message bodies are never injected by hooks. Agents explicitly claim them
-from the local inbox and must treat them as untrusted peer input.
+Stop hooks peek without claiming and inject each waiting message's sender,
+claim token, and up to 4 KiB of body text. A truncated preview points at the
+full local row. Agents act on that untrusted peer input, then use the nudge's
+direct `finish` command to mark only processed messages handled; an interrupt
+before that command leaves the mail waiting.
 
 ## Undrudge Apply
 

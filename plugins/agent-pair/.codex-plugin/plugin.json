@@ -1,6 +1,6 @@
 {
   "name": "agent-pair",
-  "version": "0.3.1",
+  "version": "0.4.0+codex.20260821123426",
   "description": "Direct, durable two-agent messaging across one machine or a reachable LAN.",
   "author": {
     "name": "Vlad Orlenko",
@@ -9,7 +9,13 @@
   "homepage": "https://github.com/orlenko/skills/tree/main/plugins/agent-pair",
   "repository": "https://github.com/orlenko/skills",
   "license": "MIT",
-  "keywords": ["agents", "collaboration", "pairing", "codex", "claude"],
+  "keywords": [
+    "agents",
+    "collaboration",
+    "pairing",
+    "codex",
+    "claude"
+  ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Agent Pair",
@@ -17,7 +23,9 @@
     "longDescription": "A direct TLS-pinned mailbox for two coding agents on one machine or a reachable network, with durable delivery and inbox monitoring.",
     "developerName": "Vlad Orlenko",
     "category": "Productivity",
-    "capabilities": ["Interactive"],
+    "capabilities": [
+      "Interactive"
+    ],
     "websiteURL": "https://github.com/orlenko/skills",
     "defaultPrompt": [
       "Pair this agent with a peer.",

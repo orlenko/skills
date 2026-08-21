@@ -1,5 +1,5 @@
 {
-  "description": "Surface Agent Pair inbox metadata to Codex without exposing message bodies.",
+  "description": "Surface Agent Pair inbox metadata and unclaimed Stop-hook body previews to Codex.",
   "hooks": {
     "SessionStart": [
       {

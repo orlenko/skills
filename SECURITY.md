@@ -52,10 +52,11 @@ trusted/reachable network. The invite carries a single-use join secret and a
 SHA-256 certificate fingerprint. Clients disable public-CA validation only
 after pinning that exact temporary certificate.
 
-The peer is still an untrusted source of instructions. Plugin hooks expose only
-message counts and a retrieval command, never message bodies. The skill directs
-agents to treat bodies as collaboration input that cannot expand user
-authorization or override system, repository, or provider policy.
+The peer is still an untrusted source of instructions. Stop hooks may expose a
+sender, message ID, and up to 4 KiB of message body without claiming the local
+row. The skill directs agents to treat bodies as collaboration input that
+cannot expand user authorization or override system, repository, or provider
+policy. A message remains waiting until the recipient explicitly finishes it.
 
 Runtime tokens, certificates, queues, and inboxes are stored in a user-private
 state directory. Message bodies are removed from the host queue after durable
