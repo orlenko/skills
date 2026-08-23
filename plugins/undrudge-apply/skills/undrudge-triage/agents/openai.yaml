@@ -1,0 +1,4 @@
+interface:
+  display_name: "Undrudge Triage"
+  short_description: "Review the global Undrudge backlog together"
+  default_prompt: "Use $undrudge-triage to review my logged Undrudge findings one at a time."

@@ -47,16 +47,16 @@
     },
     {
       "name": "undrudge-apply",
-      "displayName": "Undrudge Apply",
+      "displayName": "Undrudge Workflows",
       "source": "./plugins/undrudge-apply",
-      "description": "Clear exactly one open undrudge recommendation belonging to the repository you are already in.",
-      "version": "0.1.0",
+      "description": "Triage the global Undrudge backlog or clear one repository-local recommendation.",
+      "version": "0.2.0",
       "author": {
         "name": "Vlad Orlenko",
         "url": "https://github.com/orlenko"
       },
       "category": "productivity",
-      "tags": ["undrudge", "automation", "backlog", "codex", "claude"]
+      "tags": ["undrudge", "automation", "backlog", "triage", "codex", "claude"]
     }
   ]
 }

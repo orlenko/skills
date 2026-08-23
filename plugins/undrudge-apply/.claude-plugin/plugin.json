@@ -1,8 +1,8 @@
 {
   "name": "undrudge-apply",
-  "displayName": "Undrudge Apply",
-  "version": "0.1.0",
-  "description": "Clear exactly one open undrudge recommendation belonging to the repository you are already in.",
+  "displayName": "Undrudge Workflows",
+  "version": "0.2.0",
+  "description": "Triage the global Undrudge backlog or clear one repository-local recommendation.",
   "author": {
     "name": "Vlad Orlenko",
     "url": "https://github.com/orlenko"

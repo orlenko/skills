@@ -271,7 +271,7 @@ full local row. Agents act on that untrusted peer input, then use the nudge's
 direct `finish` command to mark only processed messages handled; an interrupt
 before that command leaves the mail waiting.
 
-## Undrudge Apply
+## Undrudge Workflows
 
 `undrudge-apply` is the acting half of [`undrudge`](https://github.com/orlenko/undrudge),
 a background watchman that mines shell history and agent transcripts for
@@ -291,8 +291,21 @@ the recommendation it would have taken, because losing that observation is the
 problem it exists to solve.
 
 It requires the `undrudge` CLI on `PATH` and a git repository. Cross-cutting and
-agent-global recommendations are out of scope; those are triaged by hand through
-`undrudge browse` and `undrudge copy`.
+agent-global recommendations are out of scope for `undrudge-apply`.
+
+The same plugin also carries `undrudge-triage`, a cross-agent conversation for
+the global backlog. It loads every logged finding as JSON, selects the most
+valuable-looking one, reads and validates it against current reality, then asks
+the user to implement, dismiss, hand off, or defer. It recognizes duplicate
+daily and weekly findings and recommends retaining one canonical copy.
+
+Triage never implements work or opens pull requests. It changes status only
+after explicit approval: dismissals become `dismissed`, confirmed external
+handoffs become `dispatched`, and defer leaves the finding untouched. Repo-local
+implementation stays in `undrudge-apply`.
+
+Triage requires an `undrudge` release whose `list` command supports `--json`;
+it fails closed without changing status when that capability is unavailable.
 
 ### Install and invoke
 
@@ -320,6 +333,13 @@ Claude: /undrudge-apply:undrudge-apply
 Pass a rec id to work that recommendation instead of the best match, and re-run
 to take the next one.
 
+From any session, review the global backlog one finding at a time:
+
+```text
+Codex: $undrudge-apply:undrudge-triage
+Claude: /undrudge-apply:undrudge-triage
+```
+
 ## Repository layout
 
 ```text
@@ -344,6 +364,7 @@ plugins/undrudge-apply/
   .codex-plugin/plugin.json
   .claude-plugin/plugin.json
   skills/undrudge-apply/SKILL.md
+  skills/undrudge-triage/SKILL.md
 ```
 
 ## Development
@@ -357,6 +378,8 @@ python3 path/to/skill-creator/scripts/quick_validate.py \
   plugins/agent-observer/skills/observe
 python3 path/to/skill-creator/scripts/quick_validate.py \
   plugins/undrudge-apply/skills/undrudge-apply
+python3 path/to/skill-creator/scripts/quick_validate.py \
+  plugins/undrudge-apply/skills/undrudge-triage
 python3 path/to/plugin-creator/scripts/validate_plugin.py \
   plugins/agent-pair
 python3 path/to/plugin-creator/scripts/validate_plugin.py \

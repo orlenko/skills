@@ -1,7 +1,7 @@
 {
   "name": "undrudge-apply",
-  "version": "0.1.0",
-  "description": "Clear exactly one open undrudge recommendation belonging to the repository you are already in.",
+  "version": "0.2.0+codex.20260823174727",
+  "description": "Triage the global Undrudge backlog or clear one repository-local recommendation.",
   "author": {
     "name": "Vlad Orlenko",
     "url": "https://github.com/orlenko"
@@ -9,19 +9,28 @@
   "homepage": "https://github.com/orlenko/skills/tree/main/plugins/undrudge-apply",
   "repository": "https://github.com/orlenko/skills",
   "license": "MIT",
-  "keywords": ["undrudge", "automation", "backlog", "codex", "claude"],
+  "keywords": [
+    "undrudge",
+    "automation",
+    "backlog",
+    "codex",
+    "claude"
+  ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "Undrudge Apply",
-    "shortDescription": "Clear one undrudge rec for the repo you are in.",
-    "longDescription": "Asks undrudge which open recommendations belong to the current repository, verifies the top one against the live tree, and closes exactly one out: implemented behind a draft PR, dismissed with a reason, or handed back as needing a human.",
+    "displayName": "Undrudge Workflows",
+    "shortDescription": "Triage globally or clear one repo-local finding.",
+    "longDescription": "Reviews the global Undrudge backlog with explicit approval for every status mutation, or verifies and clears exactly one recommendation belonging to the current repository.",
     "developerName": "Vlad Orlenko",
     "category": "Productivity",
-    "capabilities": ["Interactive"],
+    "capabilities": [
+      "Interactive"
+    ],
     "websiteURL": "https://github.com/orlenko/skills",
     "defaultPrompt": [
       "Clear one undrudge recommendation for this repo.",
       "What has undrudge queued for the repo I am in?",
+      "Triage my logged Undrudge findings one at a time.",
       "Apply undrudge rec ea50daa0180d."
     ]
   }
