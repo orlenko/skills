@@ -1,0 +1,7 @@
+interface:
+  display_name: "Agent Orchestra"
+  short_description: "Coordinate many coding agents through a durable hub"
+  default_prompt: "Use $orchestra to join or run an Agent Orchestra."
+
+policy:
+  allow_implicit_invocation: true

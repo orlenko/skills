@@ -271,6 +271,87 @@ full local row. Agents act on that untrusted peer input, then use the nudge's
 direct `finish` command to mark only processed messages handled; an interrupt
 before that command leaves the mail waiting.
 
+## Agent Orchestra
+
+`agent-orchestra` carries durable text mail between any number of agent sessions
+on any number of machines. One hub process holds every mailbox, the member tree,
+and a task view derived from the messages themselves. Members connect outbound
+to the hub over TLS pinned by a single-use `or1.` invite, so only the hub has to
+be reachable. No relay and no account are involved.
+
+Three roles:
+
+- **Hub.** One detached process, one SQLite store. It never reads bodies and
+  never routes on content. It runs on the always-on machine and is never the
+  conductor. `hub start` creates no membership, so the session that starts a hub
+  can neither send nor receive.
+- **Conductor.** One member at a time, on the machine the human drives. It owns
+  the `conductor` alias, mints invites of any role, reassigns the role, kicks
+  members, and closes the orchestra.
+- **Player.** Every other member. A player mints invites for its own children,
+  which gives the tree behind the `parent`, `children`, and `siblings` aliases.
+
+Python 3.10+ and `openssl` are required.
+
+### Install from GitHub
+
+```sh
+claude plugin marketplace add orlenko/skills
+claude plugin install agent-orchestra@orlenko-skills
+
+codex plugin marketplace add orlenko/skills
+codex plugin add agent-orchestra@orlenko-skills
+```
+
+Start a new session after installation so skills and hooks are loaded. Codex
+will ask you to review and trust the plugin hooks before they can run.
+
+### Bring one up
+
+1. On the always-on machine, run `/agent-orchestra:orchestra hub` and copy the
+   printed `or1.` conductor invite.
+2. On the conductor machine, run `/agent-orchestra:orchestra or1....` with that
+   invite.
+3. From the conductor, run `/agent-orchestra:orchestra invite` once per player
+   and hand each string to its machine.
+4. Each player redeems its own invite the same way the conductor did, and mints
+   child invites with the same command.
+
+Use `$agent-orchestra:orchestra ...` in Codex. Do not post an unexpired invite
+publicly; it carries a single-use join secret.
+
+### Commands
+
+```text
+$agent-orchestra:orchestra send ACT assign ...
+$agent-orchestra:orchestra inbox
+$agent-orchestra:orchestra status
+$agent-orchestra:orchestra members
+$agent-orchestra:orchestra tasks
+$agent-orchestra:orchestra leave
+```
+
+The bundled CLI adds `hub start|ensure|status|list|unit|invite|conductor|kick|close`
+plus `join`, `wait`, `finish`, `events`, `message`, and `close`:
+
+```sh
+plugins/agent-orchestra/bin/agent-orchestra --help
+```
+
+Runtime state defaults to `~/.local/state/agent-orchestra` or
+`$XDG_STATE_HOME/agent-orchestra`. Set `AGENT_ORCHESTRA_HOME` to isolate tests.
+State files are private to the current OS user.
+
+### Wake behavior
+
+Each member runs a monitor that long-polls the hub, writes every message into a
+durable local inbox before acknowledging it, replays a local outbox, and sends
+presence heartbeats. Claude Code starts a background `Stop` hook in the session
+that ran `join`, and when mail arrives that hook exits with code 2 so
+`asyncRewake` can process the inbox while the session is idle. Codex parses but
+does not run asynchronous hooks, so its monitor keeps running and it gets
+lifecycle context plus a best-effort desktop notification instead.
+
 ## Undrudge Workflows
 
 `undrudge-apply` is the acting half of [`undrudge`](https://github.com/orlenko/undrudge),

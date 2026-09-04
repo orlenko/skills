@@ -1,6 +1,6 @@
 # Agent Orchestra plan
 
-Status: agreed plan, 2026-09-04. Nothing here is built yet.
+Status: agreed plan, 2026-09-04. Milestone 1 shipped 2026-09-04 as agent-orchestra 0.1.0; see agent-orchestra-design.md for the build contract.
 
 ## Goal
 

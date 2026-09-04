@@ -1,0 +1,40 @@
+{
+  "description": "Surface Agent Orchestra inbox metadata and unclaimed Stop-hook body previews to Codex.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agent-orchestra hook-context --provider codex",
+            "timeout": 5,
+            "additionalContextLimit": 500
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agent-orchestra hook-context --provider codex",
+            "timeout": 5,
+            "additionalContextLimit": 500
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agent-orchestra hook-stop --provider codex",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

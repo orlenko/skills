@@ -20,6 +20,19 @@
       "tags": ["agents", "collaboration", "pairing"]
     },
     {
+      "name": "agent-orchestra",
+      "displayName": "Agent Orchestra",
+      "source": "./plugins/agent-orchestra",
+      "description": "Durable many-agent messaging with a hub, a conductor, and players across machines.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Vlad Orlenko",
+        "url": "https://github.com/orlenko"
+      },
+      "category": "productivity",
+      "tags": ["agents", "orchestra", "coordination"]
+    },
+    {
       "name": "design-skeptic",
       "displayName": "Design Skeptic",
       "source": "./plugins/design-skeptic",

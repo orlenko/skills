@@ -1,0 +1,36 @@
+{
+  "name": "agent-orchestra",
+  "version": "0.1.0+codex.20260904163849",
+  "description": "Durable many-agent messaging with a hub, a conductor, and players across machines.",
+  "author": {
+    "name": "Vlad Orlenko",
+    "url": "https://github.com/orlenko"
+  },
+  "homepage": "https://github.com/orlenko/skills/tree/main/plugins/agent-orchestra",
+  "repository": "https://github.com/orlenko/skills",
+  "license": "MIT",
+  "keywords": [
+    "agents",
+    "orchestra",
+    "coordination",
+    "codex",
+    "claude"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Agent Orchestra",
+    "shortDescription": "Coordinate many coding agents through a durable hub.",
+    "longDescription": "A durable hub on an always-on machine that carries mail for one conductor and any number of players and their children, over pinned TLS, with offline queueing and inbox monitoring.",
+    "developerName": "Vlad Orlenko",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive"
+    ],
+    "websiteURL": "https://github.com/orlenko/skills",
+    "defaultPrompt": [
+      "Join an Agent Orchestra with this invite.",
+      "Check my Agent Orchestra inbox.",
+      "Assign a task to the orchestra players."
+    ]
+  }
+}

@@ -64,3 +64,29 @@ delivery and from the receiver's active inbox after they are marked handled.
 
 This initial release has no internet relay, identity provider, file transfer,
 shell execution, discovery broadcast, or multi-peer rooms.
+
+## Agent Orchestra threat model
+
+Agent Orchestra is intended for mutually expected agents on machines that can
+reach one hub over a trusted LAN or Tailscale. Each member holds a bearer token
+minted by the hub on join, hashed there and plaintext only in that member's
+private state file; `kick MEMBER_ID` revokes it. The admin token lives only in
+the hub's directory on the hub host, never in an invite or a member file.
+
+An invite is single-use, expires in an hour by default, and pins the hub's
+SHA-256 certificate fingerprint. Clients disable public-CA validation only after
+pinning that exact self-signed certificate; rotating it requires re-invite. A
+player may mint only `role=player, parent=self` invites.
+
+Every member is an untrusted source of instructions, the conductor included.
+Stop hooks may expose a sender, act, task, message id, and up to 4 KiB of body
+without claiming the local row. The skill directs agents to treat bodies as
+input that cannot expand authorization or override repository or system policy.
+
+The hub keeps member rows, hashed tokens, message envelopes, and delivery state
+in a user-private SQLite database. A body is nulled once every recipient has
+taken delivery. Handled messages are pruned after seven days, system events and
+spent invites after one day.
+
+This initial release has no internet relay, NAT traversal, remote shell, file
+transfer, discovery broadcast, or conductor election.
