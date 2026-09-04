@@ -225,6 +225,52 @@ class HubStoreTests(TempHomeTests):
         self.assertEqual(orphan.exception.status, 409)
         self.assertEqual(str(orphan.exception), "No parent")
 
+    def test_parent_alias_follows_a_conductor_handover(self):
+        conductor_a = self._join("A", role="conductor")
+        player_one = self._join("P1", parent=conductor_a["member_id"])
+        player_two = self._join("P2", parent=conductor_a["member_id"])
+        child = self._join("C", parent=player_one["member_id"])
+        self.store.leave(conductor_a["row"])
+
+        with self.assertRaises(APIError) as empty_seat:
+            self._send(player_one, ["parent"])
+        self.assertEqual(empty_seat.exception.status, 409)
+        self.assertEqual(str(empty_seat.exception), "No parent")
+
+        # The invite A minted before leaving still names A as the parent.
+        conductor_b = self._join("B", role="conductor", parent=conductor_a["member_id"])
+        self.assertIsNone(conductor_b["parent"])
+        self.assertIsNone(conductor_b["row"]["parent"])
+
+        self.assertEqual(
+            [item["id"] for item in self._send(player_one, ["parent"])["recipients"]],
+            [conductor_b["member_id"]],
+        )
+        self.assertEqual(
+            sorted(item["id"] for item in self._send(conductor_b, ["children"])["recipients"]),
+            sorted([player_one["member_id"], player_two["member_id"]]),
+        )
+        self.assertEqual(
+            [item["id"] for item in self._send(player_one, ["siblings"])["recipients"]],
+            [player_two["member_id"]],
+        )
+        self.assertEqual(
+            [item["id"] for item in self._send(child, ["parent"])["recipients"]],
+            [player_one["member_id"]],
+        )
+        with self.assertRaises(APIError) as seated:
+            self._send(conductor_b, ["parent"])
+        self.assertEqual(seated.exception.status, 409)
+        self.assertEqual(str(seated.exception), "No parent")
+
+    def test_a_conductor_invite_never_carries_a_parent(self):
+        conductor = self._join("C", role="conductor")
+        minted = self.store.invite(
+            {"kind": "member", **conductor["row"]}, {"role": "conductor", "parent": "self"}
+        )
+        self.assertIsNone(minted["parent"])
+        self.assertIsNone(decode_invite(minted["invite"])["parent"])
+
     def test_send_is_idempotent_for_the_same_sender_and_body(self):
         conductor, player_a, _b, _d = self._orchestra()
         message_id = core.new_message_id()

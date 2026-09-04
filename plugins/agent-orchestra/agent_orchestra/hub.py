@@ -363,6 +363,9 @@ class HubStore:
             member_id = new_member_id()
             member_token = token(32)
             moment = now()
+            # A conductor has no parent, so an invite that carries one (minted
+            # by the member who then handed the seat over) never stores it.
+            parent = None if role == "conductor" else row["parent"]
             self.db.execute(
                 "INSERT INTO members (id, name, provider, role, parent, token_hash, joined_at,"
                 " last_seen_at, presence, presence_changed_at, revoked_at, revoked_reason)"
@@ -372,7 +375,7 @@ class HubStore:
                     sanitize_name(row["name"] or clean_name),
                     clean_provider,
                     role,
-                    row["parent"],
+                    parent,
                     secret_hash(member_token),
                     moment,
                     moment,
@@ -477,6 +480,10 @@ class HubStore:
         is_admin = principal.get("kind") == "admin"
         with self.changed:
             self._live(_principal_id(principal))
+            if role == "conductor":
+                # A conductor has no parent, so a conductor invite never carries
+                # one, whatever the caller asked for.
+                parent = None
             if parent == "self":
                 if is_admin:
                     raise APIError(400, "The hub admin has no self to use as a parent")
@@ -604,9 +611,28 @@ class HubStore:
                 "recipients": [{"id": recipient, "state": "queued"} for recipient in recipients],
             }
 
+    def _effective_parent(
+        self,
+        member: dict[str, Any],
+        active: dict[str, dict[str, Any]],
+        conductor_id: str | None,
+    ) -> str | None:
+        """The member that `parent`, `children`, and `siblings` all treat as
+        this member's parent. A stored parent counts only while it is active;
+        otherwise a player falls back to the conductor, so a handover never
+        strands anyone under the member who left. The conductor has no parent."""
+        if member["id"] == conductor_id:
+            return None
+        parent = member.get("parent")
+        if parent and parent in active:
+            return parent
+        return conductor_id
+
     def _resolve(self, sender: dict[str, Any], tokens: list[str]) -> list[str]:
         active = {row["id"]: row for row in self._members(active_only=True)}
         sender_id = sender["id"]
+        conductor_id = self._conductor_id()
+        sender_parent = self._effective_parent(sender, active, conductor_id)
         resolved: list[str] = []
 
         def add(member_id: str) -> None:
@@ -616,24 +642,26 @@ class HubStore:
         for raw in tokens:
             entry = str(raw).strip()
             if entry == "conductor":
-                conductor_id = self._conductor_id()
                 if not conductor_id:
                     raise APIError(409, "No conductor")
                 if conductor_id == sender_id:
                     raise APIError(400, "You are the conductor")
                 add(conductor_id)
             elif entry == "parent":
-                parent = sender.get("parent")
-                if not parent or parent not in active:
+                if not sender_parent:
                     raise APIError(409, "No parent")
-                add(parent)
+                add(sender_parent)
             elif entry == "children":
                 for member_id, row in active.items():
-                    if row["parent"] == sender_id:
+                    if member_id == sender_id:
+                        continue
+                    if self._effective_parent(row, active, conductor_id) == sender_id:
                         add(member_id)
             elif entry == "siblings":
                 for member_id, row in active.items():
-                    if member_id != sender_id and row["parent"] == sender.get("parent"):
+                    if member_id == sender_id:
+                        continue
+                    if self._effective_parent(row, active, conductor_id) == sender_parent:
                         add(member_id)
             elif entry == "all":
                 for member_id in active:

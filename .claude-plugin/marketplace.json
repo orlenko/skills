@@ -24,7 +24,7 @@
       "displayName": "Agent Orchestra",
       "source": "./plugins/agent-orchestra",
       "description": "Durable many-agent messaging with a hub, a conductor, and players across machines.",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": {
         "name": "Vlad Orlenko",
         "url": "https://github.com/orlenko"

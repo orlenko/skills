@@ -211,7 +211,8 @@ therefore always one line.
 `{orchestra_id, member_id, token, role, parent, conductor_id, name, hub: {name, endpoints, fingerprint}}`.
 403 when the secret is unknown, used, or expired. 409 `Orchestra already has a
 conductor` when the invite role is `conductor` and an unrevoked conductor
-exists. Marks the invite used, inserts the member with `presence connected`,
+exists. Marks the invite used, inserts the member with `presence connected`
+(a conductor is always stored with `parent` NULL whatever the invite says),
 sets `orchestra.conductor_id` for a conductor, and emits `joined` to every
 other active member.
 
@@ -242,8 +243,11 @@ Checks in order: `validate_fields`; text non-empty and within
 same sender with the same `body_sha256` returns the current `message_status`
 (idempotent), any other reuse is 409. Alias resolution, relative to the
 sender: `conductor` -> `orchestra.conductor_id` (409 `No conductor` if null or
-revoked, 400 if it is the sender); `parent` -> sender's parent (409 `No parent`
-if null); `children` -> active members whose parent is the sender;
+revoked, 400 if it is the sender); `parent` -> the sender's parent if it is an active member, otherwise the
+current conductor (409 `No parent` only when neither exists; the conductor
+itself has no parent); `children` -> active members whose parent is the
+sender, and for the conductor also every active player whose parent is null
+or revoked, so a handover never orphans anyone;
 `siblings` -> active members sharing the sender's parent, excluding the
 sender; `all` -> every active member except the sender; an explicit id must be
 an active member other than the sender (400 `Unknown recipient: ...`). The
