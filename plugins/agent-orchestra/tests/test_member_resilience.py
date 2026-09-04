@@ -187,6 +187,32 @@ class ResilienceTestCase(unittest.TestCase):
         self.assertEqual(rejected["state"], "rejected")
         self.assertEqual(len(list(bucket_dir(player_id, "outbox").glob("*.json"))), 0)
 
+    def test_a_revoked_row_reports_its_reason_as_presence(self):
+        conductor, leaver = self._topology()
+        minted = member_module.invite(conductor, role="player", parent="self")
+        kicked = self._join(minted["invite"], "player-b", "Player B")
+        conductor_id = str(conductor["member_id"])
+        leaver_id = str(leaver["member_id"])
+        kicked_id = str(kicked["member_id"])
+
+        self.assertEqual(member_module.leave(leaver)["state"], "left")
+        member_module.kick(conductor, kicked_id, reason="reassigned")
+
+        roster = {
+            str(row["id"]): row for row in member_module.members(conductor)["members"]
+        }
+        self.assertEqual(roster[leaver_id]["presence"], "left")
+        self.assertEqual(roster[leaver_id]["revoked_reason"], "left")
+        self.assertEqual(roster[kicked_id]["presence"], "kicked")
+        self.assertEqual(roster[kicked_id]["revoked_reason"], "kicked")
+        self.assertEqual(roster[conductor_id]["presence"], "connected")
+
+        summarized = {
+            str(row["id"]): row for row in member_module.status(conductor)["members"]
+        }
+        self.assertEqual(summarized[leaver_id]["presence"], "left")
+        self.assertEqual(summarized[kicked_id]["presence"], "kicked")
+
     def test_conductor_handover_reaches_both_member_files(self):
         conductor, player = self._topology()
         conductor_id = str(conductor["member_id"])

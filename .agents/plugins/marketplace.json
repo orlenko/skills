@@ -18,7 +18,10 @@
     },
     {
       "name": "agent-orchestra",
-      "source": "./plugins/agent-orchestra",
+      "source": {
+        "source": "local",
+        "path": "./plugins/agent-orchestra"
+      },
       "policy": {
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"

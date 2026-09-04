@@ -806,6 +806,14 @@ def members(member: dict[str, Any]) -> dict[str, Any]:
         _self_row(result, str(member["member_id"])),
         result.get("conductor_id", _MISSING),
     )
+    # The hub keeps `presence` as the heartbeat state, so a revoked row still
+    # reads `connected` there. Callers read finality from `presence`, so the
+    # roster ships the same summary `status` does.
+    result["members"] = [
+        _presence_summary(row)
+        for row in (result.get("members") or [])
+        if isinstance(row, dict)
+    ]
     return result
 
 
