@@ -382,6 +382,17 @@ pending/  claimed/  done/  outbox/  sent/  events/     one JSON file per message
 runtime/<member_id>.monitor.json   {pid, started_at, updated_at, last_error, last_error_at}
 ```
 
+Two clocks, never one. `sent_at` is stamped by the hub when it accepts a
+message; `received_at` is stamped by the receiving member when it stores the
+row. They come from different machines, so their difference measures clock skew
+plus transit and can be negative — a hub running ~90 ms ahead of a member makes
+every message on that member read `received_at < sent_at`. That is skew, not
+corruption. Nothing compares the two: ordering uses `sent_at` with
+`received_at` only as a tie-break (`_event_sort_key`), the hook nudge and
+`_newest_presence_event` fall back from one to the other, and every staleness
+check compares one clock against itself. Do not add a rule that treats
+`received_at < sent_at` as an error.
+
 Bucket records: `pending`/`claimed` hold the envelope plus `received_at` and
 `local_state`; `done` holds `{id, from, act, task, sent_at, received_at,
 handled_at, sync_state, sync_error, synced_at, sync_attempts,
