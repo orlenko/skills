@@ -407,6 +407,12 @@ def hook_wait(provider: str, payload: dict[str, Any]) -> int:
                     ensure_monitor(member)
                 except OrchestraError:
                     pass
+                # A session parked here is durable by construction, so it is
+                # the right owner of the seat it is watching. Another session
+                # may have taken that seat and then ended — a producer run
+                # under a deadline, a resumed process — and the reclaim costs
+                # one kill(pid, 0) while the recorded owner is alive.
+                member = claim_ownership(member)
                 next_monitor_check = time.monotonic() + _WAIT_MONITOR_SECONDS
             # Events land in events/ and never in pending/, so a presence line
             # can never wake the session; only real member mail does.

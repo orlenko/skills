@@ -430,6 +430,47 @@ class AgentAncestorTests(unittest.TestCase):
         )
         self.assertEqual(agent_session_pid(200), 50)
 
+    def test_a_wrapped_print_run_never_takes_a_seat(self):
+        # The fleet producer, as `ps` reports it on the ops box.
+        self._process_tree(
+            {
+                200: ("100", "python3 bin/agent-orchestra status"),
+                100: ("50", self.TOOL_SHELL),
+                50: ("40", "/home/vlad/.local/bin/aiq run claude -- -p Launch the workflow"),
+                40: ("10", "timeout 5400 aiq run claude -- -p Launch the workflow"),
+                10: ("1", "bash /run/user/1000/fleet-run-sre.sh ops"),
+            }
+        )
+        self.assertEqual(agent_ancestor_pid(200), 50)
+        self.assertIsNone(agent_session_pid(200))
+
+    def test_a_deadline_disqualifies_a_session_that_reads_as_ordinary(self):
+        # A session the producer spawns inside its own tree says nothing about
+        # a clock in its own arguments, and dies on that clock all the same.
+        self._process_tree(
+            {
+                200: ("100", "python3 bin/agent-orchestra status"),
+                100: ("60", self.TOOL_SHELL),
+                60: ("50", '/home/vlad/.local/bin/claude --settings {"hooks":{}}'),
+                50: ("40", "/home/vlad/.local/bin/aiq run claude -- -p Launch the workflow"),
+                40: ("10", "timeout 5400 aiq run claude -- -p Launch the workflow"),
+                10: ("1", "bash /run/user/1000/fleet-run-sre.sh ops"),
+            }
+        )
+        self.assertEqual(agent_ancestor_pid(200), 60)
+        self.assertIsNone(agent_session_pid(200))
+
+    def test_a_tmux_session_keeps_its_seat(self):
+        self._process_tree(
+            {
+                200: ("100", "python3 bin/agent-orchestra status"),
+                100: ("50", self.TOOL_SHELL),
+                50: ("10", '/home/vlad/.local/bin/claude --settings {"hooks":{}}'),
+                10: ("1", "tmux new-session -d -s ops-dev -n dev -c /home/vlad/code/ops"),
+            }
+        )
+        self.assertEqual(agent_session_pid(200), 50)
+
     def test_a_settings_blob_is_data_not_flags(self):
         self._process_tree(
             {

@@ -535,9 +535,13 @@ Copy the hook half of `plugins/agent-pair/agent_pair/client.py`
   state paths, and ownership anchored there names a process that exits with
   the command. `core.agent_ancestor_pid()` implements it and returns null
   when `ps` fails or nothing matches. A hook computes the same value for
-  itself. `core.agent_session_pid()` is the same pid, minus a run that ends
-  with its task: `claude -p`, `claude --print`, `codex exec`. Only a session
-  pid may take a seat over.
+  itself. `core.agent_session_pid()` is the same pid, minus a run that ends:
+  one whose own arguments say so (`claude -p`, `claude --print`, `codex exec`,
+  read with both vocabularies when a wrapper name says neither agent), and one
+  with a deadline supervisor (`AGENT_DEADLINE_COMMANDS`: `timeout`,
+  `gtimeout`) anywhere above it. A deadline covers a whole subtree, so a
+  session a producer spawns inside `timeout 5400 …` is refused however
+  ordinary its own arguments look. Only a session pid may take a seat over.
 - Repair. `member.claim_ownership()` rewrites a membership's `owner_pid` to
   the session running now when the recorded owner is dead, and
   `select_member()` calls it, so every CLI command repairs the seat. A live
@@ -549,6 +553,10 @@ Copy the hook half of `plugins/agent-pair/agent_pair/client.py`
   process that is replaced — a resumed session, a quota migration — inherits
   a seat pointing at a dead pid, no hook matches it again, and only a typed
   prompt can adopt it back: an unattended fleet goes deaf and stays deaf.
+- Reclaim while parked. `hook_wait` calls `claim_ownership` on its monitor
+  cadence, so a session parked on a seat takes it back when the recorded owner
+  dies. A parked session is durable by construction, and the check costs one
+  `kill(pid, 0)` while that owner is alive.
 - Claim rule, in order: (1) a `session_id` with a binding uses that member if
   it is unclosed, and rewrites the record when it names another pid; (2)
   otherwise, among unclosed members for this instance key that no live

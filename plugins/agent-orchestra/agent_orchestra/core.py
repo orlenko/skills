@@ -34,10 +34,15 @@ AGENT_SHELL_COMMANDS = frozenset(
     {"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "ash", "busybox"}
 )
 # `claude -p` and `codex exec` run one task and exit. codex spells `-p` for
-# `--profile`, so only its subcommand marks a one-shot run there; a wrapper
-# whose name says neither agent is read without the ambiguous short flag.
+# `--profile`, so its own name buys it the narrower reading; a wrapper name
+# says nothing, and there both vocabularies apply.
 AGENT_ONE_SHOT_CLAUDE = frozenset({"-p", "--print"})
 AGENT_ONE_SHOT_CODEX = frozenset({"exec"})
+# A process with a deadline is a bad owner while it is still alive: the seat it
+# takes dies when the clock runs out. `timeout 5400 aiq run claude -- -p …` is
+# how one fleet runs its producer, and every agent process inside that tree
+# inherits the same deadline whatever its own arguments say.
+AGENT_DEADLINE_COMMANDS = frozenset({"timeout", "gtimeout"})
 
 BUCKETS = ("pending", "claimed", "done", "outbox", "sent", "events")
 
@@ -381,7 +386,10 @@ def _is_one_shot_agent(pid: int) -> bool:
     elif "claude" in command:
         one_shot = AGENT_ONE_SHOT_CLAUDE
     else:
-        one_shot = AGENT_ONE_SHOT_CODEX | (AGENT_ONE_SHOT_CLAUDE - {"-p"})
+        # A wrapper: `aiq run claude -- -p …`, `timeout 5400 claude -p …`. Its
+        # own name says nothing, so both vocabularies apply. A missed repair
+        # costs one command; a seat handed to a run that ends costs the wake.
+        one_shot = AGENT_ONE_SHOT_CODEX | AGENT_ONE_SHOT_CLAUDE
     for token in tokens[1:]:
         if token.startswith("{"):
             # An inline settings blob (`claude --settings {...}`) is data. The
@@ -392,15 +400,39 @@ def _is_one_shot_agent(pid: int) -> bool:
     return False
 
 
+def _under_deadline(pid: int) -> bool:
+    """True when a deadline supervisor sits above this agent process.
+
+    The one-shot reader answers for one command line. A deadline covers a whole
+    subtree: a session the producer spawns inside `timeout 5400 …` carries no
+    `-p` of its own and still dies on the same clock.
+    """
+    current = pid
+    for _ in range(AGENT_ANCESTOR_LEVELS):
+        parent = _ps_field("ppid=", current)
+        if not parent:
+            return False
+        try:
+            current = int(parent)
+        except ValueError:
+            return False
+        if current <= 1:
+            return False
+        if _command_name(_ps_field("args=", current) or "") in AGENT_DEADLINE_COMMANDS:
+            return True
+    return False
+
+
 def agent_session_pid(pid: int | None = None) -> int | None:
     """The agent ancestor, but only when it outlives the task it is running.
 
-    A membership's wake-up is bound to this pid, so a `claude -p` or `codex
-    exec` child must never take the seat: it exits with its task and leaves the
-    membership pointing at a dead process again.
+    A membership's wake-up is bound to this pid, so a run that ends must never
+    take the seat: it exits with its task and leaves the membership pointing at
+    a dead process again. Two things end a run — its own one-shot arguments,
+    and a deadline anywhere above it.
     """
     owner = agent_ancestor_pid(pid)
-    if owner is None or _is_one_shot_agent(owner):
+    if owner is None or _is_one_shot_agent(owner) or _under_deadline(owner):
         return None
     return owner
 

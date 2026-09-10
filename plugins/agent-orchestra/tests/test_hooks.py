@@ -781,6 +781,51 @@ class HookWaitTest(HooksTestCase):
         self.assertIn("claim_token: m_" + "a" * 16, buffer.getvalue())
         self.assertEqual(list(runtime_dir().glob("*.wake.*.json")), [])
 
+    def test_a_parked_session_takes_back_a_seat_whose_owner_died(self) -> None:
+        """A producer run under a deadline can take a seat and then end.
+
+        The session parked on that seat is durable by construction, so it takes
+        it back on its own instead of waiting for its next turn.
+        """
+        holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        session = self.live_pid()
+        self.set_ancestor(session)
+        member_id = str(self.make_member(owner_pid=holder.pid)["member_id"])
+        self.write_binding(member_id, "session-one", owner_pid=session)
+        self.patch("agent_orchestra.hooks._WAIT_MONITOR_SECONDS", new=0.1)
+
+        result: dict[str, Any] = {}
+        buffer = io.StringIO()
+
+        def run() -> None:
+            result["code"] = hooks.hook_wait(self.provider, self.payload("session-one"))
+
+        with redirect_stderr(buffer):
+            worker = threading.Thread(target=run, daemon=True)
+            worker.start()
+            deadline = time.monotonic() + 5
+            while not list(runtime_dir().glob("*.wake.*.json")) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(list(runtime_dir().glob("*.wake.*.json")), "hook_wait did not park")
+            self.assertEqual(member_module.load_member(member_id)["owner_pid"], holder.pid)
+
+            holder.kill()
+            holder.wait(timeout=5)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if member_module.load_member(member_id).get("owner_pid") == session:
+                    break
+                time.sleep(0.05)
+            self.assertEqual(member_module.load_member(member_id)["owner_pid"], session)
+
+            self.add_message(member_id, "m_" + "a" * 16)
+            worker.join(timeout=10)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result.get("code"), 2)
+
     def test_second_waiter_for_the_same_session_returns_immediately(self) -> None:
         member = self.make_member()
         lock = runtime_dir() / f"{member['member_id']}.wake.{'0' * 20}.json"
