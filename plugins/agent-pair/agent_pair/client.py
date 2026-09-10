@@ -23,6 +23,7 @@ from .core import (
     decode_invite,
     encode_invite,
     endpoint_path,
+    ensure_private_dir,
     inbox_dir,
     instance_key,
     normalize_provider,
@@ -61,7 +62,7 @@ def _spawn_module(args: list[str], log_path: Path) -> int:
     _BACKGROUND_PROCESSES[:] = [
         process for process in _BACKGROUND_PROCESSES if process.poll() is None
     ]
-    log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    ensure_private_dir(log_path.parent)
     stream = log_path.open("ab", buffering=0)
     try:
         process = subprocess.Popen(
@@ -886,7 +887,10 @@ def hook_endpoint(provider: str, payload: dict[str, Any]) -> dict[str, Any] | No
         endpoint = _bound_hook_endpoint(provider, cwd, session_id)
         ensure_monitor(endpoint)
         return endpoint
-    except AgentPairError:
+    except (AgentPairError, OSError):
+        # A hook that cannot reach its own state — a denied sandbox path, a full
+        # disk — goes quiet. It has nothing to say and no business failing the
+        # turn it is attached to.
         return None
 
 

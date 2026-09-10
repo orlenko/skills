@@ -659,6 +659,21 @@ class OwnershipRepairTest(HooksTestCase):
         self.assertEqual(self.owner_of(member_id), self.session_pid)
 
 
+class SandboxedStateTest(HooksTestCase):
+    def test_a_denied_state_directory_keeps_every_hook_quiet(self) -> None:
+        member = self.make_member()
+        self.add_message(str(member["member_id"]), "m_" + "a" * 16)
+        # What the safe-claude nono profile does to ~/.local/state/agent-orchestra.
+        self.patch(
+            "agent_orchestra.core.ensure_private_dir",
+            side_effect=OSError(13, "Permission denied"),
+        )
+
+        self.assertEqual(hooks.hook_stop(self.provider, self.payload()), {})
+        self.assertEqual(hooks.hook_context(self.provider, self.payload()), {})
+        self.assertEqual(hooks.hook_wait(self.provider, self.payload()), 0)
+
+
 class HookContextTest(HooksTestCase):
     def test_context_counts_and_wording(self) -> None:
         member = self.make_member()

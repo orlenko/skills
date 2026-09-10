@@ -56,7 +56,14 @@ def state_root() -> Path:
 
 
 def ensure_private_dir(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except FileExistsError:
+        # EEXIST is the answer this asked for. `exist_ok` swallows it only when
+        # `Path.is_dir()` agrees, and is_dir() answers False on any stat error,
+        # so a sandbox that lets a hook write the state directory but not stat
+        # it turned an existing directory into a traceback in every turn.
+        pass
     try:
         path.chmod(0o700)
     except OSError:

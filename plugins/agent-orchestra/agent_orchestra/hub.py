@@ -26,6 +26,7 @@ from .core import (
     atomic_write_json,
     certificate_fingerprint,
     encode_invite,
+    ensure_private_dir,
     hub_dir,
     new_member_id,
     new_message_id,
@@ -158,7 +159,7 @@ class HubStore:
         self.path = Path(path)
         self.lock = threading.RLock()
         self.changed = threading.Condition(self.lock)
-        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        ensure_private_dir(self.path.parent)
         self.db = sqlite3.connect(str(self.path), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         with self.lock:
@@ -1193,7 +1194,7 @@ def _spawn_module(args: list[str], log_path: Path) -> int:
     _BACKGROUND_PROCESSES[:] = [
         process for process in _BACKGROUND_PROCESSES if process.poll() is None
     ]
-    log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    ensure_private_dir(log_path.parent)
     stream = log_path.open("ab", buffering=0)
     try:
         process = subprocess.Popen(

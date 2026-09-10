@@ -26,6 +26,7 @@ from agent_orchestra.core import (  # noqa: E402
     bucket_dir,
     decode_invite,
     encode_invite,
+    ensure_private_dir,
     hub_dir,
     instance_key,
     member_path,
@@ -326,6 +327,24 @@ class ResponseBodyTests(unittest.TestCase):
     def test_the_success_cap_is_far_above_one_message(self):
         self.assertEqual(MAX_RESPONSE_BYTES, 8 * 1024 * 1024)
         self.assertGreater(MAX_RESPONSE_BYTES, MAX_ERROR_RESPONSE_BYTES)
+
+
+class PrivateDirTests(unittest.TestCase):
+    def test_an_existing_directory_survives_a_denied_stat(self):
+        with tempfile.TemporaryDirectory(prefix="agent-orchestra-dir-") as tmp:
+            target = Path(tmp) / "state"
+            ensure_private_dir(target)
+            # A sandbox can let a process create a directory and still refuse to
+            # stat it. Path.is_dir() answers False on that refusal, and mkdir's
+            # exist_ok trusts is_dir(), so EEXIST escaped on a directory that
+            # plainly exists — a traceback in every hook of every turn.
+            with patch.object(Path, "is_dir", return_value=False):
+                self.assertEqual(ensure_private_dir(target), target)
+
+    def test_a_real_failure_still_raises(self):
+        with patch.object(Path, "mkdir", side_effect=PermissionError(13, "denied")):
+            with self.assertRaises(PermissionError):
+                ensure_private_dir(Path("/nowhere/agent-orchestra"))
 
 
 class AgentAncestorTests(unittest.TestCase):

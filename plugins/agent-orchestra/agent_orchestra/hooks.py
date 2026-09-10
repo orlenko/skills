@@ -80,7 +80,10 @@ def hook_member(
         )
         ensure_monitor(member)
         return member
-    except OrchestraError:
+    except (OrchestraError, OSError):
+        # A hook that cannot reach its own state — a denied sandbox path, a full
+        # disk — goes quiet. It has nothing to say and no business failing the
+        # turn it is attached to.
         return None
 
 

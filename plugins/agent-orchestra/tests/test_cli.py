@@ -10,8 +10,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from unittest import mock  # noqa: E402
+
 from agent_orchestra import __version__  # noqa: E402
-from agent_orchestra.cli import build_parser  # noqa: E402
+from agent_orchestra.cli import build_parser, run  # noqa: E402
 
 
 DOCUMENTED = [
@@ -104,7 +106,7 @@ class ParserTest(unittest.TestCase):
             self.parser.parse_args(["--version"])
         self.assertEqual(caught.exception.code, 0)
         self.assertEqual(out.getvalue().strip(), f"agent-orchestra {__version__}")
-        self.assertEqual(__version__, "0.1.3")
+        self.assertEqual(__version__, "0.1.4")
 
     def test_unknown_command_exits_non_zero(self) -> None:
         err = io.StringIO()
@@ -129,6 +131,36 @@ class ParserTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as caught, redirect_stderr(err):
             self.parser.parse_args(["hook-stop", "--provider", "cli"])
         self.assertNotEqual(caught.exception.code, 0)
+
+
+class HookFailureTest(unittest.TestCase):
+    """A hook that blows up says nothing. It never fails the turn it runs in."""
+
+    def _run(self, command: str, error: Exception) -> tuple[int, str]:
+        args = build_parser().parse_args([command, "--provider", "claude"])
+        target = "agent_orchestra.hooks." + command.replace("-", "_")
+        out = io.StringIO()
+        with mock.patch(target, side_effect=error), mock.patch(
+            "agent_orchestra.hooks.hook_input", return_value={}
+        ), redirect_stdout(out):
+            return run(args), out.getvalue().strip()
+
+    def test_hook_stop_still_answers_an_empty_decision(self) -> None:
+        # The nono sandbox denies stat on the state directory, and pathlib
+        # turns that into FileExistsError however the directory really looks.
+        code, printed = self._run("hook-stop", FileExistsError(17, "File exists"))
+        self.assertEqual(code, 0)
+        self.assertEqual(printed, "{}")
+
+    def test_hook_context_prints_nothing(self) -> None:
+        code, printed = self._run("hook-context", OSError(13, "Permission denied"))
+        self.assertEqual(code, 0)
+        self.assertEqual(printed, "")
+
+    def test_hook_wait_returns_zero(self) -> None:
+        code, printed = self._run("hook-wait", RuntimeError("boom"))
+        self.assertEqual(code, 0)
+        self.assertEqual(printed, "")
 
 
 if __name__ == "__main__":

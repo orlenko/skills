@@ -11,7 +11,7 @@
       "displayName": "Agent Pair",
       "source": "./plugins/agent-pair",
       "description": "Direct, durable two-agent messaging across one machine or a reachable LAN.",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "author": {
         "name": "Vlad Orlenko",
         "url": "https://github.com/orlenko"
@@ -24,7 +24,7 @@
       "displayName": "Agent Orchestra",
       "source": "./plugins/agent-orchestra",
       "description": "Durable many-agent messaging with a hub, a conductor, and players across machines.",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "author": {
         "name": "Vlad Orlenko",
         "url": "https://github.com/orlenko"

@@ -158,16 +158,24 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command.startswith("hook-"):
         payload = hook_input()
-        if args.command == "hook-context":
-            result = hook_context(args.provider, payload)
-            if result:
+        try:
+            if args.command == "hook-context":
+                result = hook_context(args.provider, payload)
+                if result:
+                    print(json.dumps(result, separators=(",", ":")))
+                return 0
+            if args.command == "hook-stop":
+                result = hook_stop(args.provider, payload)
                 print(json.dumps(result, separators=(",", ":")))
+                return 0
+            return hook_wait(args.provider, payload)
+        except Exception:  # noqa: BLE001 - a hook never fails the turn it runs in
+            # Every hook is best-effort. A traceback here reaches the user as a
+            # hook error on every turn of every session, which is worse than
+            # the mail this one could not surface.
+            if args.command == "hook-stop":
+                print("{}")
             return 0
-        if args.command == "hook-stop":
-            result = hook_stop(args.provider, payload)
-            print(json.dumps(result, separators=(",", ":")))
-            return 0
-        return hook_wait(args.provider, payload)
 
     if args.command == "host":
         result = create_pair(
