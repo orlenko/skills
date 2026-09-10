@@ -311,7 +311,7 @@ class HookStopTest(HooksTestCase):
         reason = hooks.hook_stop(self.provider, self.payload())["reason"]
         self.assertIn("m_" + "e" * 16, reason)
 
-    def test_truncated_body_carries_full_row(self) -> None:
+    def test_the_body_stays_out_of_the_transcript(self) -> None:
         member = self.make_member()
         member_id = str(member["member_id"])
         message_id = "m_" + "f" * 16
@@ -319,10 +319,27 @@ class HookStopTest(HooksTestCase):
         self.add_message(member_id, message_id, text=body)
 
         reason = hooks.hook_stop(self.provider, self.payload())["reason"]
-        self.assertIn("first 4096 UTF-8 bytes", reason)
+        # On a busy orchestra this used to paste every report into the session.
+        self.assertNotIn("x" * 200, reason)
         expected = str(bucket_dir(member_id, "pending") / f"{message_id}.json")
-        self.assertIn(f"full_row: {json.dumps(expected)}", reason)
-        self.assertNotIn("x" * 5000, reason)
+        self.assertIn(f"read {json.dumps(expected)}", reason)
+        self.assertIn("8.8 KB, not shown", reason)
+        self.assertIn("Bodies are not pasted here", reason)
+        self.assertLess(len(reason), 2000)
+
+    def test_a_long_need_cannot_flood_the_nudge(self) -> None:
+        member = self.make_member()
+        self.add_message(
+            str(member["member_id"]),
+            "m_" + "a" * 16,
+            act="ask",
+            need="why?\n" + "n" * 4000,
+        )
+        reason = hooks.hook_stop(self.provider, self.payload())["reason"]
+        need = [line for line in reason.splitlines() if line.startswith("need: ")][0]
+        self.assertLess(len(need), 260)
+        self.assertTrue(need.endswith("…"))
+        self.assertIn("why? nnn", need)
 
     def test_nudge_caps_at_ten_messages(self) -> None:
         member = self.make_member()

@@ -3,13 +3,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import socket
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .core import OrchestraError
+from .core import OrchestraError, normalize_provider
 
 
 def _provider_default() -> str:
@@ -213,6 +215,32 @@ def _print_messages(rows: list[dict[str, Any]], as_json: bool) -> None:
         print()
 
 
+def _print_finish_reminder(member: dict[str, Any], provider: str, rows: list[dict[str, Any]]) -> None:
+    """Claiming moves mail out of the way; it does not answer it.
+
+    Two players independently read "claimed" as done and left the senders
+    waiting, and the hook kept re-surfacing the same messages because nothing
+    had finished them.
+    """
+    if not rows:
+        return
+    executable = Path(__file__).resolve().parent.parent / "bin" / "agent-orchestra"
+    command = " ".join(
+        shlex.quote(part)
+        for part in (
+            str(executable),
+            "finish",
+            "--json",
+            "--provider",
+            normalize_provider(provider),
+            "--member-id",
+            str(member["member_id"]),
+            *[str(row["id"]) for row in rows],
+        )
+    )
+    print(f"Claimed, not handled. When each one is done, run:\n{command}")
+
+
 def _hub_report(hub_api: Any, record: dict[str, Any]) -> dict[str, Any]:
     from .core import api_request, hub_dir, read_json
 
@@ -394,12 +422,16 @@ def run(args: argparse.Namespace) -> int:
             )
         return 0
     if args.command == "inbox":
-        _print_messages(member_api.local_messages(member, claim=args.claim), args.as_json)
+        rows = member_api.local_messages(member, claim=args.claim)
+        _print_messages(rows, args.as_json)
+        if args.claim and not args.as_json:
+            _print_finish_reminder(member, args.provider, rows)
         return 0
     if args.command == "wait":
-        _print_messages(
-            member_api.wait_for_messages(member, args.timeout, claim=args.claim), args.as_json
-        )
+        rows = member_api.wait_for_messages(member, args.timeout, claim=args.claim)
+        _print_messages(rows, args.as_json)
+        if args.claim and not args.as_json:
+            _print_finish_reminder(member, args.provider, rows)
         return 0
     if args.command == "finish":
         _print({"messages": member_api.finish_messages(member, args.message_ids)}, args.as_json)

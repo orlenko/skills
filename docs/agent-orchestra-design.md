@@ -579,11 +579,16 @@ Copy the hook half of `plugins/agent-pair/agent_pair/client.py`
   says so, plus the newest presence event on one line. Codex gets
   `$agent-orchestra:orchestra inbox`.
 - `_hook_message_nudge`: rows ordered reply-required first then `sent_at`;
-  each block carries `sender`, `act`, `task`, `need`, `claim_token`, the
-  body preview (4 KiB cap, `full_row` path when truncated). Stop after 10
-  messages or 32 KiB of blocks; list the rest as `also waiting: m_... (act)`.
-  End with the exact finish command using `bin/agent-orchestra finish --json
-  --provider P --member-id M <ids>`.
+  each block carries `sender`, `act`, `task`, `need`, `claim_token`, the body's
+  size and the path to its row. The body itself is never pasted: on a busy
+  orchestra that put every member's 4 KB report in the user's transcript. `need`
+  is flattened to one line and capped, so a sender cannot flood the nudge
+  through a header either. Stop after 10 messages or 32 KiB of blocks; list the
+  rest as `also waiting: m_... (act)`. End with the exact finish command using
+  `bin/agent-orchestra finish --json --provider P --member-id M <ids>`.
+- `inbox --claim` and `wait --claim` print that same finish command after the
+  rows in human mode. Two players read "claimed" as done and left senders
+  waiting, and the hook kept re-surfacing what nothing had finished.
 - `hook_wait` parks only while `pending_count` is zero and wakes on pending
   mail only, never on events.
 

@@ -106,7 +106,7 @@ class ParserTest(unittest.TestCase):
             self.parser.parse_args(["--version"])
         self.assertEqual(caught.exception.code, 0)
         self.assertEqual(out.getvalue().strip(), f"agent-orchestra {__version__}")
-        self.assertEqual(__version__, "0.1.5")
+        self.assertEqual(__version__, "0.1.6")
 
     def test_unknown_command_exits_non_zero(self) -> None:
         err = io.StringIO()
@@ -131,6 +131,32 @@ class ParserTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as caught, redirect_stderr(err):
             self.parser.parse_args(["hook-stop", "--provider", "cli"])
         self.assertNotEqual(caught.exception.code, 0)
+
+
+class ClaimReminderTest(unittest.TestCase):
+    def test_claiming_prints_the_finish_command(self) -> None:
+        from agent_orchestra.cli import _print_finish_reminder
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            _print_finish_reminder(
+                {"member_id": "mb_aaaa1111"},
+                "claude",
+                [{"id": "m_" + "a" * 16}, {"id": "m_" + "b" * 16}],
+            )
+        printed = out.getvalue()
+        self.assertIn("Claimed, not handled.", printed)
+        self.assertIn("finish --json --provider claude --member-id mb_aaaa1111", printed)
+        self.assertIn("m_" + "a" * 16, printed)
+        self.assertIn("m_" + "b" * 16, printed)
+
+    def test_nothing_claimed_says_nothing(self) -> None:
+        from agent_orchestra.cli import _print_finish_reminder
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            _print_finish_reminder({"member_id": "mb_aaaa1111"}, "claude", [])
+        self.assertEqual(out.getvalue(), "")
 
 
 class HookFailureTest(unittest.TestCase):
