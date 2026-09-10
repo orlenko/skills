@@ -11,6 +11,7 @@ from unittest.mock import patch
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT))
 
+from agent_orchestra import core  # noqa: E402
 from agent_orchestra.core import (  # noqa: E402
     BUCKETS,
     MAX_ERROR_RESPONSE_BYTES,
@@ -21,6 +22,7 @@ from agent_orchestra.core import (  # noqa: E402
     OrchestraError,
     _read_response_body,
     agent_ancestor_pid,
+    agent_session_pid,
     bucket_dir,
     decode_invite,
     encode_invite,
@@ -327,6 +329,21 @@ class ResponseBodyTests(unittest.TestCase):
 
 
 class AgentAncestorTests(unittest.TestCase):
+    # pid: (ppid, command line), as `ps` would report them.
+    SNAPSHOT = "/Users/x/.local/share/aiq/claude/orlenko/shell-snapshots/snapshot-zsh-17.sh"
+    TOOL_SHELL = f"/bin/zsh -c source {SNAPSHOT} 2>/dev/null && agent-orchestra status"
+
+    def _process_tree(self, tree):
+        def ps_field(flag, pid):
+            row = tree.get(int(pid))
+            if row is None:
+                return None
+            return row[0] if flag.startswith("ppid") else row[1]
+
+        patcher = patch.object(core, "_ps_field", side_effect=ps_field)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_agent_ancestor_pid_answers_on_this_machine(self):
         value = agent_ancestor_pid()
         self.assertTrue(value is None or isinstance(value, int))
@@ -336,6 +353,80 @@ class AgentAncestorTests(unittest.TestCase):
     def test_a_nonsense_pid_never_raises(self):
         self.assertIsNone(agent_ancestor_pid(-5))
         self.assertIsNone(agent_ancestor_pid(0))
+
+    def test_the_shell_a_tool_call_runs_in_is_not_the_agent(self):
+        # That shell quotes the agent's own state path, so a substring match
+        # anchored ownership to a process that exits with the command.
+        self._process_tree(
+            {
+                200: ("100", "python3 /x/plugins/agent-orchestra/bin/agent-orchestra status"),
+                100: ("50", self.TOOL_SHELL),
+                50: ("10", "/Users/x/.local/bin/claude --session-id abc --settings {}"),
+                10: ("1", "-/bin/zsh"),
+            }
+        )
+        self.assertEqual(agent_ancestor_pid(200), 50)
+        self.assertEqual(agent_session_pid(200), 50)
+
+    def test_a_launcher_that_names_the_agent_counts(self):
+        self._process_tree(
+            {
+                200: ("100", "python3 bin/agent-orchestra status"),
+                100: ("50", "/bin/sh -c bin/agent-orchestra status"),
+                50: ("10", "aiq long codex --yolo resume"),
+                10: ("1", "tmux"),
+            }
+        )
+        self.assertEqual(agent_session_pid(200), 50)
+
+    def test_a_print_mode_child_is_an_ancestor_but_never_a_session(self):
+        self._process_tree(
+            {
+                200: ("100", "python3 bin/agent-orchestra send hello"),
+                100: ("60", self.TOOL_SHELL),
+                60: ("50", "/Users/x/.local/bin/claude -p summarise the diff"),
+                50: ("1", "/Users/x/.local/bin/claude --session-id abc"),
+            }
+        )
+        self.assertEqual(agent_ancestor_pid(200), 60)
+        self.assertIsNone(agent_session_pid(200))
+
+    def test_codex_exec_is_a_one_shot_run(self):
+        self._process_tree(
+            {
+                200: ("50", "python3 bin/agent-orchestra status"),
+                50: ("1", "/usr/local/bin/codex exec review the branch"),
+            }
+        )
+        self.assertEqual(agent_ancestor_pid(200), 50)
+        self.assertIsNone(agent_session_pid(200))
+
+    def test_a_codex_profile_flag_is_still_a_session(self):
+        # codex spells -p for --profile; only its subcommand says one-shot.
+        self._process_tree(
+            {
+                200: ("50", "python3 bin/agent-orchestra status"),
+                50: ("1", "/usr/local/bin/codex -p work resume"),
+            }
+        )
+        self.assertEqual(agent_session_pid(200), 50)
+
+    def test_a_settings_blob_is_data_not_flags(self):
+        self._process_tree(
+            {
+                200: ("50", "python3 bin/agent-orchestra status"),
+                50: (
+                    "1",
+                    '/Users/x/.local/bin/claude --settings {"hooks":{"Stop":"agent -p x"}}',
+                ),
+            }
+        )
+        self.assertEqual(agent_session_pid(200), 50)
+
+    def test_nothing_in_the_tree_names_an_agent(self):
+        self._process_tree({200: ("100", "python3 bin/agent-orchestra status"), 100: ("1", "-/bin/zsh")})
+        self.assertIsNone(agent_ancestor_pid(200))
+        self.assertIsNone(agent_session_pid(200))
 
 
 if __name__ == "__main__":

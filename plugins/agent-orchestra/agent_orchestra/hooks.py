@@ -21,13 +21,17 @@ from .core import (
     runtime_dir,
 )
 from .member import (
+    _as_pid,
     _pid_alive,
+    acquire_pid_lock,
+    claim_ownership,
     ensure_monitor,
     iter_members,
     load_member,
     local_messages,
     pending_count,
     recent_events,
+    release_pid_lock,
     status_owed,
 )
 from .protocol import reply_required
@@ -38,6 +42,7 @@ _HOOK_MAX_MESSAGES = 10
 _HOOK_MAX_BLOCK_BYTES = 32 * 1024
 _WAIT_POLL_SECONDS = 0.25
 _WAIT_MONITOR_SECONDS = 5
+_BINDING_STALE_SECONDS = 300
 
 
 def _module_root() -> Path:
@@ -85,39 +90,65 @@ def _binding_path(provider: str, cwd: str, session_id: str) -> Path:
     return runtime_dir() / f"binding-{digest}.json"
 
 
+def _binding_is_stale(record: dict[str, Any]) -> bool:
+    """True when the session that wrote this binding cannot be running.
+
+    Every binding this version writes carries the pid of its agent session, and
+    a live session rewrites its own record on its next hook event, so a record
+    with a dead pid — or an old one from a version that recorded none — is left
+    over from a session that is gone. Nothing else deleted those records, and a
+    leftover one held a membership hostage: the replacement session could never
+    bind it, whatever it owned.
+    """
+    owner = _as_pid(record.get("owner_pid"))
+    if owner is not None:
+        return not _pid_alive(owner)
+    try:
+        bound_at = float(record.get("bound_at") or 0)
+    except (TypeError, ValueError):
+        return True
+    return now() - bound_at > _BINDING_STALE_SECONDS
+
+
 def _bound_member_ids() -> set[str]:
     bound: set[str] = set()
-    for path in runtime_dir().glob("binding-*.json"):
+    for path, record in core.binding_records():
+        if _binding_is_stale(record):
+            path.unlink(missing_ok=True)
+            continue
         try:
-            bound.add(str(read_json(path)["member_id"]))
-        except (OrchestraError, KeyError):
+            bound.add(str(record["member_id"]))
+        except KeyError:
             continue
     return bound
 
 
-def _owner_pid(member: dict[str, Any]) -> int | None:
-    value = member.get("owner_pid")
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
+def _write_binding(
+    path: Path, member: dict[str, Any], provider: str, cwd: str, session_id: str, owner: int | None
+) -> None:
+    atomic_write_json(
+        path,
+        {
+            "member_id": member["member_id"],
+            "provider": normalize_provider(provider),
+            "cwd": str(Path(cwd).expanduser().resolve()),
+            "session_id": session_id,
+            "owner_pid": owner,
+            "bound_at": now(),
+        },
+    )
 
 
-def _claim_candidate(
-    rows: list[dict[str, Any]], event: str
-) -> dict[str, Any]:
+def _claim_candidate(rows: list[dict[str, Any]], event: str, owner: int | None) -> dict[str, Any]:
     """Pick the membership this hook's own agent session owns.
 
-    Ownership is the agent process the membership joined under. A `claude -p`
-    child in the same directory has a different agent ancestor, so it matches
-    nothing here and stays inert instead of stealing the parent's mail and
-    parking in hook-wait for a day.
+    Ownership is the agent process the membership joined under, or the one that
+    last repaired it. A `claude -p` child in the same directory has a different
+    agent ancestor, so it matches nothing here and stays inert instead of
+    stealing the parent's mail and parking in hook-wait for a day.
     """
-    owner = core.agent_ancestor_pid()
     if owner is not None:
-        member = next((row for row in rows if _owner_pid(row) == owner), None)
+        member = next((row for row in rows if _as_pid(row.get("owner_pid")) == owner), None)
         if member is not None:
             return member
     if event == "UserPromptSubmit":
@@ -125,11 +156,7 @@ def _claim_candidate(
         # gone — is adoptable, but only when a human just typed into this
         # session. SessionStart fires in print-mode children too.
         member = next(
-            (
-                row
-                for row in rows
-                if _owner_pid(row) is None or not _pid_alive(_owner_pid(row) or 0)
-            ),
+            (row for row in rows if not _pid_alive(_as_pid(row.get("owner_pid")) or 0)),
             None,
         )
         if member is not None:
@@ -141,6 +168,7 @@ def _bound_hook_member(
     provider: str, cwd: str, session_id: str, event: str
 ) -> dict[str, Any]:
     path = _binding_path(provider, cwd, session_id) if session_id else None
+    owner = core.agent_ancestor_pid()
     if path is not None:
         try:
             binding = read_json(path)
@@ -148,6 +176,12 @@ def _bound_hook_member(
             if member.get("instance_key") == instance_key(provider, cwd) and not member.get(
                 "closed_at"
             ):
+                member = claim_ownership(member)
+                if owner is not None and _as_pid(binding.get("owner_pid")) != owner:
+                    # A record from an older version carries no pid, and one
+                    # from a process this session replaced carries a dead one.
+                    # Either way the session holding it is this one, now.
+                    _write_binding(path, member, provider, cwd, session_id, owner)
                 return member
         except (OrchestraError, KeyError):
             pass
@@ -163,18 +197,9 @@ def _bound_hook_member(
     candidates = [row for row in rows if str(row["member_id"]) not in bound_ids]
     if not candidates:
         raise OrchestraError("Every active membership is bound to another session")
-    member = _claim_candidate(candidates, event)
+    member = claim_ownership(_claim_candidate(candidates, event, owner))
     if path is not None:
-        atomic_write_json(
-            path,
-            {
-                "member_id": member["member_id"],
-                "provider": normalize_provider(provider),
-                "cwd": str(Path(cwd).expanduser().resolve()),
-                "session_id": session_id,
-                "bound_at": now(),
-            },
-        )
+        _write_binding(path, member, provider, cwd, session_id, owner)
     return member
 
 
@@ -362,27 +387,6 @@ def _watch_lock_path(member_id: str, session_id: str) -> Path:
     return runtime_dir() / f"{member_id}.wake.{digest}.json"
 
 
-def _acquire_watch_lock(path: Path) -> bool:
-    for _ in range(2):
-        try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump({"pid": os.getpid(), "started_at": now()}, stream)
-            return True
-        except FileExistsError:
-            try:
-                pid = int(read_json(path).get("pid", 0))
-            except (OrchestraError, TypeError, ValueError):
-                pid = 0
-            if _pid_alive(pid):
-                return False
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-    return False
-
-
 def hook_wait(provider: str, payload: dict[str, Any]) -> int:
     member = hook_member(provider, payload)
     if not member or pending_count(member):
@@ -390,7 +394,7 @@ def hook_wait(provider: str, payload: dict[str, Any]) -> int:
     session_id = str(payload.get("session_id") or f"cwd:{payload.get('cwd') or os.getcwd()}")
     member_id = str(member["member_id"])
     lock_path = _watch_lock_path(member_id, session_id)
-    if not _acquire_watch_lock(lock_path):
+    if not acquire_pid_lock(lock_path):
         return 0
     try:
         next_monitor_check = 0.0
@@ -415,9 +419,4 @@ def hook_wait(provider: str, payload: dict[str, Any]) -> int:
                 return 0
         return 0
     finally:
-        try:
-            current = read_json(lock_path)
-            if int(current.get("pid", 0)) == os.getpid():
-                lock_path.unlink(missing_ok=True)
-        except (OrchestraError, TypeError, ValueError):
-            pass
+        release_pid_lock(lock_path)

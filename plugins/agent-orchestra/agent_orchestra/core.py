@@ -26,6 +26,18 @@ MAX_ERROR_RESPONSE_BYTES = MAX_MESSAGE_BYTES * 2
 INVITE_PREFIX = "or1."
 AGENT_ANCESTOR_LEVELS = 20
 AGENT_COMMAND_MARKERS = ("claude", "codex")
+# A tool call runs its command in a shell whose own command line carries the
+# agent's plugin, state, and snapshot paths, so "claude" appears in the args of
+# a process that exits with the command. Anchoring ownership there records a pid
+# that is dead a second later, so a shell is never the agent whatever it quotes.
+AGENT_SHELL_COMMANDS = frozenset(
+    {"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "ash", "busybox"}
+)
+# `claude -p` and `codex exec` run one task and exit. codex spells `-p` for
+# `--profile`, so only its subcommand marks a one-shot run there; a wrapper
+# whose name says neither agent is read without the ambiguous short flag.
+AGENT_ONE_SHOT_CLAUDE = frozenset({"-p", "--print"})
+AGENT_ONE_SHOT_CODEX = frozenset({"exec"})
 
 BUCKETS = ("pending", "claimed", "done", "outbox", "sent", "events")
 
@@ -153,6 +165,22 @@ def bucket_dir(member_id: str, bucket: str) -> Path:
 
 def runtime_dir() -> Path:
     return ensure_private_dir(ensure_private_dir(state_root()) / "runtime")
+
+
+def binding_records() -> list[tuple[Path, dict[str, Any]]]:
+    """Every session binding on this machine, with the file that holds it.
+
+    hooks.py writes them; member.py reads them to see whether a live session
+    already holds a membership. Both need the same view, and hooks.py imports
+    member.py, so the reader lives here.
+    """
+    rows: list[tuple[Path, dict[str, Any]]] = []
+    for path in runtime_dir().glob("binding-*.json"):
+        try:
+            rows.append((path, read_json(path)))
+        except OrchestraError:
+            continue
+    return rows
 
 
 def safe_id(value: str) -> str:
@@ -297,6 +325,18 @@ def _ps_field(flag: str, pid: int) -> str | None:
     return lines[-1] if lines else None
 
 
+def _command_name(args: str) -> str:
+    tokens = args.split()
+    return Path(tokens[0]).name.lower() if tokens else ""
+
+
+def _is_agent_command(args: str) -> bool:
+    if _command_name(args) in AGENT_SHELL_COMMANDS:
+        return False
+    lowered = args.lower()
+    return any(marker in lowered for marker in AGENT_COMMAND_MARKERS)
+
+
 def agent_ancestor_pid(pid: int | None = None) -> int | None:
     """The pid of the nearest ancestor process that is a coding agent.
 
@@ -318,10 +358,44 @@ def agent_ancestor_pid(pid: int | None = None) -> int | None:
             return None
         if current <= 1:
             return None
-        args = (_ps_field("args=", current) or "").lower()
-        if any(marker in args for marker in AGENT_COMMAND_MARKERS):
+        if _is_agent_command(_ps_field("args=", current) or ""):
             return current
     return None
+
+
+def _is_one_shot_agent(pid: int) -> bool:
+    """True when this agent process runs one task and exits."""
+    tokens = (_ps_field("args=", pid) or "").split()
+    if not tokens:
+        return False
+    command = Path(tokens[0]).name.lower()
+    if "codex" in command:
+        one_shot = AGENT_ONE_SHOT_CODEX
+    elif "claude" in command:
+        one_shot = AGENT_ONE_SHOT_CLAUDE
+    else:
+        one_shot = AGENT_ONE_SHOT_CODEX | (AGENT_ONE_SHOT_CLAUDE - {"-p"})
+    for token in tokens[1:]:
+        if token.startswith("{"):
+            # An inline settings blob (`claude --settings {...}`) is data. The
+            # hook commands inside it carry flags that are not this process's.
+            break
+        if token in one_shot:
+            return True
+    return False
+
+
+def agent_session_pid(pid: int | None = None) -> int | None:
+    """The agent ancestor, but only when it outlives the task it is running.
+
+    A membership's wake-up is bound to this pid, so a `claude -p` or `codex
+    exec` child must never take the seat: it exits with its task and leaves the
+    membership pointing at a dead process again.
+    """
+    owner = agent_ancestor_pid(pid)
+    if owner is None or _is_one_shot_agent(owner):
+        return None
+    return owner
 
 
 def api_request(

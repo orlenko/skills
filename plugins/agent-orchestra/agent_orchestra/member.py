@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -100,6 +101,44 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _as_pid(value: Any) -> int | None:
+    try:
+        pid = int(value)
+    except (TypeError, ValueError):
+        return None
+    return pid if pid > 1 else None
+
+
+def acquire_pid_lock(path: Path) -> bool:
+    """Take an exclusive lock file, breaking one a dead process left behind."""
+    for _ in range(2):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump({"pid": os.getpid(), "started_at": now()}, stream)
+            return True
+        except FileExistsError:
+            try:
+                pid = int(read_json(path).get("pid", 0))
+            except (OrchestraError, TypeError, ValueError):
+                pid = 0
+            if _pid_alive(pid):
+                return False
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+    return False
+
+
+def release_pid_lock(path: Path) -> None:
+    try:
+        if int(read_json(path).get("pid", 0)) == os.getpid():
+            path.unlink(missing_ok=True)
+    except (OrchestraError, TypeError, ValueError):
+        pass
+
+
 def _reap_spawned_processes(pids: list[int], timeout: float = 5.0) -> None:
     """Test helper: wait for, then terminate, this process's selected children."""
     deadline = time.monotonic() + timeout
@@ -198,6 +237,64 @@ def iter_members(*, provider: str, cwd: str) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda item: float(item.get("joined_at", 0)), reverse=True)
 
 
+def _bound_to_another_session(member_id: str, pid: int) -> bool:
+    """True when a hook in a different live session already holds this seat."""
+    for _, record in core.binding_records():
+        if str(record.get("member_id") or "") != member_id:
+            continue
+        owner = _as_pid(record.get("owner_pid"))
+        if owner is not None and owner != pid and _pid_alive(owner):
+            return True
+    return False
+
+
+def claim_ownership(member: dict[str, Any]) -> dict[str, Any]:
+    """Point a membership at the agent session that is running right now.
+
+    Wake-up matches `owner_pid` against the hook's own agent ancestor, and
+    nothing rewrote that pid after `join`. An agent process that is replaced —
+    a resumed session, a quota migration — inherits the seat with a dead pid
+    recorded, so no hook matches it again and only a typed prompt can adopt it
+    back. Every command a session runs reaches here, so the seat repairs itself
+    and an unattended session wakes on mail again with nobody at the keyboard.
+
+    A live owner is never displaced, and a one-shot child is no owner at all:
+    `agent_session_pid` answers None for it, so it cannot take the wake with it
+    when it exits.
+    """
+    current = _as_pid(member.get("owner_pid"))
+    # One signal, one syscall: a live owner settles it, and the healthy case
+    # never pays for the `ps` walk that finds this session's own process.
+    if current is not None and _pid_alive(current):
+        return member
+    pid = core.agent_session_pid()
+    if pid is None or pid == current:
+        return member
+    member_id = str(member["member_id"])
+    lock_path = runtime_dir() / f"{member_id}.owner.lock"
+    if not acquire_pid_lock(lock_path):
+        # Another session is claiming the same orphan. First writer wins, and
+        # this one reads the winner's live pid on its next command.
+        return member
+    try:
+        # save_member replaces the whole file, so the decision is made again on
+        # what is on disk now, under the lock.
+        fresh = load_member(member_id)
+        current = _as_pid(fresh.get("owner_pid"))
+        if current == pid or (current is not None and _pid_alive(current)):
+            return fresh
+        if fresh.get("closed_at") or _bound_to_another_session(member_id, pid):
+            return fresh
+        fresh["owner_pid"] = pid
+        save_member(fresh)
+        return fresh
+    except (OrchestraError, OSError):
+        # A seat that cannot be repaired is not a command that should fail.
+        return member
+    finally:
+        release_pid_lock(lock_path)
+
+
 def select_member(*, provider: str, cwd: str, member_id: str | None = None) -> dict[str, Any]:
     if member_id:
         member = load_member(member_id)
@@ -206,13 +303,13 @@ def select_member(*, provider: str, cwd: str, member_id: str | None = None) -> d
         if member.get("closed_at"):
             reason = member.get("closed_reason") or "closed"
             raise OrchestraError(f"Membership is closed ({reason})")
-        return member
+        return claim_ownership(member)
     rows = iter_members(provider=provider, cwd=cwd)
     if not rows:
         raise OrchestraError(
             f"No open orchestra membership for {normalize_provider(provider)} in this directory"
         )
-    return rows[0]
+    return claim_ownership(rows[0])
 
 
 def load_member(member_id: str) -> dict[str, Any]:

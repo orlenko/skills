@@ -22,13 +22,18 @@ _STATE = tempfile.TemporaryDirectory(prefix="agent-orchestra-hooks-")
 os.environ["AGENT_ORCHESTRA_HOME"] = str(Path(_STATE.name) / "import-state")
 
 from agent_orchestra import core, hooks  # noqa: E402
+from agent_orchestra import member as member_module  # noqa: E402
 from agent_orchestra.core import (  # noqa: E402
     atomic_write_json,
     bucket_dir,
     instance_key,
     member_path,
+    now,
     runtime_dir,
 )
+
+
+_UNSET = object()
 
 
 CONDUCTOR = {"id": "mb_cccc3333", "name": "maestro", "provider": "claude", "role": "conductor"}
@@ -51,6 +56,14 @@ class HooksTestCase(unittest.TestCase):
         self.patch("agent_orchestra.member.ensure_monitor", return_value=0)
         self.patch("agent_orchestra.member.start_monitor", return_value=0)
         self.patch("agent_orchestra.member.ensure_hub_if_local", return_value=None)
+        # Ownership repair asks whether the agent ancestor is a one-shot run;
+        # the answer comes from this process's real command line, which no test
+        # should depend on. test_protocol covers the real reader.
+        self.one_shot = False
+        self.patch(
+            "agent_orchestra.core._is_one_shot_agent",
+            side_effect=lambda *args, **kwargs: self.one_shot,
+        )
         self.clock = 1_760_000_000.0
         # Every hook in these tests runs "inside" one agent session; a test that
         # cares about ownership overrides the ancestry with set_ancestor.
@@ -172,8 +185,57 @@ class HooksTestCase(unittest.TestCase):
         value.update(extra)
         return value
 
+    def _member_with_mail(self, **overrides: Any) -> str:
+        member = self.make_member(**overrides)
+        member_id = str(member["member_id"])
+        self.add_message(member_id, "m_" + "a" * 16, act="ask", need="sha")
+        return member_id
+
     def bindings(self) -> list[Path]:
         return sorted(runtime_dir().glob("binding-*.json"))
+
+    def binding_record(self, index: int = 0) -> dict[str, Any]:
+        return json.loads(self.bindings()[index].read_text(encoding="utf-8"))
+
+    def dead_pid(self) -> int:
+        process = subprocess.Popen([sys.executable, "-c", "pass"])
+        process.wait(timeout=10)
+        return process.pid
+
+    def live_pid(self) -> int:
+        """A pid that answers kill(pid, 0) for the length of one test.
+
+        Ownership and bindings are decided by liveness, so a session that has
+        to look alive needs a process behind it, not an invented number.
+        """
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+
+        def stop() -> None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+
+        self.addCleanup(stop)
+        return process.pid
+
+    def write_binding(
+        self, member_id: str, session_id: str, *, owner_pid: Any = _UNSET, bound_at: float | None = None
+    ) -> Path:
+        record: dict[str, Any] = {
+            "member_id": member_id,
+            "provider": self.provider,
+            "cwd": str(self.cwd.resolve()),
+            "session_id": session_id,
+            "bound_at": now() if bound_at is None else bound_at,
+        }
+        if owner_pid is not _UNSET:
+            record["owner_pid"] = owner_pid
+        path = hooks._binding_path(self.provider, str(self.cwd), session_id)
+        atomic_write_json(path, record)
+        return path
 
 
 class HookStopTest(HooksTestCase):
@@ -304,6 +366,7 @@ class BindingTest(HooksTestCase):
         self.assertEqual(record["provider"], self.provider)
         self.assertEqual(record["cwd"], str(self.cwd.resolve()))
         self.assertEqual(record["session_id"], "session-one")
+        self.assertEqual(record["owner_pid"], os.getpid())
         self.assertIsInstance(record["bound_at"], float)
 
     def test_bound_session_keeps_its_member(self) -> None:
@@ -343,13 +406,9 @@ class BindingTest(HooksTestCase):
 class OwnershipTest(HooksTestCase):
     """The claim rule: ancestry decides, and only a typed prompt adopts an orphan."""
 
-    other_pid = 4242
-
-    def _member_with_mail(self, **overrides: Any) -> str:
-        member = self.make_member(**overrides)
-        member_id = str(member["member_id"])
-        self.add_message(member_id, "m_" + "a" * 16, act="ask", need="sha")
-        return member_id
+    def setUp(self) -> None:
+        super().setUp()
+        self.other_pid = self.live_pid()
 
     def test_matching_ancestor_binds_on_session_start(self) -> None:
         member_id = self._member_with_mail(owner_pid=self.other_pid)
@@ -433,10 +492,171 @@ class OwnershipTest(HooksTestCase):
         if isinstance(value, int):
             self.assertGreater(value, 1)
 
-    def dead_pid(self) -> int:
-        process = subprocess.Popen([sys.executable, "-c", "pass"])
-        process.wait(timeout=10)
-        return process.pid
+
+class OwnershipRepairTest(HooksTestCase):
+    """A seat whose owning process is gone is taken by the session running now.
+
+    aiq replaces a long session's process mid-flight, and every player here runs
+    unattended, so a repair that waits for a keystroke never happens.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.session_pid = self.live_pid()
+        self.set_ancestor(self.session_pid)
+
+    def _run_a_command(self) -> dict[str, Any]:
+        return member_module.select_member(provider=self.provider, cwd=str(self.cwd))
+
+    def owner_of(self, member_id: str) -> Any:
+        return member_module.load_member(member_id).get("owner_pid")
+
+    def test_a_dead_owner_is_reclaimed_when_the_session_runs_a_command(self) -> None:
+        member_id = self._member_with_mail(owner_pid=self.dead_pid())
+
+        self.assertEqual(self._run_a_command()["owner_pid"], self.session_pid)
+        self.assertEqual(self.owner_of(member_id), self.session_pid)
+
+        # The wake works from here with nobody at the keyboard: a Stop hook
+        # binds on ancestry, where before only a typed prompt could adopt.
+        result = hooks.hook_stop(self.provider, self.payload("s1", "Stop"))
+        self.assertEqual(result["decision"], "block")
+        self.assertEqual(self.binding_record()["member_id"], member_id)
+        self.assertEqual(self.binding_record()["owner_pid"], self.session_pid)
+
+    def test_a_named_membership_is_repaired_too(self) -> None:
+        member_id = self._member_with_mail(owner_pid=self.dead_pid())
+        member_module.select_member(
+            provider=self.provider, cwd=str(self.cwd), member_id=member_id
+        )
+        self.assertEqual(self.owner_of(member_id), self.session_pid)
+
+    def test_a_live_owner_is_never_reassigned(self) -> None:
+        holder = self.live_pid()
+        member_id = self._member_with_mail(owner_pid=holder)
+
+        self._run_a_command()
+
+        self.assertEqual(self.owner_of(member_id), holder)
+        self.assertEqual(hooks.hook_stop(self.provider, self.payload("s1", "Stop")), {})
+
+    def test_a_one_shot_child_never_takes_the_seat(self) -> None:
+        dead = self.dead_pid()
+        member_id = self._member_with_mail(owner_pid=dead)
+        # `claude -p` exits with its task and would leave the seat dead again.
+        self.one_shot = True
+
+        self._run_a_command()
+
+        self.assertEqual(self.owner_of(member_id), dead)
+
+    def test_no_agent_ancestor_leaves_the_seat_alone(self) -> None:
+        dead = self.dead_pid()
+        member_id = self._member_with_mail(owner_pid=dead)
+        self.set_ancestor(None)
+
+        self._run_a_command()
+
+        self.assertEqual(self.owner_of(member_id), dead)
+
+    def test_a_binding_from_a_live_session_is_not_stolen(self) -> None:
+        dead = self.dead_pid()
+        member_id = self._member_with_mail(owner_pid=dead)
+        self.write_binding(member_id, "other-session", owner_pid=self.live_pid())
+
+        self._run_a_command()
+
+        self.assertEqual(self.owner_of(member_id), dead)
+
+    def test_two_sessions_racing_for_one_orphan_write_once(self) -> None:
+        member_id = self._member_with_mail(owner_pid=self.dead_pid())
+        claimants = {"claim-a": self.live_pid(), "claim-b": self.live_pid()}
+        self.patch(
+            "agent_orchestra.core.agent_session_pid",
+            side_effect=lambda *args, **kwargs: claimants[threading.current_thread().name],
+        )
+        written: list[Any] = []
+        real_save = member_module.save_member
+
+        def counting_save(member: dict[str, Any]) -> None:
+            written.append(member.get("owner_pid"))
+            real_save(member)
+
+        self.patch("agent_orchestra.member.save_member", new=counting_save)
+
+        start = threading.Barrier(len(claimants))
+        failures: list[BaseException] = []
+
+        def claim() -> None:
+            try:
+                start.wait(timeout=10)
+                self._run_a_command()
+            except BaseException as exc:  # noqa: BLE001 - reported below
+                failures.append(exc)
+
+        threads = [threading.Thread(target=claim, name=name) for name in claimants]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+
+        self.assertEqual(failures, [])
+        self.assertEqual(len(written), 1)
+        self.assertIn(self.owner_of(member_id), list(claimants.values()))
+
+    def test_a_stale_binding_stops_blocking_the_replacement_session(self) -> None:
+        dead = self.dead_pid()
+        member_id = self._member_with_mail(owner_pid=dead)
+        # What the killed session left behind: a binding under its own session
+        # id, which used to reserve the membership against every later session.
+        stale = self.write_binding(member_id, "old-session", owner_pid=dead)
+
+        self._run_a_command()
+        result = hooks.hook_stop(self.provider, self.payload("new-session", "Stop"))
+
+        self.assertEqual(result["decision"], "block")
+        self.assertFalse(stale.exists())
+        self.assertEqual(len(self.bindings()), 1)
+        self.assertEqual(self.binding_record()["session_id"], "new-session")
+
+    def test_a_binding_from_an_older_version_expires(self) -> None:
+        member_id = self._member_with_mail(owner_pid=self.dead_pid())
+        old = self.write_binding(member_id, "old-session", bound_at=now() - 3600)
+
+        self._run_a_command()
+        result = hooks.hook_stop(self.provider, self.payload("new-session", "Stop"))
+
+        self.assertEqual(result["decision"], "block")
+        self.assertFalse(old.exists())
+
+    def test_a_fresh_binding_without_a_pid_still_reserves_the_membership(self) -> None:
+        member_id = self._member_with_mail(owner_pid=self.dead_pid())
+        self.write_binding(member_id, "old-session")
+
+        self._run_a_command()
+
+        self.assertEqual(hooks.hook_stop(self.provider, self.payload("new-session", "Stop")), {})
+
+    def test_the_binding_a_session_already_holds_is_refreshed(self) -> None:
+        member_id = self._member_with_mail(owner_pid=self.session_pid)
+        path = self.write_binding(member_id, "s1")
+
+        self.assertEqual(
+            hooks.hook_stop(self.provider, self.payload("s1", "Stop"))["decision"], "block"
+        )
+
+        record = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(record["owner_pid"], self.session_pid)
+
+    def test_adopting_an_orphan_records_the_new_owner(self) -> None:
+        member_id = self._member_with_mail(owner_pid=self.dead_pid())
+        self.set_ancestor(self.session_pid)
+
+        self.assertNotEqual(
+            hooks.hook_context(self.provider, self.payload("s1", "UserPromptSubmit")), {}
+        )
+
+        self.assertEqual(self.owner_of(member_id), self.session_pid)
 
 
 class HookContextTest(HooksTestCase):

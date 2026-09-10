@@ -208,11 +208,15 @@ and act. After acting, run the direct `finish` command from the nudge with only
 the processed tokens. Do not run `inbox --claim` first. An interruption before
 `finish` leaves the message waiting so a later hook can surface it again.
 
-Hooks act only in the session that ran `join`. `join` records the pid of the
-agent process it ran under, and a hook binds only when it runs under that same
-process. Every other session in the same directory, including `claude -p`
-children and second terminals, gets no nudge and no reawaken park. A later
-session may adopt a membership whose owning process has exited, and only on
-its first user prompt. A harness that spawns sessions in a member directory can
-also set `AGENT_ORCHESTRA_NO_WAIT=1` in their environment to keep every
-orchestra hook inert there.
+Hooks act only in the session that owns the membership. `join` records the pid
+of the agent process it ran under, and a hook binds only when it runs under
+that same process. Every other session in the same directory, including
+`claude -p` children and second terminals, gets no nudge and no reawaken park.
+When that process is gone — a resumed session, a replaced one — the next
+orchestra command takes the seat over and the wake works again with nobody at
+the keyboard. A live owner is never displaced, and a `claude -p` or `codex
+exec` child never takes a seat, because it would carry the wake off when it
+exits. A later session may also adopt a membership whose owning process has
+exited, on its first user prompt. A harness that spawns sessions in a member
+directory can also set `AGENT_ORCHESTRA_NO_WAIT=1` in their environment to keep
+every orchestra hook inert there.
