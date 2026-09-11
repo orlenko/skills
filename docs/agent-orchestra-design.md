@@ -379,8 +379,26 @@ member.json: {protocol: 1, member_id, orchestra_id, role, parent, name, provider
               cwd, instance_key, endpoints, fingerprint, token, conductor_id,
               hub_name, joined_at, closed_at, closed_reason}
 pending/  claimed/  done/  outbox/  sent/  events/     one JSON file per message
-runtime/<member_id>.monitor.json   {pid, started_at, updated_at, last_error, last_error_at}
+runtime/<member_id>.monitor.json   {pid, started_at, updated_at, last_error, last_error_at,
+                                    module_root, version, sources_sha256}
 ```
+
+`module_root`, `version` and `sources_sha256` say which plugin tree a monitor
+runs from and whether that tree is the same code. `ensure_monitor` adopts any
+live pid, so a monitor an external watcher spawned from its own copy of the CLI
+is otherwise invisible. `sources_sha256` is a sha256 over the package's `.py`
+sources; equal digests mean any difference in path or version string is
+cosmetic, and `0.1.6+codex.20260910` is the same release as `0.1.6` because
+semver ignores build metadata.
+
+Comparing those digests has three answers, not two: equal, unequal, and
+unknown. A record written before these fields existed carries no
+`sources_sha256`, and that absence means "older monitor", never "no digest" and
+never "matches". A check written as `if not record.get("sources_sha256")`
+silently sorts every pre-release monitor into whichever branch its author
+happened to write first, and both answers look like data. Name the unknown
+state and act on it separately — the same rule an empty hook result and a
+denied `stat()` both earned earlier.
 
 Two clocks, never one. `sent_at` is stamped by the hub when it accepts a
 message; `received_at` is stamped by the receiving member when it stores the
