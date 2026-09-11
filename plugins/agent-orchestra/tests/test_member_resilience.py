@@ -21,6 +21,7 @@ from typing import Any
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 os.sys.path.insert(0, str(PLUGIN_ROOT))
 
+from agent_orchestra import __version__, core  # noqa: E402
 from agent_orchestra import hub as hub_module  # noqa: E402
 from agent_orchestra import member as member_module  # noqa: E402
 from agent_orchestra.core import (  # noqa: E402
@@ -136,6 +137,19 @@ class ResilienceTestCase(unittest.TestCase):
         while time.monotonic() < deadline and not path.exists():
             time.sleep(0.02)
         return thread
+
+    def test_the_monitor_records_the_tree_it_runs_from(self) -> None:
+        conductor, player = self._topology()
+        member_id = str(player["member_id"])
+        self._start_monitor(member_id)
+        record = read_json(member_module._monitor_state_path(member_id))
+        # ensure_monitor adopts any live pid, so a monitor spawned from another
+        # plugin tree is invisible until these fields say which tree it is, and
+        # whether that tree is the same code under a different build string.
+        self.assertEqual(record["module_root"], str(member_module._module_root()))
+        self.assertEqual(record["version"], __version__)
+        self.assertEqual(record["sources_sha256"], core.sources_digest())
+        self.assertEqual(len(record["sources_sha256"]), 64)
 
     def _write_event(self, member_id: str, text: str, *, sent_at: float) -> str:
         event_id = new_message_id()

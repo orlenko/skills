@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import core
+from . import __version__, core
 from .core import (
     APIError,
     MAX_MESSAGE_BYTES,
@@ -348,6 +348,27 @@ def _monitor_state_path(member_id: str) -> Path:
     return runtime_dir() / f"{member_id}.monitor.json"
 
 
+def _monitor_record(pid: int, started_at: float, **extra: Any) -> dict[str, Any]:
+    """The monitor's state file.
+
+    `module_root` says which plugin tree this monitor runs from. ensure_monitor
+    adopts any live pid, so a monitor spawned from another tree — an external
+    watcher resolving its own copy of the CLI — is otherwise invisible. The
+    version and the source digest say whether a foreign tree matters: the same
+    digest is a cosmetic difference, a different one is real version skew.
+    """
+    return {
+        "pid": pid,
+        "started_at": started_at,
+        "updated_at": now(),
+        "last_error": None,
+        "module_root": str(_module_root()),
+        "version": __version__,
+        "sources_sha256": core.sources_digest(),
+        **extra,
+    }
+
+
 def _monitor_record_alive(record: dict[str, Any]) -> bool:
     return (
         _pid_alive(int(record.get("pid", 0)))
@@ -399,10 +420,7 @@ def start_monitor(member: dict[str, Any]) -> int:
             ["monitor-run", "--member-id", member_id],
             runtime_dir() / f"{member_id}.monitor.log",
         )
-        atomic_write_json(
-            state_path,
-            {"pid": pid, "started_at": now(), "updated_at": now(), "last_error": None},
-        )
+        atomic_write_json(state_path, _monitor_record(pid, now()))
         return pid
     finally:
         os.close(lock_fd)
@@ -1230,10 +1248,7 @@ def monitor_loop(member_id: str) -> None:
     member = load_member(member_id)
     state_path = _monitor_state_path(member_id)
     started_at = now()
-    atomic_write_json(
-        state_path,
-        {"pid": os.getpid(), "started_at": started_at, "updated_at": now(), "last_error": None},
-    )
+    atomic_write_json(state_path, _monitor_record(os.getpid(), started_at))
     delay = 0.25
     while not member.get("closed_at"):
         try:
@@ -1267,15 +1282,7 @@ def monitor_loop(member_id: str) -> None:
             if new_count:
                 _notify(member, new_count)
             delay = 0.25
-            atomic_write_json(
-                state_path,
-                {
-                    "pid": os.getpid(),
-                    "started_at": started_at,
-                    "updated_at": now(),
-                    "last_error": None,
-                },
-            )
+            atomic_write_json(state_path, _monitor_record(os.getpid(), started_at))
         except APIError as exc:
             if exc.status == 410:
                 _close_locally(member_id, _closed_reason(str(exc)))
@@ -1300,11 +1307,7 @@ def monitor_loop(member_id: str) -> None:
 def _record_monitor_error(path: Path, started_at: float, error: Exception) -> None:
     atomic_write_json(
         path,
-        {
-            "pid": os.getpid(),
-            "started_at": started_at,
-            "updated_at": now(),
-            "last_error": str(error)[:500],
-            "last_error_at": now(),
-        },
+        _monitor_record(
+            os.getpid(), started_at, last_error=str(error)[:500], last_error_at=now()
+        ),
     )

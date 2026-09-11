@@ -90,6 +90,30 @@ def new_message_id() -> str:
     return "m_" + secrets.token_hex(16)
 
 
+_SOURCES_DIGEST: str | None = None
+
+
+def sources_digest() -> str:
+    """sha256 over this package's sources, computed once per process.
+
+    A tree's version string can match while its code does not — a working
+    checkout beside an installed copy, or a build that carries its own metadata
+    (`0.1.6+codex.20260910` is the same release as `0.1.6`). The digest answers
+    the question the path and the version cannot: is this the same code.
+    """
+    global _SOURCES_DIGEST
+    if _SOURCES_DIGEST is None:
+        digest = hashlib.sha256()
+        try:
+            for path in sorted(Path(__file__).resolve().parent.glob("*.py")):
+                digest.update(path.name.encode("utf-8"))
+                digest.update(path.read_bytes())
+            _SOURCES_DIGEST = digest.hexdigest()
+        except OSError:
+            _SOURCES_DIGEST = ""
+    return _SOURCES_DIGEST
+
+
 def state_root() -> Path:
     explicit = os.environ.get("AGENT_ORCHESTRA_HOME")
     if explicit:
