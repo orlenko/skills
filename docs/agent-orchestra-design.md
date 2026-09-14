@@ -148,6 +148,13 @@ The port is allocated once on `create_hub` (bind a throwaway socket to
 state stays valid. The certificate is generated once with `-days 365` and
 `/CN=agent-orchestra`.
 
+`create_hub` mints a fresh `orchestra_id` on every call, so one host carries as
+many hubs as it is asked for, each under its own `hub_dir`. `select_hub(None)`
+returns the single unclosed hub and otherwise raises, naming the ids, so a
+`hub` subcommand on a multi-hub host needs `--orchestra-id`. The allocate-then-
+bind window is the one shared resource: two `create_hub` calls overlapping on
+the same host can read the same free port, and `--port` is the way around it.
+
 ### Schema
 
 ```sql

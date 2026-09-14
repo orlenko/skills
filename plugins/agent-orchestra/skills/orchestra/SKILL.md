@@ -11,7 +11,8 @@ this skill: the plugin root is two directories above this skill directory. Pass
 current working directory unchanged; it identifies this session's membership.
 Retain the `member_id` returned by `join` in conversation context and pass
 `--member-id ID` on every later command. This disambiguates two same-provider
-sessions working in the same directory.
+sessions working in the same directory. This session belongs to one orchestra;
+a machine may belong to several, one session each.
 
 ## Route the request
 
@@ -29,11 +30,15 @@ sessions working in the same directory.
   member id, role, parent, conductor, hub name, and monitor pid.
 - `hub`: run `hub start --json` here, then hand the complete `or1.` conductor
   invite to the user for the conductor machine. State plainly that this session
-  is not a member of the orchestra; starting a hub joins nothing.
+  is not a member of the orchestra; starting a hub joins nothing. `hub start`
+  always creates a new orchestra, so run it only when the user asked for one.
+  To add a member to an orchestra this machine already hosts, mint an invite
+  instead. See "Several orchestras on one machine".
 - `invite`: run `invite --json` and give the complete `or1.` string to the user.
   Add `--role`, `--parent`, `--name`, `--ttl` only when asked. On the hub
   machine with no membership, run `hub invite --json` instead; it uses the
-  local admin token and takes the same flags.
+  local admin token and takes the same flags. Add `--orchestra-id ID` when this
+  machine hosts more than one hub.
 - `send`: compose the message per "Message format", then pipe it through
   `send --stdin --json`. Add `--to TOKEN` once per extra recipient.
 - `inbox`: run `inbox --claim --json`, process each claimed message, then run
@@ -76,6 +81,34 @@ Report these CLI states exactly as they come back:
 - **Child.** A player whose parent is another player. It exists for addressing
   and status roll-up. A child joins with its own invite and gets its own
   binding, monitor, and hooks.
+
+## Several orchestras on one machine
+
+A machine hosts any number of hubs and belongs to any number of orchestras at
+once. Two orchestras share nothing: each hub owns its orchestra id, port, TLS
+certificate, database, log, and supervisor unit.
+
+- `hub start` always creates a new orchestra. No flag reuses an existing one.
+  Run it only when the user asked for a new orchestra; to add a member to an
+  orchestra this machine already hosts, mint an invite from that hub.
+- `hub list --json` names every unclosed hub on this machine.
+- Every other `hub` subcommand — `status`, `ensure`, `unit`, `invite`,
+  `conductor`, `kick`, `close` — takes `--orchestra-id ID`. With one hub the
+  flag is optional. With two the command refuses and names the ids; read one
+  from that error or from `hub list --json` and run the command again with the
+  flag.
+- Pass `--port` when starting a second hub beside a first. Two `hub start`
+  calls running at the same moment can allocate the same free port.
+- One orchestra per session. A hook binds exactly one membership, so joining a
+  second orchestra from this session moves the wake and the Stop nudge to the
+  newest membership. Mail for the first membership still arrives on disk and
+  still raises an OS notification, and no hook surfaces it in the session
+  again. Run each orchestra from its own session.
+- `--member-id ID` stops being optional once two sessions in the same directory
+  belong to different orchestras. A command without it resolves to the newest
+  open membership for this provider and directory, which may be the other
+  orchestra's. A `send` over that membership reaches the other orchestra's
+  members and reports success.
 
 ## Coordinate safely
 
@@ -211,6 +244,9 @@ from the nudge with only the processed tokens. Do not run `inbox --claim`
 first. Claiming is not handling: a claimed message the sender is waiting on
 stays unanswered until you reply and `finish` it. An interruption before
 `finish` leaves the message waiting so a later hook can surface it again.
+
+A session binds one membership; "Several orchestras on one machine" covers
+what that means on a machine that belongs to more than one.
 
 Hooks act only in the session that owns the membership. `join` records the pid
 of the agent process it ran under, and a hook binds only when it runs under
