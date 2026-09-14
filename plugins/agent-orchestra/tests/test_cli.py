@@ -106,7 +106,7 @@ class ParserTest(unittest.TestCase):
             self.parser.parse_args(["--version"])
         self.assertEqual(caught.exception.code, 0)
         self.assertEqual(out.getvalue().strip(), f"agent-orchestra {__version__}")
-        self.assertEqual(__version__, "0.1.7")
+        self.assertEqual(__version__, "0.2.0")
 
     def test_unknown_command_exits_non_zero(self) -> None:
         err = io.StringIO()
@@ -187,6 +187,17 @@ class HookFailureTest(unittest.TestCase):
         code, printed = self._run("hook-wait", RuntimeError("boom"))
         self.assertEqual(code, 0)
         self.assertEqual(printed, "")
+
+
+class TasksFlagsTest(unittest.TestCase):
+    def test_tasks_takes_both_attention_clocks(self):
+        args = build_parser().parse_args(
+            ["tasks", "--response-within", "60", "--stale-after", "7200", "--json"]
+        )
+        self.assertEqual((args.response_within, args.stale_after), (60.0, 7200.0))
+        defaults = build_parser().parse_args(["tasks"])
+        self.assertIsNone(defaults.response_within)
+        self.assertIsNone(defaults.stale_after)
 
 
 if __name__ == "__main__":

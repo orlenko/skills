@@ -40,6 +40,8 @@ from .core import (
     state_root,
     token,
 )
+from .core import SEAT_STATES
+from .lifecycle import ASSIGNER_STATES, OWNER_STATES, TERMINAL, aggregate, derive_owners
 from .protocol import ProtocolError, validate_fields
 
 
@@ -90,7 +92,7 @@ CREATE TABLE IF NOT EXISTS members (
   joined_at REAL NOT NULL, last_seen_at REAL NOT NULL,
   presence TEXT NOT NULL DEFAULT 'connected',
   presence_changed_at REAL NOT NULL,
-  revoked_at REAL, revoked_reason TEXT);
+  revoked_at REAL, revoked_reason TEXT, seat TEXT, seat_at REAL);
 CREATE TABLE IF NOT EXISTS invites (
   secret_hash TEXT PRIMARY KEY, role TEXT NOT NULL, parent TEXT, name TEXT,
   issued_by TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL,
@@ -98,7 +100,8 @@ CREATE TABLE IF NOT EXISTS invites (
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY, sender TEXT NOT NULL,
   act TEXT NOT NULL, re TEXT, task TEXT, need TEXT NOT NULL, refs TEXT NOT NULL,
-  sent_at REAL NOT NULL, body TEXT, body_sha256 TEXT NOT NULL);
+  sent_at REAL NOT NULL, body TEXT, body_sha256 TEXT NOT NULL, lifecycle TEXT);
+CREATE INDEX IF NOT EXISTS messages_by_task ON messages (task, sent_at);
 CREATE TABLE IF NOT EXISTS deliveries (
   message_id TEXT NOT NULL, recipient TEXT NOT NULL,
   state TEXT NOT NULL,
@@ -110,6 +113,16 @@ CREATE TABLE IF NOT EXISTS tasks (
   recipients TEXT NOT NULL,
   created_at REAL NOT NULL);
 """
+
+
+# Columns added after the first release. A hub reopened on an older database
+# gains them here, and its old rows read NULL: an untyped message, a seat no
+# monitor has reported yet.
+_ADDED_COLUMNS = (
+    ("messages", "lifecycle", "TEXT"),
+    ("members", "seat", "TEXT"),
+    ("members", "seat_at", "REAL"),
+)
 
 
 def public_member(row: dict[str, Any]) -> dict[str, Any]:
@@ -125,6 +138,8 @@ def public_member(row: dict[str, Any]) -> dict[str, Any]:
         "presence_changed_at": row["presence_changed_at"],
         "revoked_at": row["revoked_at"],
         "revoked_reason": row["revoked_reason"],
+        "seat": row.get("seat"),
+        "seat_at": row.get("seat_at"),
     }
 
 
@@ -167,6 +182,10 @@ class HubStore:
             self.db.execute("PRAGMA synchronous=NORMAL")
             self.db.execute("PRAGMA busy_timeout=5000")
             self.db.executescript(SCHEMA)
+            for table, column, kind in _ADDED_COLUMNS:
+                columns = {row["name"] for row in self.db.execute(f"PRAGMA table_info({table})")}
+                if column not in columns:
+                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
             self.db.commit()
         try:
             self.path.chmod(0o600)
@@ -435,7 +454,7 @@ class HubStore:
                 "closed_at": self._get("closed_at"),
                 "conductor_id": self._conductor_id(),
                 "self": public_member(current) if current else None,
-                "members": [public_member(row) for row in self._members()],
+                "members": self._public_members(),
                 "queued_for_me": queued,
                 "sent": sent,
             }
@@ -444,30 +463,88 @@ class HubStore:
         with self.lock:
             return {
                 "conductor_id": self._conductor_id(),
-                "members": [public_member(row) for row in self._members()],
+                "members": self._public_members(),
             }
+
+    def _public_members(self) -> list[dict[str, Any]]:
+        """Every member with its unhandled backlog beside its presence.
+
+        Presence is the monitor's heartbeat: the transport. A connected
+        monitor keeps acknowledging mail for a session that is idle, gone, or
+        unbound, so the rows it delivered and nothing handled are the only
+        view the hub has of whether anyone is reading.
+        """
+        backlog = {
+            row["recipient"]: (row["unhandled"], row["oldest"])
+            for row in self.db.execute(
+                "SELECT d.recipient, COUNT(*) AS unhandled, MIN(d.delivered_at) AS oldest"
+                " FROM deliveries d JOIN messages m ON m.id = d.message_id"
+                " WHERE d.state = 'delivered' AND m.sender <> ? GROUP BY d.recipient",
+                (SYSTEM_SENDER,),
+            )
+        }
+        rows = []
+        for row in self._members():
+            unhandled, oldest = backlog.get(row["id"], (0, None))
+            rows.append({**public_member(row), "unhandled": unhandled, "oldest_unhandled_at": oldest})
+        return rows
 
     def tasks(self) -> dict[str, Any]:
         with self.lock:
             rows = self.db.execute("SELECT * FROM tasks ORDER BY created_at ASC").fetchall()
-            result = []
-            for row in rows:
-                latest = self.db.execute(
-                    "SELECT id, act, sender, sent_at FROM messages WHERE task=? AND id<>?"
-                    " ORDER BY sent_at DESC LIMIT 1",
-                    (row["task"], row["message_id"]),
-                ).fetchone()
-                result.append(
-                    {
-                        "task": row["task"],
-                        "message_id": row["message_id"],
-                        "sender": row["sender"],
-                        "recipients": json.loads(row["recipients"]),
-                        "created_at": row["created_at"],
-                        "latest": dict(latest) if latest else None,
-                    }
+            return {"tasks": [self._task_view(row) for row in rows]}
+
+    def _task_view(self, row: Any) -> dict[str, Any]:
+        """One task with each owner's lifecycle replayed from its messages.
+
+        `latest` stays the newest message of any act, for readers written
+        against it. `state` and `owners` are the lifecycle, and only an owner's
+        own events move them.
+        """
+        task: dict[str, Any] = {
+            "task": row["task"],
+            "message_id": row["message_id"],
+            "sender": row["sender"],
+            "recipients": json.loads(row["recipients"]),
+            "created_at": row["created_at"],
+        }
+        messages = [
+            dict(item)
+            for item in self.db.execute(
+                "SELECT id, sender, act, lifecycle, sent_at FROM messages WHERE task=? AND id<>?"
+                " ORDER BY sent_at ASC, id ASC",
+                (row["task"], row["message_id"]),
+            )
+        ]
+        reached = {
+            item["id"]: [
+                delivery["recipient"]
+                for delivery in self.db.execute(
+                    "SELECT recipient FROM deliveries WHERE message_id=?", (item["id"],)
                 )
-            return {"tasks": result}
+            ]
+            for item in messages
+            if item["lifecycle"] in ASSIGNER_STATES
+        }
+        deliveries = {
+            delivery["recipient"]: dict(delivery)
+            for delivery in self.db.execute(
+                "SELECT recipient, state, delivered_at, handled_at FROM deliveries WHERE message_id=?",
+                (row["message_id"],),
+            )
+        }
+        assign_kept = (
+            self.db.execute("SELECT 1 FROM messages WHERE id=?", (row["message_id"],)).fetchone()
+            is not None
+        )
+        owners = derive_owners(task, messages, reached, deliveries, history_complete=assign_kept)
+        newest = messages[-1] if messages else None
+        task["latest"] = (
+            {key: newest[key] for key in ("id", "act", "sender", "sent_at")} if newest else None
+        )
+        task["state"] = aggregate(owners)
+        task["owners"] = owners
+        return task
 
     # ---- invites ------------------------------------------------------------
 
@@ -547,8 +624,9 @@ class HubStore:
         need = payload.get("need") or "none"
         refs = payload.get("refs")
         refs = [] if refs is None else refs
+        lifecycle = payload.get("lifecycle")
         try:
-            validate_fields(act, to, reference, task, need, refs)
+            validate_fields(act, to, reference, task, need, refs, lifecycle)
         except ProtocolError as exc:
             raise APIError(400, str(exc)) from exc
         text = payload.get("text")
@@ -571,6 +649,8 @@ class HubStore:
                     raise APIError(409, "Message id is already in use")
                 return self._message_status(message_id)
             recipients = self._resolve(member, list(to))
+            if lifecycle is not None:
+                self._check_lifecycle(member["id"], str(task), str(lifecycle), recipients)
             moment = now()
             if act == "assign":
                 try:
@@ -583,8 +663,8 @@ class HubStore:
                     self.db.rollback()
                     raise APIError(409, f"Task already assigned: {task}") from exc
             self.db.execute(
-                "INSERT INTO messages (id, sender, act, re, task, need, refs, sent_at, body, body_sha256)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO messages (id, sender, act, re, task, need, refs, sent_at, body,"
+                " body_sha256, lifecycle) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     message_id,
                     member["id"],
@@ -596,6 +676,7 @@ class HubStore:
                     moment,
                     text,
                     digest,
+                    lifecycle,
                 ),
             )
             self.db.executemany(
@@ -611,6 +692,34 @@ class HubStore:
                 "sent_at": moment,
                 "recipients": [{"id": recipient, "state": "queued"} for recipient in recipients],
             }
+
+    def _check_lifecycle(
+        self, sender: str, task: str, lifecycle: str, recipients: list[str]
+    ) -> None:
+        """Only an owner reports its own progress, and only the assigner or the
+        conductor reopens or cancels. Checked once, here, so replaying stored
+        events never has to ask who held the conductor role at the time."""
+        row = self.db.execute("SELECT * FROM tasks WHERE task=?", (task,)).fetchone()
+        if row is None:
+            raise APIError(400, f"Unknown task: {task}; STATE reports on an assigned task")
+        owners = json.loads(row["recipients"])
+        if lifecycle in OWNER_STATES:
+            if sender not in owners:
+                raise APIError(403, f"Only an owner of {task} reports STATE {lifecycle}")
+            current = next(
+                item for item in self._task_view(row)["owners"] if item["id"] == sender
+            )
+            if current["state"] in TERMINAL:
+                raise APIError(
+                    409,
+                    f"Task {task} is {current['state']} for {sender}; the assigner or the"
+                    " conductor reopens it with STATE reopened",
+                )
+            return
+        if sender != row["sender"] and sender != self._conductor_id():
+            raise APIError(403, f"Only the assigner of {task} or the conductor sends STATE {lifecycle}")
+        if not set(recipients) & set(owners):
+            raise APIError(400, f"STATE {lifecycle} must reach at least one owner of {task}")
 
     def _effective_parent(
         self,
@@ -721,6 +830,7 @@ class HubStore:
             "re": message["re"],
             "task": message["task"],
             "need": message["need"],
+            "lifecycle": message.get("lifecycle"),
             "refs": json.loads(message["refs"]),
             "sent_at": message["sent_at"],
             "text": message["body"],
@@ -820,6 +930,7 @@ class HubStore:
             "task": message["task"],
             "re": message["re"],
             "need": message["need"],
+            "lifecycle": message["lifecycle"],
             "sent_at": message["sent_at"],
             "state": state,
             "recipients": recipients,
@@ -827,10 +938,22 @@ class HubStore:
 
     # ---- membership changes -------------------------------------------------
 
-    def heartbeat(self, member: dict[str, Any]) -> dict[str, Any]:
+    def heartbeat(
+        self, member: dict[str, Any], payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        seat = (payload or {}).get("seat")
         with self.lock:
             moment = now()
-            self.db.execute("UPDATE members SET last_seen_at=? WHERE id=?", (moment, member["id"]))
+            if seat in SEAT_STATES:
+                self.db.execute(
+                    "UPDATE members SET last_seen_at=?, seat=?, seat_at=? WHERE id=?",
+                    (moment, seat, moment, member["id"]),
+                )
+            else:
+                # A monitor from before seats sends no body; keep the last one.
+                self.db.execute(
+                    "UPDATE members SET last_seen_at=? WHERE id=?", (moment, member["id"])
+                )
             self.db.commit()
             return {"ok": True, "at": moment}
 
@@ -987,10 +1110,14 @@ class HubStore:
     def prune(self) -> dict[str, int]:
         with self.lock:
             moment = now()
+            # A task's messages are its lifecycle. Pruning them would replay a
+            # finished task as unanswered, so they stay while the task row does;
+            # their bodies are already gone once every delivery arrived.
             cursor = self.db.execute(
                 "DELETE FROM messages WHERE id IN ("
                 "  SELECT m.id FROM messages m WHERE"
-                "    ((m.sender = 'sys' AND m.sent_at < ?) OR (m.sender <> 'sys' AND m.sent_at < ?))"
+                "    ((m.sender = 'sys' AND m.sent_at < ?)"
+                "     OR (m.sender <> 'sys' AND m.task IS NULL AND m.sent_at < ?))"
                 "    AND NOT EXISTS ("
                 "      SELECT 1 FROM deliveries d WHERE d.message_id = m.id AND d.state <> 'handled')"
                 ")",
@@ -1119,8 +1246,7 @@ class OrchestraHandler(BaseHTTPRequestHandler):
                 return
             if self.command == "POST" and parsed.path == "/v1/heartbeat":
                 self._require_member(principal)
-                self._read_body()
-                self._respond(200, store.heartbeat(principal))
+                self._respond(200, store.heartbeat(principal, self._read_body()))
                 return
             if self.command == "POST" and parsed.path == "/v1/leave":
                 self._require_member(principal)

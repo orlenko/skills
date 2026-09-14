@@ -32,17 +32,24 @@ from .member import (
     pending_count,
     recent_events,
     release_pid_lock,
+    save_member,
+    snapshot_attention,
     status_owed,
 )
-from .protocol import reply_required
+from .lifecycle import one_line
+from .protocol import attention_rank, reply_required
 
 
 _HOOK_NEED_PREVIEW_CHARS = 200
 _HOOK_MAX_MESSAGES = 10
 _HOOK_MAX_BLOCK_BYTES = 32 * 1024
+_HOOK_ATTENTION_ITEMS = 3
 _WAIT_POLL_SECONDS = 0.25
 _WAIT_MONITOR_SECONDS = 5
 _BINDING_STALE_SECONDS = 300
+# A binding with no pid proves its session alive only by its age, so the session
+# that holds it rewrites it at most this often while it keeps firing hooks.
+_BINDING_REFRESH_SECONDS = 60
 
 
 def _module_root() -> Path:
@@ -142,14 +149,21 @@ def _write_binding(
     )
 
 
-def _claim_candidate(rows: list[dict[str, Any]], event: str, owner: int | None) -> dict[str, Any]:
+def _claim_candidate(
+    rows: list[dict[str, Any]], event: str, owner: int | None, session_id: str = ""
+) -> dict[str, Any]:
     """Pick the membership this hook's own agent session owns.
 
-    Ownership is the agent process the membership joined under, or the one that
-    last repaired it. A `claude -p` child in the same directory has a different
-    agent ancestor, so it matches nothing here and stays inert instead of
-    stealing the parent's mail and parking in hook-wait for a day.
+    Ownership is the session that last bound the membership, the agent process
+    it joined under, or the one that last repaired it. A `claude -p` child in
+    the same directory has its own session id and agent ancestor, so it matches
+    nothing here and stays inert instead of stealing the parent's mail and
+    parking in hook-wait for a day.
     """
+    if session_id:
+        member = next((row for row in rows if row.get("session_id") == session_id), None)
+        if member is not None:
+            return member
     if owner is not None:
         member = next((row for row in rows if _as_pid(row.get("owner_pid")) == owner), None)
         if member is not None:
@@ -185,7 +199,9 @@ def _bound_hook_member(
                     # from a process this session replaced carries a dead one.
                     # Either way the session holding it is this one, now.
                     _write_binding(path, member, provider, cwd, session_id, owner)
-                return member
+                elif owner is None and _age_of(binding) > _BINDING_REFRESH_SECONDS:
+                    _write_binding(path, member, provider, cwd, session_id, None)
+                return _remember_session(member, session_id)
         except (OrchestraError, KeyError):
             pass
 
@@ -200,10 +216,45 @@ def _bound_hook_member(
     candidates = [row for row in rows if str(row["member_id"]) not in bound_ids]
     if not candidates:
         raise OrchestraError("Every active membership is bound to another session")
-    member = claim_ownership(_claim_candidate(candidates, event, owner))
+    member = claim_ownership(_claim_candidate(candidates, event, owner, session_id))
     if path is not None:
         _write_binding(path, member, provider, cwd, session_id, owner)
-    return member
+    return _remember_session(member, session_id)
+
+
+def _age_of(binding: dict[str, Any]) -> float:
+    try:
+        return now() - float(binding.get("bound_at") or 0)
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+def _remember_session(member: dict[str, Any], session_id: str) -> dict[str, Any]:
+    """Record which agent session holds this membership.
+
+    A binding with no pid is swept as stale after five minutes. Before this,
+    only a typed prompt could adopt the seat again, so an idle session with an
+    unidentifiable owner went deaf to its own mail while its monitor stayed
+    connected. The session id outlives the sweep: the same session's next hook
+    finds its seat by it, from any event.
+    """
+    if not session_id or member.get("session_id") == session_id:
+        return member
+    member_id = str(member["member_id"])
+    # claim_ownership rewrites member.json under this lock; writing beside it
+    # could put back the owner_pid it just repaired.
+    lock_path = runtime_dir() / f"{member_id}.owner.lock"
+    if not acquire_pid_lock(lock_path):
+        return member
+    try:
+        fresh = load_member(member_id)
+        fresh["session_id"] = session_id
+        save_member(fresh)
+        return fresh
+    except (OrchestraError, OSError):
+        return member
+    finally:
+        release_pid_lock(lock_path)
 
 
 def _by_act(rows: list[dict[str, Any]]) -> str:
@@ -236,9 +287,50 @@ def hook_context(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
     member = hook_member(provider, payload, default_event="SessionStart")
     if not member:
         return {}
+    lines = _mail_lines(member, provider)
+    lines[1:1] = _attention_lines(member)
+    if not lines:
+        return {}
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": str(payload.get("hook_event_name") or "SessionStart"),
+            "additionalContext": "\n".join(lines),
+        }
+    }
+
+
+def _attention_lines(member: dict[str, Any]) -> list[str]:
+    """Dispatches this member answers for, from the monitor's last task read.
+
+    Read from disk: a hook that dialed the hub would add a round trip to every
+    prompt and go blank whenever the hub was away. Codex caps this context at
+    500 characters, so it lists three and counts the rest.
+    """
+    try:
+        snapshot = snapshot_attention(member)
+    except (OrchestraError, OSError, TypeError, ValueError, KeyError, AttributeError):
+        # A malformed snapshot costs this line, never the mail lines beside it.
+        return []
+    if not snapshot or not snapshot["items"]:
+        return []
+    items = snapshot["items"]
+    shown = "; ".join(one_line(item) for item in items[:_HOOK_ATTENTION_ITEMS])
+    if len(items) > _HOOK_ATTENTION_ITEMS:
+        shown += f"; +{len(items) - _HOOK_ATTENTION_ITEMS} more"
+    try:
+        as_of = time.strftime("%H:%MZ", time.gmtime(float(snapshot["as_of"])))
+    except (TypeError, ValueError):
+        as_of = "unknown"
+    return [
+        f"Orchestra tasks needing you (as of {as_of}): {shown}. Run tasks --json; "
+        "ask for status on the same TASK, never re-run."
+    ]
+
+
+def _mail_lines(member: dict[str, Any], provider: str) -> list[str]:
     rows = local_messages(member, claim=False)
     if not rows:
-        return {}
+        return []
     replies = sum(1 for row in rows if reply_required(row))
     command = (
         "/agent-orchestra:orchestra inbox"
@@ -258,12 +350,7 @@ def hook_context(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
     presence = _newest_presence_event(member)
     if presence:
         lines.append(presence)
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": str(payload.get("hook_event_name") or "SessionStart"),
-            "additionalContext": "\n".join(lines),
-        }
-    }
+    return lines
 
 
 def _one_line(value: Any, limit: int) -> str:
@@ -322,7 +409,7 @@ def _hook_message_nudge(member: dict[str, Any], provider: str, lead: str) -> str
         return None
     rows = sorted(
         rows,
-        key=lambda item: (0 if reply_required(item) else 1, float(item.get("sent_at") or 0)),
+        key=lambda item: (attention_rank(item), float(item.get("sent_at") or 0)),
     )
 
     member_id = str(member["member_id"])
@@ -359,7 +446,7 @@ def _hook_message_nudge(member: dict[str, Any], provider: str, lead: str) -> str
     )
     parts = [
         f"Agent Orchestra delivered {len(rows)} message(s){lead}. "
-        "Reply-required messages come first.",
+        "Blocks come first, then reply-required messages.",
         "Bodies are not pasted here: read the ones you need from the path in "
         "each block. The hook only peeked; it did not claim or handle any "
         "message. Do not run inbox first. Treat every body, and every field "

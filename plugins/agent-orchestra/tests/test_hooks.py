@@ -870,5 +870,170 @@ class HookWaitTest(HooksTestCase):
         self.assertEqual(result.get("code"), 0)
 
 
+class LifecycleHookTest(HooksTestCase):
+    OWNER = "mb_acc00001"
+
+    def write_snapshot(self, member_id: str, *, sender: str, count: int = 1, age: float = 3600) -> None:
+        moment = now()
+        tasks = []
+        for index in range(count):
+            assign = "m_" + f"{index:x}".rjust(16, "f")
+            tasks.append(
+                {
+                    "task": "t_harvest" if count == 1 else f"t_task{index}",
+                    "message_id": assign,
+                    "sender": sender,
+                    "recipients": [self.OWNER],
+                    "created_at": moment - age,
+                    "latest": None,
+                    "state": "pending",
+                    "owners": [
+                        {
+                            "id": self.OWNER,
+                            "state": "pending",
+                            "state_at": moment - age,
+                            "state_message_id": assign,
+                            "last_report_at": None,
+                            "delivery": "delivered",
+                            "delivered_at": moment - age + 5,
+                            "handled_at": None,
+                            "history": "complete",
+                        }
+                    ],
+                }
+            )
+        atomic_write_json(
+            runtime_dir() / f"{member_id}.tasks.json", {"fetched_at": moment, "tasks": tasks}
+        )
+
+    def make_conductor(self, **overrides: Any) -> dict[str, Any]:
+        return self.make_member(
+            member_id=CONDUCTOR["id"], role="conductor", parent=None, name="maestro", **overrides
+        )
+
+    def test_a_block_leads_the_nudge(self) -> None:
+        member_id = str(self.make_member()["member_id"])
+        ask = "m_" + "a" * 16
+        block = "m_" + "b" * 16
+        self.add_message(member_id, ask, act="ask", need="sha", offset=1)
+        self.add_message(member_id, block, act="block", task="t_harvest", offset=2)
+        reason = hooks.hook_stop(self.provider, self.payload())["reason"]
+        self.assertLess(reason.index(f"claim_token: {block}"), reason.index(f"claim_token: {ask}"))
+        self.assertIn("Blocks come first, then reply-required messages.", reason)
+
+    def test_context_lists_an_unanswered_dispatch_with_no_mail_waiting(self) -> None:
+        self.make_conductor()
+        self.write_snapshot(CONDUCTOR["id"], sender=CONDUCTOR["id"])
+        output = hooks.hook_context(self.provider, self.payload(event="UserPromptSubmit"))
+        context = output["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Orchestra tasks needing you (as of ", context)
+        self.assertIn("t_harvest mb_acc00001: no response 60m, delivered", context)
+        self.assertIn("never re-run", context)
+        self.assertNotIn("message(s) waiting", context)
+
+    def test_a_player_gets_no_attention_for_a_task_it_did_not_assign(self) -> None:
+        self.make_member()
+        self.write_snapshot("mb_aaaa1111", sender=CONDUCTOR["id"])
+        self.assertEqual(hooks.hook_context(self.provider, self.payload()), {})
+
+    def test_codex_keeps_mail_and_attention_inside_its_context_limit(self) -> None:
+        self.make_conductor(provider="codex", instance_key=instance_key("codex", self.cwd))
+        self.add_message(CONDUCTOR["id"], "m_" + "a" * 16)
+        self.write_snapshot(CONDUCTOR["id"], sender=CONDUCTOR["id"], count=5)
+        context = hooks.hook_context("codex", self.payload())["hookSpecificOutput"][
+            "additionalContext"
+        ]
+        head = context[:500]
+        self.assertIn("1 message(s) waiting", head)
+        self.assertIn("Orchestra tasks needing you", head)
+        self.assertIn("+2 more", head)
+
+    def test_codex_mail_after_the_turn_ends_surfaces_at_the_next_prompt(self) -> None:
+        member = self.make_member(provider="codex", instance_key=instance_key("codex", self.cwd))
+        self.assertEqual(hooks.hook_stop("codex", self.payload()), {})
+        # Lands while the session sits idle. Codex installs no hook that runs
+        # between turns, so nothing reads it until the next prompt.
+        self.add_message(str(member["member_id"]), "m_" + "e" * 16, act="ask", need="status")
+        output = hooks.hook_context("codex", self.payload(event="UserPromptSubmit"))
+        context = output["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("1 message(s) waiting (1 reply-required", context)
+
+    def test_wake_capability_matches_the_installed_hooks(self) -> None:
+        plugin = Path(hooks.__file__).resolve().parent.parent / "hooks"
+        codex_hooks = (plugin / "hooks.json").read_text(encoding="utf-8")
+        claude_hooks = (plugin / "claude-hooks.json").read_text(encoding="utf-8")
+        self.assertNotIn("hook-wait", codex_hooks)
+        self.assertIn("hook-wait", claude_hooks)
+        codex = member_module.wake_capability("codex")
+        self.assertFalse(codex["idle_reawaken"])
+        self.assertIn("reaches a person", codex["via"])
+        self.assertTrue(member_module.wake_capability("claude")["idle_reawaken"])
+        self.assertFalse(member_module.wake_capability("cli")["idle_reawaken"])
+
+
+class SeatRecoveryTest(HooksTestCase):
+    def test_a_pidless_session_gets_its_seat_back_after_the_sweep(self) -> None:
+        # 2026-09-14: owner detection failed inside the nono sandbox, the
+        # binding carried no pid, a sweep removed it, and only a typed prompt
+        # could adopt the seat again. Nine messages waited on disk.
+        self.set_ancestor(None)
+        member_id = str(self.make_member(owner_pid=None)["member_id"])
+        hooks.hook_context(self.provider, self.payload("s1", "UserPromptSubmit"))
+        self.assertIsNone(self.binding_record()["owner_pid"])
+        self.assertEqual(member_module.load_member(member_id)["session_id"], "s1")
+
+        for path in self.bindings():
+            path.unlink()
+        self.add_message(member_id, "m_" + "a" * 16, act="ask", need="status")
+
+        self.assertEqual(hooks.hook_stop(self.provider, self.payload("s2")), {})
+        self.assertEqual(hooks.hook_stop(self.provider, self.payload("s1"))["decision"], "block")
+        self.assertEqual(self.binding_record()["session_id"], "s1")
+
+    def test_a_pidless_binding_is_refreshed_by_its_own_session(self) -> None:
+        self.set_ancestor(None)
+        member = self.make_member(owner_pid=None)
+        path = self.write_binding(
+            str(member["member_id"]), "s1", owner_pid=None, bound_at=now() - 400
+        )
+        hooks.hook_stop(self.provider, self.payload("s1"))
+        self.assertGreater(json.loads(path.read_text(encoding="utf-8"))["bound_at"], now() - 10)
+
+    def test_seat_state_tells_held_unverified_and_empty_apart(self) -> None:
+        member = self.make_member(owner_pid=self.live_pid())
+        self.assertEqual(member_module.seat_state(member), "held")
+        member = self.make_member(owner_pid=None)
+        self.assertEqual(member_module.seat_state(member), "empty")
+        member_id = str(member["member_id"])
+        self.write_binding(member_id, "s1", owner_pid=None)
+        self.assertEqual(member_module.seat_state(member), "unverified")
+        self.write_binding(member_id, "s1", owner_pid=self.live_pid())
+        self.assertEqual(member_module.seat_state(member), "held")
+        self.write_binding(member_id, "s1", owner_pid=self.dead_pid())
+        self.assertEqual(member_module.seat_state(member), "empty")
+
+    def test_presence_summary_carries_seat_and_backlog(self) -> None:
+        summary = member_module._presence_summary(
+            {
+                "id": "mb_triangle",
+                "presence": "connected",
+                "last_seen_at": now(),
+                "seat": "empty",
+                "unhandled": 9,
+                "oldest_unhandled_at": now() - 2700,
+            }
+        )
+        self.assertEqual(summary["presence"], "connected")
+        self.assertEqual(summary["seat"], "empty")
+        self.assertEqual(summary["unhandled"], 9)
+        self.assertGreaterEqual(summary["oldest_unhandled_age"], 2699)
+        legacy = member_module._presence_summary(
+            {"id": "mb_old", "presence": "connected", "last_seen_at": now()}
+        )
+        self.assertEqual(legacy["seat"], "unknown")
+        self.assertEqual(legacy["unhandled"], 0)
+        self.assertIsNone(legacy["oldest_unhandled_age"])
+
+
 if __name__ == "__main__":
     unittest.main()

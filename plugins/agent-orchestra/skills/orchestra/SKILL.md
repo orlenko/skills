@@ -26,6 +26,13 @@ a machine may belong to several, one session each.
     Read every presence from the `presence` field, never from the absence of an
     error. Only `connected` means mail is flowing now. `stale` means the member
     stopped heartbeating; report the age plainly. `left` and `kicked` are final.
+  - Presence is the transport only. `seat` says whether a session holds the
+    membership: `held`, `unverified` (bound, but no process could be
+    identified), `empty` (mail lands on disk and nothing surfaces it until a
+    prompt adopts the seat), or `unknown` (a monitor from before 0.2.0).
+    `unhandled` and `oldest_unhandled_age` say whether anyone is reading. A
+    connected member with an empty seat or an old backlog is not working;
+    say so. Report `wake.idle_reawaken` as it comes back.
 - An argument beginning with `or1.`: run `join INVITE --json`. Report the
   member id, role, parent, conductor, hub name, and monitor pid.
 - `hub`: run `hub start --json` here, then hand the complete `or1.` conductor
@@ -44,8 +51,13 @@ a machine may belong to several, one session each.
 - `inbox`: run `inbox --claim --json`, process each claimed message, then run
   `finish MESSAGE_ID... --json` only after each message is genuinely handled.
 - `wait`: run `wait --timeout 55 --claim --json`; process and finish as above.
-- `status`, `members`, `tasks`, `events`, `message MESSAGE_ID`: run the command
-  with `--json` and summarize.
+- `tasks`: run `tasks --json`. Summarize each task by `state`, each owner by
+  `state` and `delivery`, then list `attention` in the order given, with its
+  times. Never read progress from `latest`; it is the newest message of any
+  act. When `lifecycle` is `unavailable`, the hub predates task lifecycle: say
+  so, and make no claim that nothing is late.
+- `status`, `members`, `events`, `message MESSAGE_ID`: run the command with
+  `--json` and summarize.
 - `leave`: run `leave --json`. `close`: run `close --json`, and only when the
   user asked to end the orchestra for every member.
 
@@ -142,8 +154,8 @@ shell leaves backticks and `$` in the body alone.
 
 The header block runs from the first line to the first blank line. Each line is
 a key in capitals, whitespace, then a value. Keys are `ACT`, `TO`, `RE`, `TASK`,
-`NEED`, `REF`. An unknown key, a repeated key, or a missing header block is a
-send-time error. `ACT` is required. Recipients come from `TO`, from `--to`, or
+`NEED`, `REF`, `STATE`. An unknown key, a repeated key, or a missing header
+block is a send-time error. `ACT` is required. Recipients come from `TO`, from `--to`, or
 from both; at least one is required.
 
 The seven acts:
@@ -157,6 +169,21 @@ The seven acts:
 - `assign`: opens a task and must carry `TASK`. The hub rejects a second
   `assign` for the same task id, which makes it the one atomic claim here.
 - `status`: a state summary, sent on request or when `status_owed` is true.
+  With `TASK` and `STATE`, it is an owner's lifecycle report.
+
+`STATE` moves a task, and nothing else does. It needs `TASK`.
+
+- An owner reports its own progress on `ACT status` with `STATE accepted` or
+  `STATE started`. `ACT block` and `ACT done` from an owner count too. The hub
+  rejects `STATE` from anyone who is not an owner of that task, and rejects
+  `STATE started` on work the owner already finished.
+- The assigner or the conductor sends `STATE reopened` or `STATE cancelled` on
+  `ACT tell` or `ACT ask`, addressed to the owners it applies to. Nothing else
+  reopens a done task.
+- Any other message on a task leaves its state alone: a reminder, an
+  observer's report, an owner's later `tell`. An owner that answers without
+  `STATE` reads `unknown`: it answered, and nothing says whether work began.
+- `delivered` is transport. It says the mail arrived, never that work began.
 
 The five `TO` aliases resolve at the hub, relative to the sender: `conductor`
 is the current conductor, `parent` is this member's parent, `children` is every
@@ -168,7 +195,9 @@ Write the body under these rules:
 
 - Make `NEED` a shape, not an invitation. "yes/no: land before the refactor?"
   costs the member one line; "let me know what you think" costs an essay.
-  `NEED none` means no reply is expected.
+  Only an exact `NEED none` means no reply is expected. `NEED none — just a
+  status update` is a send-time error; write `NEED none` and put the
+  explanation in the body.
 - Anchor claims in `REF` so the member can check them cheaply: paths with line
   ranges, commit shas, runnable commands. Neither agent can verify the other's
   confidence, so an assertion is worth far less than something falsifiable.
@@ -187,19 +216,42 @@ Write the body under these rules:
 Stay silent whenever a message would not change what the recipient does. Send
 no bare acknowledgement unless `NEED ack` asked for one, batch findings into a
 single message instead of sending each as it surfaces, and do not narrate
-progress nobody is waiting on.
+progress nobody is waiting on. An assignment is the exception: its owner answers
+every `assign` once, promptly, on the same `TASK`.
 
 ## Conductor playbook
 
-- Open every unit of work with `assign`. Give it a `TASK` id that reads as an
-  id (`t_i18n-zhtw-fonts`), and put the done-criteria in the body as `Done
-  when:` lines a player can check without asking.
-- Read `tasks --json` before deciding anything about who holds what. The task
-  view is derived from messages and is authoritative; conversation memory is
-  not.
+- Open every unit of work with `assign`, and give an execution task one
+  owner. Give it a `TASK` id that reads as an id (`t_i18n-zhtw-fonts`), and put
+  the done-criteria in the body as `Done when:` lines a player can check
+  without asking.
+- Scope every assignment. Name its intended effects, including each store or
+  data write the operation is meant to make, and anchor the user's
+  authorization: who approved it, where, and when. The owner checks a later
+  permission question against that scope.
+- A dispatch is yours until you have read the owner's answer. `queued` and
+  `delivered` are not progress. Do not end the turn on a delivery receipt:
+  wait for `STATE accepted`, `STATE started`, or a block, or tell the human
+  plainly that the task is unanswered.
+- Read `tasks --json` before deciding anything about who holds what. `state`
+  and `owners` come from typed events and are authoritative; `latest` and
+  conversation memory are not. `attention` lists owners that never answered
+  within `--response-within` (default 900 s), blocks, and accepted or started
+  work with no report within `--stale-after` (default 3600 s), each with the
+  time it was observed.
+- Follow up on the same task: `ACT ask`, the same `TASK`, `RE` the assign
+  message id, `NEED status`. Never open a second task to ask for status, and
+  never re-assign or re-run on silence. A missing answer after a
+  store-mutating command is a question about what ran; reconcile before
+  anything runs again.
 - Roll `block` rows up to the human. A block names a decision or a resource the
   orchestra cannot supply itself, so report it with the task id and the
   blocking reason, and do not sit on it.
+- Keep a hold specific to its target. "Do not merge PRs" holds PR merges. It
+  does not hold an independently authorized pass.
+- Close work that will never finish with `STATE cancelled`. Reopen with
+  `STATE reopened` only when the work has to run again. A task from before
+  0.2.0 reads `unknown` until its owner or `STATE cancelled` settles it.
 - After the conductor machine was off, drain the inbox first with
   `inbox --claim --json` and read every queued row in order. Then run
   `tasks --json`, take `absent_since` from the newest `connected` presence
@@ -209,12 +261,26 @@ progress nobody is waiting on.
 
 ## Player playbook
 
+- Answer every `assign` once, promptly, on the same `TASK`: `ACT status` with
+  `STATE accepted` when you take it, `STATE started` when it runs, or
+  `ACT block`. Accepting is not evidence. A started report for a command
+  carries the time you observed it and an anchor someone else can check: the
+  invocation, the job id, the log path. Review and design work anchor to the
+  file, commit, or document. Never invent a pid.
 - Send `done` to `parent` with evidence: the commit sha, the test command, and
-  the result. A `done` with no falsifiable anchor is worth nothing.
+  the result. A `done` with no falsifiable anchor is worth nothing. `done`
+  means finished. Work with a named remainder is `STATE started` with the
+  remainder listed, or a `block`.
 - Send `block` the moment work stops, not at the end of the turn. Name the
   decision or resource needed, and set `NEED` to the shape of the answer.
+- A permission block names the exact action you propose, the rule it fails or
+  the authority it lacks, and the assignment you checked. A restart or a new
+  session does not erase an assignment's authorization. A lifted sandbox or a
+  new capability grants nothing beyond it. Work inside the assignment's
+  scope, including the store writes it named, needs no fresh permission.
 - When `status_owed` is true, send exactly one `ACT status` to `conductor`
-  summarizing state per task. Then stop; the flag clears on the send.
+  summarizing state per task. The send clears the flag. It does not end the
+  work: continue anything assigned that is not done, paused, or blocked.
 - Keep sub-agents inside this session. They use the native teammate channel and
   never touch the orchestra. A sub-agent that must be addressable on its own
   joins as a child with its own invite from `invite --role player --parent
@@ -232,8 +298,8 @@ receives a best-effort OS notification; do not claim that an idle Codex CLI can
 always be reawakened.
 
 Stop hooks peek at locally delivered mail without claiming it and include the
-sender, act, task, need, and message id as a `claim_token`. Reply-required
-messages come first. Bodies stay out of the nudge — orchestra mail is
+sender, act, task, need, and message id as a `claim_token`. Blocks come
+first, then reply-required messages. Bodies stay out of the nudge — orchestra mail is
 agent-to-agent traffic, and pasting every report into the session buries the
 user's own work in other members' correspondence. Each block carries the body's
 size and the path to its row; read the ones the act and need say you need.
@@ -244,6 +310,12 @@ from the nudge with only the processed tokens. Do not run `inbox --claim`
 first. Claiming is not handling: a claimed message the sender is waiting on
 stays unanswered until you reply and `finish` it. An interruption before
 `finish` leaves the message waiting so a later hook can surface it again.
+
+SessionStart and UserPromptSubmit also list the tasks this member answers
+for that need attention: at most three, then a count, with the time of the
+monitor's last `tasks` read. That line asks you to look. It never re-runs or
+re-assigns anything. `status` reports `wake`: whether anything can reawaken
+this session while it is idle.
 
 A session binds one membership; "Several orchestras on one machine" covers
 what that means on a machine that belongs to more than one.
@@ -260,3 +332,9 @@ exits. A later session may also adopt a membership whose owning process has
 exited, on its first user prompt. A harness that spawns sessions in a member
 directory can also set `AGENT_ORCHESTRA_NO_WAIT=1` in their environment to keep
 every orchestra hook inert there.
+
+The owning process is read from the process table in-process, so it is found
+inside sandboxes that deny `ps`; the nono `safe-claude` profile does. A binding
+also records the session id. When a session's binding is swept, the same
+session takes its seat back on its next hook, from any event, and a different
+session still cannot.

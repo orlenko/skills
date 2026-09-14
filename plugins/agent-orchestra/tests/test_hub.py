@@ -1278,5 +1278,260 @@ class HubServerTests(TempHomeTests):
         self.assertEqual(status["conductor_id"], conductor["member_id"])
 
 
+class TaskLifecycleTests(HubStoreTests):
+    """Acceptance cases from the 2026-09-14 Harvest dispatch handoff."""
+
+    def _say(self, sender, to, act, task, lifecycle=None, need="none"):
+        lines = [f"ACT {act}", f"TASK {task}", f"NEED {need}"]
+        if lifecycle:
+            lines.append(f"STATE {lifecycle}")
+        return self.store.send(
+            sender["row"],
+            {
+                "id": None,
+                "to": to,
+                "act": act,
+                "re": None,
+                "task": task,
+                "need": need,
+                "refs": [],
+                "lifecycle": lifecycle,
+                "text": "\n".join(lines) + "\n\nbody\n",
+            },
+        )
+
+    def _task(self, task="t_harvest"):
+        return next(item for item in self.store.tasks()["tasks"] if item["task"] == task)
+
+    def _owner(self, member, task="t_harvest"):
+        return next(
+            item for item in self._task(task)["owners"] if item["id"] == member["member_id"]
+        )
+
+    def test_a_delivered_assignment_with_no_owner_answer_stays_pending(self):
+        conductor, player_a, _b, _d = self._orchestra()
+        self._say(conductor, [player_a["member_id"]], "assign", "t_harvest", need="started: job id")
+        self._drain(player_a)
+        self.assertEqual(self._task()["state"], "pending")
+        owner = self._owner(player_a)
+        self.assertEqual(owner["state"], "pending")
+        self.assertEqual(owner["delivery"], "delivered")
+        self.assertIsNotNone(owner["delivered_at"])
+        self.assertIsNone(owner["last_report_at"])
+
+    def test_a_block_survives_a_conductor_reminder_and_an_observer_report(self):
+        conductor, player_a, player_b, child_d = self._orchestra()
+        self._say(conductor, [player_a["member_id"]], "assign", "t_harvest")
+        block = self._say(player_a, ["conductor"], "block", "t_harvest", need="yes/no: write the store?")
+        self._say(conductor, [player_a["member_id"]], "ask", "t_harvest", need="status")
+        self._say(player_b, ["conductor"], "status", "t_harvest")
+        self._say(child_d, ["conductor"], "tell", "t_harvest")
+        with self.assertRaises(APIError) as observer:
+            self._say(player_b, ["conductor"], "status", "t_harvest", lifecycle="started")
+        self.assertEqual(observer.exception.status, 403)
+
+        task = self._task()
+        self.assertEqual(task["state"], "blocked")
+        self.assertEqual(self._owner(player_a)["state_message_id"], block["id"])
+        # `latest` still names the newest message of any act, for older readers.
+        self.assertEqual(task["latest"]["act"], "tell")
+        self.assertEqual(task["latest"]["sender"], child_d["member_id"])
+
+        self._say(player_a, ["conductor"], "status", "t_harvest", lifecycle="started")
+        self.assertEqual(self._task()["state"], "started")
+
+    def test_done_survives_later_mail_and_only_an_authorized_reopen_reopens_it(self):
+        conductor, player_a, player_b, _d = self._orchestra()
+        self._say(conductor, [player_a["member_id"]], "assign", "t_harvest")
+        self._say(player_a, ["conductor"], "status", "t_harvest", lifecycle="started")
+        self._say(player_a, ["conductor"], "done", "t_harvest")
+        self._say(player_a, ["conductor"], "tell", "t_harvest")
+        self._say(conductor, [player_a["member_id"]], "tell", "t_harvest")
+        self.assertEqual(self._task()["state"], "done")
+
+        with self.assertRaises(APIError) as late:
+            self._say(player_a, ["conductor"], "status", "t_harvest", lifecycle="started")
+        self.assertEqual(late.exception.status, 409)
+        self.assertIn("reopens it with STATE reopened", str(late.exception))
+        with self.assertRaises(APIError) as stranger:
+            self._say(player_b, [player_a["member_id"]], "tell", "t_harvest", lifecycle="reopened")
+        self.assertEqual(stranger.exception.status, 403)
+        self.assertEqual(self._task()["state"], "done")
+
+        self._say(
+            conductor,
+            [player_a["member_id"]],
+            "ask",
+            "t_harvest",
+            lifecycle="reopened",
+            need="started: job id",
+        )
+        self.assertEqual(self._task()["state"], "pending")
+        envelopes = self.store.pending(conductor["row"], 0, 100)
+        typed = [row["lifecycle"] for row in envelopes if row["task"] == "t_harvest"]
+        self.assertIn("started", typed)
+
+    def test_the_task_view_survives_a_hub_restart_in_order(self):
+        conductor, player_a, _b, _d = self._orchestra()
+        self._say(conductor, [player_a["member_id"]], "assign", "t_harvest")
+        self._say(player_a, ["conductor"], "status", "t_harvest", lifecycle="started")
+        self._say(conductor, [player_a["member_id"]], "tell", "t_harvest")
+        block = self._say(player_a, ["conductor"], "block", "t_harvest")
+        before = self.store.tasks()
+
+        self.store.disconnect()
+        self.store = HubStore(Path(self.state) / "hub.sqlite")
+
+        self.assertEqual(self.store.tasks(), before)
+        owner = self._owner(player_a)
+        self.assertEqual(owner["state"], "blocked")
+        self.assertEqual(owner["state_message_id"], block["id"])
+
+    def test_cancel_needs_the_assigner_or_the_conductor_and_must_reach_an_owner(self):
+        conductor, player_a, player_b, child_d = self._orchestra()
+        self._say(player_b, ["children"], "assign", "t_fixture")
+        with self.assertRaises(APIError) as outsider:
+            self._say(player_a, [child_d["member_id"]], "tell", "t_fixture", lifecycle="cancelled")
+        self.assertEqual(outsider.exception.status, 403)
+        with self.assertRaises(APIError) as nowhere:
+            self._say(player_b, ["conductor"], "tell", "t_fixture", lifecycle="cancelled")
+        self.assertEqual(nowhere.exception.status, 400)
+        with self.assertRaises(APIError) as unknown:
+            self._say(conductor, [child_d["member_id"]], "tell", "t_nope", lifecycle="cancelled")
+        self.assertEqual(unknown.exception.status, 400)
+        self.assertEqual(self._task("t_fixture")["state"], "pending")
+
+        self._say(conductor, [child_d["member_id"]], "tell", "t_fixture", lifecycle="cancelled")
+        self.assertEqual(self._task("t_fixture")["state"], "cancelled")
+
+    def test_one_owner_cannot_move_the_others(self):
+        conductor, player_a, player_b, _d = self._orchestra()
+        self._say(conductor, ["children"], "assign", "t_harvest")
+        self._say(player_a, ["conductor"], "status", "t_harvest", lifecycle="started")
+        self._say(player_a, ["conductor"], "done", "t_harvest")
+        task = self._task()
+        self.assertEqual(task["state"], "pending")
+        self.assertEqual(
+            {row["id"]: row["state"] for row in task["owners"]},
+            {player_a["member_id"]: "done", player_b["member_id"]: "pending"},
+        )
+        self._say(player_b, ["conductor"], "status", "t_harvest", lifecycle="accepted")
+        self.assertEqual(self._task()["state"], "accepted")
+        self._say(player_b, ["conductor"], "status", "t_harvest", lifecycle="started")
+        self.assertEqual(self._task()["state"], "started")
+        self._say(player_b, ["conductor"], "done", "t_harvest")
+        self.assertEqual(self._task()["state"], "done")
+
+    def test_an_ambiguous_need_none_is_rejected_at_the_hub(self):
+        conductor, player_a, _b, _d = self._orchestra()
+        with self.assertRaises(APIError) as caught:
+            self._say(
+                conductor, [player_a["member_id"]], "tell", "t_x", need="none — just a status update"
+            )
+        self.assertEqual(caught.exception.status, 400)
+        self.assertIn("move the explanation into the body", str(caught.exception))
+
+    def test_an_untyped_answer_reads_unknown_and_a_pruned_history_never_nags(self):
+        from agent_orchestra import lifecycle
+
+        conductor, player_a, _b, _d = self._orchestra()
+        self._say(conductor, [player_a["member_id"]], "assign", "t_old")
+        # Every version before this one sent status without a STATE.
+        self._say(player_a, ["conductor"], "status", "t_old")
+        self.assertEqual(self._owner(player_a, "t_old")["state"], "unknown")
+
+        with self.store.lock:
+            self.store.db.execute(
+                "DELETE FROM messages WHERE id=?", (self._task("t_old")["message_id"],)
+            )
+            self.store.db.commit()
+        owner = self._owner(player_a, "t_old")
+        self.assertEqual(owner["history"], "pruned")
+        self.assertEqual(owner["state"], "unknown")
+        items = lifecycle.attention(
+            self.store.tasks()["tasks"],
+            member_id=conductor["member_id"],
+            conductor_id=conductor["member_id"],
+            at=now() + 10**6,
+            response_within=1,
+            stale_after=1,
+        )
+        self.assertEqual(items, [])
+
+    def test_prune_keeps_a_tasks_messages(self):
+        conductor, player_a, _b, _d = self._orchestra()
+        self._say(conductor, [player_a["member_id"]], "assign", "t_old")
+        self._say(player_a, ["conductor"], "done", "t_old")
+        plain = self._send(conductor, [player_a["member_id"]])
+        for member in (conductor, player_a):
+            for row in self.store.pending(member["row"], 0, 100):
+                self.store.mark(member["row"], row["id"], "handled")
+        hub.PRUNE_MESSAGE_SECONDS = -1
+        hub.PRUNE_SYSTEM_MESSAGE_SECONDS = -1
+        self.store.prune()
+        self.assertEqual(self._task("t_old")["state"], "done")
+        with self.store.lock:
+            gone = self.store.db.execute(
+                "SELECT 1 FROM messages WHERE id=?", (plain["id"],)
+            ).fetchone()
+        self.assertIsNone(gone)
+
+    def test_a_hub_database_from_before_lifecycle_gains_the_column(self):
+        import sqlite3
+
+        path = Path(self.state) / "legacy.sqlite"
+        legacy = sqlite3.connect(str(path))
+        legacy.executescript(
+            "CREATE TABLE messages ("
+            "  id TEXT PRIMARY KEY, sender TEXT NOT NULL,"
+            "  act TEXT NOT NULL, re TEXT, task TEXT, need TEXT NOT NULL, refs TEXT NOT NULL,"
+            "  sent_at REAL NOT NULL, body TEXT, body_sha256 TEXT NOT NULL);"
+            "INSERT INTO messages VALUES"
+            " ('m_legacy0000000001', 'mb_x', 'status', NULL, 't_old', 'none', '[]', 1.0, NULL, 'x');"
+        )
+        legacy.commit()
+        legacy.close()
+        store = HubStore(path)
+        try:
+            columns = {row["name"] for row in store.db.execute("PRAGMA table_info(messages)")}
+            self.assertIn("lifecycle", columns)
+            row = store.db.execute("SELECT lifecycle FROM messages").fetchone()
+            self.assertIsNone(row["lifecycle"])
+        finally:
+            store.disconnect()
+
+
+class MemberHealthTests(HubStoreTests):
+    def test_members_report_transport_seat_and_backlog_apart(self):
+        conductor, player_a, _b, _d = self._orchestra()
+        sent = self._send(conductor, [player_a["member_id"]])
+        self._drain(player_a)
+        self.store.heartbeat(player_a["row"], {"seat": "empty"})
+
+        def row():
+            return next(
+                item
+                for item in self.store.members()["members"]
+                if item["id"] == player_a["member_id"]
+            )
+
+        self.assertEqual(row()["presence"], "connected")
+        self.assertEqual(row()["seat"], "empty")
+        self.assertEqual(row()["unhandled"], 1)
+        self.assertIsNotNone(row()["oldest_unhandled_at"])
+
+        self.store.heartbeat(player_a["row"], {"seat": "bogus"})
+        self.store.heartbeat(player_a["row"])
+        self.assertEqual(row()["seat"], "empty")
+
+        self.store.heartbeat(player_a["row"], {"seat": "held"})
+        self.store.mark(player_a["row"], sent["id"], "handled")
+        self.assertEqual(row()["seat"], "held")
+        self.assertEqual(row()["unhandled"], 0)
+        self.assertEqual(
+            self.store.status(player_a["row"])["members"], self.store.members()["members"]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

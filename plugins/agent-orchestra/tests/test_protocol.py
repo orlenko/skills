@@ -489,5 +489,124 @@ class AgentAncestorTests(unittest.TestCase):
         self.assertIsNone(agent_session_pid(200))
 
 
+from agent_orchestra.protocol import (  # noqa: E402
+    ProtocolError as _ProtocolError,
+    attention_rank,
+    parse_message as _parse,
+    reply_required as _reply_required,
+    validate_fields,
+)
+
+
+class LifecycleHeaderTests(unittest.TestCase):
+    def test_state_rides_on_status_with_a_task(self):
+        envelope = _parse(
+            "ACT status\nTO conductor\nTASK t_harvest\nSTATE started\n\n"
+            "Observed 21:30Z: job 4411 running, log /tmp/harvest.log\n"
+        )
+        self.assertEqual(envelope.lifecycle, "started")
+        self.assertIsNone(_parse("ACT tell\nTO all\n\nbody").lifecycle)
+
+    def test_reopen_and_cancel_ride_on_tell_or_ask(self):
+        for act in ("tell", "ask"):
+            for value in ("reopened", "cancelled"):
+                with self.subTest(act=act, value=value):
+                    envelope = _parse(f"ACT {act}\nTO mb_4c1e\nTASK t_x\nSTATE {value}\n\nb")
+                    self.assertEqual(envelope.lifecycle, value)
+
+    def test_state_errors_name_the_fix(self):
+        cases = [
+            ("ACT tell\nTO conductor\nTASK t_x\nSTATE started\n\nb", "STATE started goes on ACT status"),
+            ("ACT status\nTO conductor\nSTATE started\n\nb", "needs a TASK"),
+            ("ACT status\nTO conductor\nTASK t_x\nSTATE blocked\n\nb", "send ACT block"),
+            ("ACT status\nTO conductor\nTASK t_x\nSTATE done\n\nb", "send ACT done"),
+            ("ACT status\nTO conductor\nTASK t_x\nSTATE running\n\nb", "Unknown STATE 'running'"),
+            ("ACT done\nTO mb_4c1e\nTASK t_x\nSTATE reopened\n\nb", "goes on ACT tell or ACT ask"),
+        ]
+        for text, message in cases:
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(_ProtocolError, message):
+                    _parse(text)
+
+    def test_validate_fields_checks_lifecycle_for_the_hub(self):
+        validate_fields("status", ["conductor"], None, "t_x", "none", [], "accepted")
+        validate_fields("tell", ["all"], None, None, "none", [])
+        with self.assertRaisesRegex(_ProtocolError, "goes on ACT status"):
+            validate_fields("tell", ["conductor"], None, "t_x", "none", [], "accepted")
+        with self.assertRaisesRegex(_ProtocolError, "needs a TASK"):
+            validate_fields("tell", ["conductor"], None, None, "none", [], "cancelled")
+
+
+class NeedNoneTests(unittest.TestCase):
+    def test_exact_none_means_no_reply(self):
+        for need in ("none", "None", "NONE"):
+            with self.subTest(need=need):
+                envelope = _parse(f"ACT tell\nTO all\nNEED {need}\n\nbody")
+                self.assertFalse(_reply_required(envelope))
+
+    def test_none_followed_by_words_is_rejected_with_the_fix(self):
+        for need in (
+            "none — just a status update",
+            "none - fyi",
+            "none.",
+            "none (status only)",
+            "None: FYI",
+        ):
+            with self.subTest(need=need):
+                with self.assertRaisesRegex(_ProtocolError, "move the explanation into the body"):
+                    _parse(f"ACT tell\nTO all\nNEED {need}\n\nbody")
+                with self.assertRaisesRegex(_ProtocolError, "only an exact `NEED none`"):
+                    validate_fields("tell", ["all"], None, None, need, [])
+
+    def test_a_word_that_starts_with_none_is_an_ordinary_need(self):
+        envelope = _parse("ACT ask\nTO all\nNEED nonetheless: sha\n\nbody")
+        self.assertTrue(_reply_required(envelope))
+
+    def test_a_stored_ambiguous_need_still_asks_for_a_reply(self):
+        # Old rows are read, never re-validated, and stay conservative.
+        self.assertTrue(_reply_required({"need": "none — just a status update"}))
+
+
+class AttentionRankTests(unittest.TestCase):
+    def test_blocks_then_replies_then_the_rest(self):
+        rows = [
+            {"id": "tell", "act": "tell", "need": "none"},
+            {"id": "ask", "act": "ask", "need": "sha"},
+            {"id": "block", "act": "block", "need": "none"},
+        ]
+        self.assertEqual(
+            [row["id"] for row in sorted(rows, key=attention_rank)], ["block", "ask", "tell"]
+        )
+
+
+class NativeProcessReadTests(unittest.TestCase):
+    @unittest.skipUnless(
+        sys.platform == "darwin" or sys.platform.startswith("linux"),
+        "the native reader covers macOS and Linux",
+    )
+    def test_the_native_reader_answers_for_this_process(self):
+        self.assertEqual(core._native_field("ppid=", os.getpid()), str(os.getppid()))
+        self.assertTrue(core._native_field("args=", os.getpid()))
+
+    @unittest.skipUnless(
+        sys.platform == "darwin" or sys.platform.startswith("linux"),
+        "the native reader covers macOS and Linux",
+    )
+    def test_ps_field_answers_when_exec_of_ps_is_denied(self):
+        # What the nono safe-claude profile does: exec of /bin/ps fails.
+        denied = PermissionError(1, "Operation not permitted")
+        with patch.object(core.subprocess, "run", side_effect=denied):
+            self.assertEqual(core._ps_field("ppid=", os.getpid()), str(os.getppid()))
+            self.assertTrue(core._ps_field("args=", os.getpid()))
+
+    def test_a_gone_process_reads_none(self):
+        import subprocess as _subprocess
+
+        process = _subprocess.Popen([sys.executable, "-c", "pass"])
+        process.wait(timeout=10)
+        self.assertIsNone(core._native_field("ppid=", process.pid))
+        self.assertIsNone(core._native_field("args=", process.pid))
+
+
 if __name__ == "__main__":
     unittest.main()

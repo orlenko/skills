@@ -5,17 +5,23 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .core import MEMBER_ID_RE, MESSAGE_ID_RE, TASK_ID_RE, OrchestraError
+from .lifecycle import ASSIGNER_STATES, OWNER_STATES, STATE_VALUES
 
 
 ACTS = ("ask", "tell", "done", "block", "dissent", "assign", "status")
 ALIASES = ("conductor", "parent", "children", "siblings", "all")
-HEADER_KEYS = ("ACT", "TO", "RE", "TASK", "NEED", "REF")
+HEADER_KEYS = ("ACT", "TO", "RE", "TASK", "NEED", "REF", "STATE")
 MAX_HEADER_LINES = 20
 
 _HEADER_LINE = re.compile(r"^([A-Z]+)[ \t]+(.+)$")
 _MESSAGE_ID = re.compile(MESSAGE_ID_RE)
 _MEMBER_ID = re.compile(MEMBER_ID_RE)
 _TASK_ID = re.compile(TASK_ID_RE)
+# `none` followed by more words. Only an exact `none` means no reply, so
+# `NEED none — just a status update` asked for one without meaning to and
+# competed with real blockers for attention.
+_AMBIGUOUS_NONE = re.compile(r"none\b")
+_STATE_AS_ACT = {"blocked": "block", "block": "block", "done": "done"}
 
 
 class ProtocolError(OrchestraError):
@@ -31,6 +37,7 @@ class Envelope:
     need: str = "none"
     refs: list[str] = field(default_factory=list)
     text: str = ""
+    lifecycle: str | None = None
 
 
 def parse_message(text: str, extra_to: list[str] | None = None) -> Envelope:
@@ -56,9 +63,21 @@ def parse_message(text: str, extra_to: list[str] | None = None) -> Envelope:
         raise ProtocolError("Act assign requires a TASK header")
 
     need = headers.get("NEED", "none")
+    _check_need(need)
+    lifecycle = headers.get("STATE")
+    _check_lifecycle(act, task, lifecycle)
     refs = [item.strip() for item in headers.get("REF", "").split(",") if item.strip()]
 
-    return Envelope(act=act, to=recipients, re=reference, task=task, need=need, refs=refs, text=text)
+    return Envelope(
+        act=act,
+        to=recipients,
+        re=reference,
+        task=task,
+        need=need,
+        refs=refs,
+        text=text,
+        lifecycle=lifecycle,
+    )
 
 
 def reply_required(envelope_or_row: Envelope | dict[str, Any]) -> bool:
@@ -71,11 +90,21 @@ def reply_required(envelope_or_row: Envelope | dict[str, Any]) -> bool:
     return str(need or "none").strip().lower() != "none"
 
 
+def attention_rank(row: dict[str, Any]) -> int:
+    """Blocks first, then anything that needs a reply, then the rest."""
+    if row.get("act") == "block":
+        return 0
+    return 1 if reply_required(row) else 2
+
+
 def summarize(row: dict[str, Any]) -> str:
     parts = [f"act={row.get('act') or 'tell'}"]
     task = row.get("task")
     if task:
         parts.append(f"task={task}")
+    lifecycle = row.get("lifecycle")
+    if lifecycle:
+        parts.append(f"state={lifecycle}")
     parts.append(f"need={row.get('need') or 'none'}")
     sender = row.get("from")
     if isinstance(sender, dict):
@@ -94,6 +123,7 @@ def validate_fields(
     task: Any,
     need: Any,
     refs: Any,
+    lifecycle: Any = None,
 ) -> None:
     if act not in ACTS:
         raise ProtocolError(f"Unknown act {act!r}; expected one of {', '.join(ACTS)}")
@@ -111,11 +141,41 @@ def validate_fields(
         raise ProtocolError("Act assign requires a task")
     if not isinstance(need, str) or not need.strip():
         raise ProtocolError("NEED must be a non-empty string; use 'none' when no reply is required")
+    _check_need(need)
     if not isinstance(refs, (list, tuple)):
         raise ProtocolError("REF must be a list of anchors")
     for ref in refs:
         if not isinstance(ref, str) or not ref.strip():
             raise ProtocolError(f"REF anchor {ref!r} is empty")
+    _check_lifecycle(act, task, lifecycle)
+
+
+def _check_need(need: str) -> None:
+    value = need.strip()
+    if value.lower() != "none" and _AMBIGUOUS_NONE.match(value.lower()):
+        raise ProtocolError(
+            f"NEED {value!r} is ambiguous: only an exact `NEED none` means no reply, "
+            "and anything after it makes the message reply-required. Write `NEED none` "
+            "and move the explanation into the body, or give the shape of the reply you need"
+        )
+
+
+def _check_lifecycle(act: Any, task: Any, lifecycle: Any) -> None:
+    if lifecycle is None:
+        return
+    if not isinstance(lifecycle, str) or lifecycle not in STATE_VALUES:
+        instead = _STATE_AS_ACT.get(str(lifecycle).strip().lower())
+        if instead:
+            raise ProtocolError(f"STATE {lifecycle!r} is not a lifecycle state; send ACT {instead}")
+        raise ProtocolError(
+            f"Unknown STATE {lifecycle!r}; expected one of {', '.join(STATE_VALUES)}"
+        )
+    if task is None:
+        raise ProtocolError(f"STATE {lifecycle} needs a TASK naming the assignment it reports on")
+    if lifecycle in OWNER_STATES and act != "status":
+        raise ProtocolError(f"STATE {lifecycle} goes on ACT status")
+    if lifecycle in ASSIGNER_STATES and act not in ("tell", "ask"):
+        raise ProtocolError(f"STATE {lifecycle} goes on ACT tell or ACT ask")
 
 
 def _parse_headers(text: str) -> dict[str, str]:

@@ -8,7 +8,9 @@ import json
 import os
 import secrets
 import ssl
+import struct
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -45,6 +47,11 @@ AGENT_ONE_SHOT_CODEX = frozenset({"exec"})
 AGENT_DEADLINE_COMMANDS = frozenset({"timeout", "gtimeout"})
 
 BUCKETS = ("pending", "claimed", "done", "outbox", "sent", "events")
+# Whether a session holds a membership, as its monitor reports it. `held`: a
+# live agent process owns it. `unverified`: a session bound it, but no process
+# could be identified to prove that session alive. `empty`: nothing holds it,
+# so mail lands on disk and no hook surfaces it until a prompt adopts the seat.
+SEAT_STATES = ("held", "unverified", "empty")
 
 MESSAGE_ID_RE = r"m_[A-Za-z0-9_-]{8,96}"
 MEMBER_ID_RE = r"mb_[A-Za-z0-9_-]{4,40}"
@@ -345,7 +352,101 @@ def _read_response_body(response: Any, limit: int) -> bytes:
     return raw
 
 
+# libproc's proc_pidinfo(PROC_PIDTBSDINFO) fills a 136-byte proc_bsdinfo with
+# pbi_ppid at offset 16; sysctl {CTL_KERN, KERN_PROCARGS2, pid} returns argc,
+# the executable path, NUL padding, then the arguments.
+_PROC_PIDTBSDINFO = 3
+_PROC_BSDINFO_SIZE = 136
+_PROC_BSDINFO_PPID_OFFSET = 16
+_CTL_KERN = 1
+_KERN_PROCARGS2 = 49
+_LIBC: Any = None
+
+
+def _libc() -> Any:
+    global _LIBC
+    if _LIBC is None:
+        try:
+            import ctypes
+            import ctypes.util
+
+            library = ctypes.CDLL(None, use_errno=True)
+            if not hasattr(library, "proc_pidinfo"):
+                library = ctypes.CDLL(ctypes.util.find_library("proc"), use_errno=True)
+            library.proc_pidinfo  # noqa: B018 - AttributeError when absent
+            _LIBC = library
+        except (OSError, AttributeError, TypeError):
+            _LIBC = False
+    return _LIBC
+
+
+def _native_field(flag: str, pid: int) -> str | None:
+    """`ppid=` or `args=` for a process, read in-process without running ps.
+
+    The nono `safe-claude` profile denies exec of /bin/ps, so inside it every ps
+    call answered None, the agent ancestor was never found, and every session
+    launched that way joined with `owner_pid: null`. libproc and sysctl on
+    macOS, and /proc on Linux, answer the same two questions inside it.
+    """
+    try:
+        if sys.platform == "darwin":
+            return _darwin_field(flag, int(pid))
+        if sys.platform.startswith("linux"):
+            return _linux_field(flag, int(pid))
+    except (OSError, ValueError, AttributeError, IndexError, struct.error):
+        return None
+    return None
+
+
+def _darwin_field(flag: str, pid: int) -> str | None:
+    import ctypes
+
+    library = _libc()
+    if not library or pid <= 0:
+        return None
+    if flag == "ppid=":
+        buffer = ctypes.create_string_buffer(_PROC_BSDINFO_SIZE)
+        size = library.proc_pidinfo(
+            ctypes.c_int(pid), _PROC_PIDTBSDINFO, ctypes.c_uint64(0), buffer, _PROC_BSDINFO_SIZE
+        )
+        if size != _PROC_BSDINFO_SIZE:
+            return None
+        return str(struct.unpack_from("I", buffer.raw, _PROC_BSDINFO_PPID_OFFSET)[0])
+    if flag == "args=":
+        mib = (ctypes.c_int * 3)(_CTL_KERN, _KERN_PROCARGS2, pid)
+        size = ctypes.c_size_t(0)
+        if library.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0 or not size.value:
+            return None
+        buffer = ctypes.create_string_buffer(size.value)
+        if library.sysctl(mib, 3, buffer, ctypes.byref(size), None, 0) != 0:
+            return None
+        raw = buffer.raw[: size.value]
+        argc = struct.unpack_from("i", raw, 0)[0]
+        rest = raw[4:]
+        rest = rest[rest.index(b"\0") :].lstrip(b"\0")
+        args = [part.decode("utf-8", "replace") for part in rest.split(b"\0")[:argc]]
+        return " ".join(args) or None
+    return None
+
+
+def _linux_field(flag: str, pid: int) -> str | None:
+    base = Path("/proc") / str(pid)
+    if flag == "ppid=":
+        stat = (base / "stat").read_text(encoding="utf-8", errors="replace")
+        # The command name may hold spaces and parentheses; the fields after
+        # the last ")" cannot.
+        return stat[stat.rindex(")") + 2 :].split()[1]
+    if flag == "args=":
+        raw = (base / "cmdline").read_bytes()
+        args = [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+        return " ".join(args) or None
+    return None
+
+
 def _ps_field(flag: str, pid: int) -> str | None:
+    native = _native_field(flag, pid)
+    if native is not None:
+        return native
     try:
         result = subprocess.run(
             ["ps", "-o", flag, "-p", str(pid)],

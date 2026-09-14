@@ -128,8 +128,24 @@ def build_parser() -> argparse.ArgumentParser:
     members = commands.add_parser("members", help="List every member and its presence")
     _common(members)
 
-    tasks = commands.add_parser("tasks", help="List assigned tasks and their newest message")
+    tasks = commands.add_parser(
+        "tasks", help="List assigned tasks, each owner's lifecycle, and what needs attention"
+    )
     _common(tasks)
+    tasks.add_argument(
+        "--response-within",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="How long an owner has to answer an assignment (default 900)",
+    )
+    tasks.add_argument(
+        "--stale-after",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="How long an accepted or started task may go without a report (default 3600)",
+    )
 
     events = commands.add_parser("events", help="List recent system events")
     _common(events)
@@ -443,7 +459,12 @@ def run(args: argparse.Namespace) -> int:
         _print(member_api.members(member), args.as_json)
         return 0
     if args.command == "tasks":
-        _print(member_api.tasks(member), args.as_json)
+        _print(
+            member_api.tasks(
+                member, response_within=args.response_within, stale_after=args.stale_after
+            ),
+            args.as_json,
+        )
         return 0
     if args.command == "events":
         _print({"events": member_api.recent_events(member, limit=args.limit)}, args.as_json)

@@ -30,7 +30,8 @@ from .core import (
     runtime_dir,
     state_root,
 )
-from .protocol import parse_message, reply_required
+from .lifecycle import attention as lifecycle_attention, thresholds
+from .protocol import attention_rank, parse_message, reply_required
 
 
 PRESENCE_STALE_SECONDS = 120
@@ -615,6 +616,7 @@ def flush_outbox(member: dict[str, Any]) -> list[dict[str, Any]]:
             "task": record.get("task"),
             "need": record.get("need") or "none",
             "refs": record.get("refs") or [],
+            "lifecycle": record.get("lifecycle"),
             "text": record.get("text") or "",
         }
         try:
@@ -695,6 +697,7 @@ def send(member: dict[str, Any], text: str, to: list[str] | None = None) -> dict
         "task": envelope.task,
         "need": envelope.need,
         "refs": list(envelope.refs),
+        "lifecycle": envelope.lifecycle,
         "queued_locally_at": now(),
     }
     atomic_write_json(bucket_dir(member_id, "outbox") / f"{message_id}.json", record)
@@ -712,7 +715,7 @@ def send(member: dict[str, Any], text: str, to: list[str] | None = None) -> dict
 
 
 def _inbox_order(row: dict[str, Any]) -> tuple[int, float]:
-    return (0 if reply_required(row) else 1, float(row.get("sent_at") or 0))
+    return (attention_rank(row), float(row.get("sent_at") or 0))
 
 
 def local_messages(member: dict[str, Any], *, claim: bool) -> list[dict[str, Any]]:
@@ -933,9 +936,121 @@ def members(member: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def tasks(member: dict[str, Any]) -> dict[str, Any]:
+def tasks(
+    member: dict[str, Any],
+    *,
+    response_within: float | None = None,
+    stale_after: float | None = None,
+) -> dict[str, Any]:
     ensure_hub_if_local(member)
-    return api_request(member, "GET", "/v1/tasks")
+    result = api_request(member, "GET", "/v1/tasks")
+    rows = [row for row in (result.get("tasks") or []) if isinstance(row, dict)]
+    _save_task_snapshot(member, rows)
+    within, stale = thresholds(response_within, stale_after)
+    result["attention"] = task_attention(
+        member, rows, response_within=within, stale_after=stale
+    )
+    result["thresholds"] = {"response_within": within, "stale_after": stale}
+    # A hub from before task lifecycle answers without `owners`. Say so, so
+    # an empty attention list is never read as "nothing is late".
+    result["lifecycle"] = (
+        "derived" if all(isinstance(row.get("owners"), list) for row in rows) else "unavailable"
+    )
+    return result
+
+
+def task_attention(
+    member: dict[str, Any],
+    rows: list[dict[str, Any]],
+    *,
+    at: float | None = None,
+    response_within: float | None = None,
+    stale_after: float | None = None,
+) -> list[dict[str, Any]]:
+    within, stale = thresholds(response_within, stale_after)
+    return lifecycle_attention(
+        rows,
+        member_id=str(member["member_id"]),
+        conductor_id=member.get("conductor_id"),
+        at=now() if at is None else at,
+        response_within=within,
+        stale_after=stale,
+    )
+
+
+def _task_snapshot_path(member_id: str) -> Path:
+    return runtime_dir() / f"{member_id}.tasks.json"
+
+
+def _save_task_snapshot(member: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    atomic_write_json(
+        _task_snapshot_path(str(member["member_id"])), {"fetched_at": now(), "tasks": rows}
+    )
+
+
+def snapshot_attention(member: dict[str, Any]) -> dict[str, Any] | None:
+    """Attention from the monitor's last task read, for hooks that stay offline.
+
+    None when no read ever landed. `as_of` is when the hub answered, so a
+    reader can tell an old view from a quiet one.
+    """
+    try:
+        snapshot = read_json(_task_snapshot_path(str(member["member_id"])))
+    except OrchestraError:
+        return None
+    rows = [row for row in (snapshot.get("tasks") or []) if isinstance(row, dict)]
+    return {
+        "as_of": snapshot.get("fetched_at"),
+        "items": task_attention(member, rows),
+    }
+
+
+def seat_state(member: dict[str, Any]) -> str:
+    """Whether a session holds this membership, from this machine's records.
+
+    The hub's presence says only that the monitor heartbeats. On 2026-09-14 a
+    player's monitor stayed connected for hours while no session held his
+    membership: no owner pid, no binding, nine messages on disk that no hook
+    would surface. This is the view that tells those apart.
+    """
+    owner = _as_pid(member.get("owner_pid"))
+    if owner is not None and _pid_alive(owner):
+        return "held"
+    member_id = str(member["member_id"])
+    unverified = False
+    for _, record in core.binding_records():
+        if str(record.get("member_id") or "") != member_id:
+            continue
+        pid = _as_pid(record.get("owner_pid"))
+        if pid is None:
+            unverified = True
+        elif _pid_alive(pid):
+            return "held"
+    return "unverified" if unverified else "empty"
+
+
+def wake_capability(provider: Any) -> dict[str, Any]:
+    """What can bring this session back to its mail, for what is installed.
+
+    Only Claude Code installs hook-wait, the asyncRewake Stop hook that parks
+    until mail lands. Codex runs its hooks when a turn starts or ends, so mail
+    that lands while it is idle waits for the next prompt. Its OS notification
+    reaches a person, never the agent.
+    """
+    name = str(provider or "")
+    if name == "claude":
+        return {
+            "idle_reawaken": True,
+            "via": "hook-wait (Stop, asyncRewake)",
+            "surfaces_at": ["SessionStart", "UserPromptSubmit", "Stop"],
+        }
+    if name == "codex":
+        return {
+            "idle_reawaken": False,
+            "via": "none; the OS notification reaches a person",
+            "surfaces_at": ["SessionStart", "UserPromptSubmit", "Stop"],
+        }
+    return {"idle_reawaken": False, "via": "none", "surfaces_at": []}
 
 
 def _event_sort_key(row: dict[str, Any]) -> tuple[float, float]:
@@ -1042,7 +1157,20 @@ def _presence_summary(row: dict[str, Any]) -> dict[str, Any]:
         "presence": presence,
         "last_seen_age": age,
         "revoked_reason": row.get("revoked_reason"),
+        # Presence is the transport. `seat` says whether a session holds the
+        # membership, and `unhandled` whether anyone is reading its mail.
+        "seat": row.get("seat") or "unknown",
+        "unhandled": int(row.get("unhandled") or 0),
+        "oldest_unhandled_age": _age(row.get("oldest_unhandled_at")),
     }
+
+
+def _age(moment: Any) -> float | None:
+    try:
+        value = float(moment)
+    except (TypeError, ValueError):
+        return None
+    return round(max(0.0, now() - value), 1) if value else None
 
 
 def status(member: dict[str, Any]) -> dict[str, Any]:
@@ -1117,6 +1245,9 @@ def status(member: dict[str, Any]) -> dict[str, Any]:
         "reply_required": sum(1 for row in rows if reply_required(row)),
         "members": summaries,
         "status_owed": status_owed(member),
+        "attention": snapshot_attention(member),
+        "seat": seat_state(member),
+        "wake": wake_capability(member.get("provider")),
         "remote": remote,
     }
 
@@ -1276,11 +1407,23 @@ def monitor_loop(member_id: str) -> None:
                 if _store_incoming(member, envelope):
                     new_count += 1
                 api_request(member, "POST", f"/v1/messages/{message_id}/ack", {})
-            api_request(member, "POST", "/v1/heartbeat", {}, timeout=5)
+            api_request(
+                member, "POST", "/v1/heartbeat", {"seat": seat_state(member)}, timeout=5
+            )
             roster = api_request(member, "GET", "/v1/members", timeout=10)
             _apply_self_row(member, _self_row(roster, member_id), roster.get("conductor_id", _MISSING))
             if new_count:
                 _notify(member, new_count)
+            try:
+                # Hooks read attention from this file; a hook that dialed the
+                # hub would add a round trip to every prompt.
+                tasks_view = api_request(member, "GET", "/v1/tasks", timeout=10)
+                _save_task_snapshot(
+                    member,
+                    [row for row in (tasks_view.get("tasks") or []) if isinstance(row, dict)],
+                )
+            except OrchestraError:
+                pass
             delay = 0.25
             atomic_write_json(state_path, _monitor_record(os.getpid(), started_at))
         except APIError as exc:
