@@ -3,14 +3,16 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from . import __version__, core
+from . import __version__, codex_wake, core
 from .core import (
     APIError,
     MAX_MESSAGE_BYTES,
@@ -210,6 +212,12 @@ def join(
         "owner_pid": core.agent_ancestor_pid(),
     }
     save_member(member)
+    if provider == "codex":
+        codex_wake.register(member_id, prefix="AGENT_ORCHESTRA")
+        thread_id = codex_wake.target(member_id).get("thread_id")
+        if thread_id:
+            member["session_id"] = thread_id
+            save_member(member)
     monitor_pid = start_monitor(member) if start_background_monitor else None
     return {
         "member_id": member_id,
@@ -375,6 +383,31 @@ def _monitor_record_alive(record: dict[str, Any]) -> bool:
         _pid_alive(int(record.get("pid", 0)))
         and float(record.get("updated_at", 0)) >= now() - _MONITOR_STALE_SECONDS
     )
+
+
+def restart_monitor(member: dict[str, Any]) -> int:
+    """Replace this mailbox's monitor after an installed-code update."""
+    path = _monitor_state_path(str(member["member_id"]))
+    try:
+        record = read_json(path)
+    except OrchestraError:
+        record = {}
+    pid = int(record.get("pid") or 0)
+    if _pid_alive(pid):
+        # A stale PID file can point at a reused PID. Verify the exact module
+        # and mailbox argument before signalling anything.
+        result = subprocess.run(["ps", "-p", str(pid), "-o", "args="],
+                                capture_output=True, text=True, timeout=2, check=False)
+        argv = shlex.split(result.stdout)
+        expected = ["-m", "agent_orchestra", "monitor-run", "--member-id", str(member["member_id"])]
+        if not any(argv[i:i + len(expected)] == expected for i in range(len(argv))):
+            raise OrchestraError("Cannot verify the recorded monitor process; refusing to stop it")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    path.unlink(missing_ok=True)
+    return start_monitor(member)
 
 
 def start_monitor(member: dict[str, Any]) -> int:
@@ -1029,14 +1062,8 @@ def seat_state(member: dict[str, Any]) -> str:
     return "unverified" if unverified else "empty"
 
 
-def wake_capability(provider: Any) -> dict[str, Any]:
-    """What can bring this session back to its mail, for what is installed.
-
-    Only Claude Code installs hook-wait, the asyncRewake Stop hook that parks
-    until mail lands. Codex runs its hooks when a turn starts or ends, so mail
-    that lands while it is idle waits for the next prompt. Its OS notification
-    reaches a person, never the agent.
-    """
+def wake_capability(provider: Any, member_id: str = "") -> dict[str, Any]:
+    """What can bring this session back to its mail, for what is installed."""
     name = str(provider or "")
     if name == "claude":
         return {
@@ -1045,11 +1072,7 @@ def wake_capability(provider: Any) -> dict[str, Any]:
             "surfaces_at": ["SessionStart", "UserPromptSubmit", "Stop"],
         }
     if name == "codex":
-        return {
-            "idle_reawaken": False,
-            "via": "none; the OS notification reaches a person",
-            "surfaces_at": ["SessionStart", "UserPromptSubmit", "Stop"],
-        }
+        return codex_wake.capability(member_id)
     return {"idle_reawaken": False, "via": "none", "surfaces_at": []}
 
 
@@ -1247,7 +1270,7 @@ def status(member: dict[str, Any]) -> dict[str, Any]:
         "status_owed": status_owed(member),
         "attention": snapshot_attention(member),
         "seat": seat_state(member),
-        "wake": wake_capability(member.get("provider")),
+        "wake": wake_capability(member.get("provider"), member_id),
         "remote": remote,
     }
 
@@ -1375,6 +1398,17 @@ def close(member: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _wake_codex(member: dict[str, Any]) -> None:
+    if member.get("provider") != "codex" or member.get("closed_at"):
+        return
+    member_id = str(member["member_id"])
+    codex_wake.wake(
+        member_id, buckets=[bucket_dir(member_id, b) for b in ("pending", "claimed")],
+        executable=_module_root() / "bin" / "agent-orchestra",
+        id_flag="--member-id", label="Agent Orchestra",
+    )
+
+
 def monitor_loop(member_id: str) -> None:
     member = load_member(member_id)
     state_path = _monitor_state_path(member_id)
@@ -1383,6 +1417,7 @@ def monitor_loop(member_id: str) -> None:
     delay = 0.25
     while not member.get("closed_at"):
         try:
+            _wake_codex(member)
             ensure_hub_if_local(member)
             flush_handled(member)
             flush_outbox(member)
@@ -1407,6 +1442,7 @@ def monitor_loop(member_id: str) -> None:
                 if _store_incoming(member, envelope):
                     new_count += 1
                 api_request(member, "POST", f"/v1/messages/{message_id}/ack", {})
+            _wake_codex(member)
             api_request(
                 member, "POST", "/v1/heartbeat", {"seat": seat_state(member)}, timeout=5
             )

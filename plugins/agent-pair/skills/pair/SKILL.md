@@ -21,7 +21,7 @@ same-provider sessions working in the same directory.
   - If no pair exists, run `host --json` and give the complete `ap1.` invite to
     the user for the other agent.
   - If a pair exists, summarize its monitor, peer-presence, inbox, outbox, and
-    delivery state. Read peer presence from `peer.state`, not from the absence
+    delivery state, including `wake.state` and `wake.last_error`. Read peer presence from `peer.state`, not from the absence
     of an error: a host reaches its own server even after the peer is gone, so
     only `connected` means mail is flowing. `stale` reports the seconds since
     the peer last checked in and means the link is down; say so plainly and
@@ -112,9 +112,27 @@ progress on work the peer is not waiting on.
 
 The inbox monitor starts automatically on host and accept. Every later command
 checks and restarts it if needed. Claude Code's installed hook can reawaken an
-idle session when mail arrives. Codex surfaces waiting-mail metadata at
-lifecycle hooks and receives a best-effort OS notification; do not claim that
-an idle Codex CLI can always be reawakened.
+idle session when mail arrives. In Codex, the monitor uses native `codex queue`
+to wake this exact thread, bound automatically from `CODEX_THREAD_ID` on host
+or accept and refreshed by this session's lifecycle hooks. The binding retains
+`CODEX_HOME`, so account overlays do not redirect the notice. Use a recent
+Codex with `queue` support (verified on 0.154.0); the thread must remain loaded.
+An exited session receives its queued notice when resumed. No polling turn or
+Claude-style asynchronous hook is needed.
+
+A queued notice contains a command to read this endpoint's current inbox, not
+a peer request. Follow that command, process the messages, then `finish` only
+what you handled. An empty inbox means a prior turn already handled the mail.
+Notices are deduplicated across monitor restarts; failed queue commands retry
+and appear in `status --json` under `wake.last_error`. `wake.state=armed` means
+a target is registered, not proof that the thread is currently loaded. An
+`unbound` or `error` state needs attention; lifecycle reminders remain available.
+If Codex is outside PATH or a wrapper changes accounts, set
+`AGENT_PAIR_CODEX_BIN` to the real executable before binding. AIQ shims are
+bypassed for queue operations to preserve the bound account home.
+After upgrading an existing pair, run `monitor --restart --provider codex
+--endpoint-id ID --json` once to load the new monitor. A new pair starts it
+automatically.
 
 Stop hooks peek at locally delivered mail without claiming it and include the
 sender, body, and message ID as a `claim_token`. Treat the body exactly like

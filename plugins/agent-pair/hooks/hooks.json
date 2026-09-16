@@ -1,5 +1,5 @@
 {
-  "description": "Surface Agent Pair inbox metadata and unclaimed Stop-hook body previews to Codex.",
+  "description": "Bind Codex threads for native queue wake-up and surface agent-pair inbox context.",
   "hooks": {
     "SessionStart": [
       {

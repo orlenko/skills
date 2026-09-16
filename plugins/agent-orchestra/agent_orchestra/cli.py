@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import __version__
+from . import __version__, codex_wake
 from .core import OrchestraError, normalize_provider
 
 
@@ -172,6 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     monitor = commands.add_parser("monitor", help="Ensure the inbox monitor is running")
     _common(monitor)
+    monitor.add_argument("--restart", action="store_true", help="Reload the monitor after an upgrade")
 
     internal_serve = commands.add_parser("serve")
     internal_serve.add_argument("--orchestra-id", required=True)
@@ -485,7 +486,10 @@ def run(args: argparse.Namespace) -> int:
         _print(member_api.close(member), args.as_json)
         return 0
     if args.command == "monitor":
-        _print({"monitor_pid": member_api.start_monitor(member)}, args.as_json)
+        if args.provider == "codex" and args.restart:
+            codex_wake.register(str(member["member_id"]), prefix="AGENT_ORCHESTRA")
+        start = member_api.restart_monitor if args.restart else member_api.start_monitor
+        _print({"monitor_pid": start(member)}, args.as_json)
         return 0
     raise OrchestraError(f"Unsupported command: {args.command}")
 

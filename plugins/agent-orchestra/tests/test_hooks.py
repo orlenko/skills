@@ -948,11 +948,10 @@ class LifecycleHookTest(HooksTestCase):
         self.assertIn("Orchestra tasks needing you", head)
         self.assertIn("+2 more", head)
 
-    def test_codex_mail_after_the_turn_ends_surfaces_at_the_next_prompt(self) -> None:
+    def test_codex_lifecycle_reminder_still_surfaces_waiting_mail(self) -> None:
         member = self.make_member(provider="codex", instance_key=instance_key("codex", self.cwd))
         self.assertEqual(hooks.hook_stop("codex", self.payload()), {})
-        # Lands while the session sits idle. Codex installs no hook that runs
-        # between turns, so nothing reads it until the next prompt.
+        # Lifecycle context remains a fallback alongside native queue delivery.
         self.add_message(str(member["member_id"]), "m_" + "e" * 16, act="ask", need="status")
         output = hooks.hook_context("codex", self.payload(event="UserPromptSubmit"))
         context = output["hookSpecificOutput"]["additionalContext"]
@@ -966,7 +965,8 @@ class LifecycleHookTest(HooksTestCase):
         self.assertIn("hook-wait", claude_hooks)
         codex = member_module.wake_capability("codex")
         self.assertFalse(codex["idle_reawaken"])
-        self.assertIn("reaches a person", codex["via"])
+        self.assertIn("codex queue", codex["via"])
+        self.assertEqual(codex["state"], "unbound")
         self.assertTrue(member_module.wake_capability("claude")["idle_reawaken"])
         self.assertFalse(member_module.wake_capability("cli")["idle_reawaken"])
 

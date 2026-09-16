@@ -178,8 +178,8 @@ Current scope:
 - Automatic monitor startup and restart on every pair command.
 - A 24-hour default pair lifetime, configurable from 5 minutes to 7 days.
 - Claude Code idle-session reawakening through `asyncRewake`.
-- Codex lifecycle reminders plus best-effort desktop notifications. Codex does
-  not currently support true asynchronous hook wakeups.
+- Codex idle-session wake-up through native `codex queue`, with lifecycle
+  reminders as a fallback (verified with Codex 0.154.0).
 
 Python 3.10+ and `openssl` are required.
 
@@ -260,10 +260,24 @@ Claude Code starts a background `Stop` hook for each participating session.
 When mail arrives, that hook exits with code 2 and `asyncRewake` asks Claude to
 process the inbox even while idle. The watcher is deduplicated per session.
 
-Codex currently parses but does not run asynchronous hooks. Its monitor still
-runs continuously, shows a desktop notification when supported, injects
-waiting-mail metadata on session start or the next prompt, and keeps a turn
-open when mail is already waiting at `Stop`.
+Codex monitors submit a native `codex queue --thread UUID --message NOTICE`
+when unhandled mail arrives. Host/accept and the owning session's hooks bind the
+exact thread UUID and `CODEX_HOME`. Loaded idle threads start a turn without a
+user prompt; busy threads process the notice after the current turn. Exited
+threads keep the notice until resumed. Native cross-process queue discovery
+may take about ten seconds. This path was verified with Codex 0.154.0.
+
+The notice points at the current inbox; it contains no peer text. Successful
+submissions are deduplicated across monitor restarts. Failed submissions retry
+and appear in `status --json` under `wake.last_error`; queue acceptance never
+marks peer mail handled. `wake.state=armed` reports a registered target, not
+proof that the thread is loaded. Older Codex installations still get lifecycle
+reminders and can use explicit `inbox` or `wait`. Set `AGENT_PAIR_CODEX_BIN`
+to the real executable before binding when a custom wrapper redirects homes.
+AIQ is bypassed for queue operations so the registered home is preserved.
+After upgrading either plugin, run `monitor --restart --provider codex` with
+the retained `--endpoint-id` or `--member-id` once to load the new code; newly
+created pairs and memberships start the current monitor.
 
 Stop hooks peek without claiming and inject each waiting message's sender,
 claim token, and up to 4 KiB of body text. A truncated preview points at the
@@ -348,9 +362,12 @@ Each member runs a monitor that long-polls the hub, writes every message into a
 durable local inbox before acknowledging it, replays a local outbox, and sends
 presence heartbeats. Claude Code starts a background `Stop` hook in the session
 that ran `join`, and when mail arrives that hook exits with code 2 so
-`asyncRewake` can process the inbox while the session is idle. Codex parses but
-does not run asynchronous hooks, so its monitor keeps running and it gets
-lifecycle context plus a best-effort desktop notification instead.
+`asyncRewake` can process the inbox while the session is idle. Codex uses the
+same native queue wake path described for Agent Pair above, binding its exact
+thread and account home on `join` or its owning lifecycle hook. Only member
+mail wakes a session; system presence events and task attention do not. The
+executable override is `AGENT_ORCHESTRA_CODEX_BIN`. Lifecycle reminders remain
+a fallback, and `status --json` reports queue failures in `wake.last_error`.
 
 ## Undrudge Workflows
 

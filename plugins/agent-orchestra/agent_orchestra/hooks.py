@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import core
+from . import codex_wake, core
 from .core import (
     OrchestraError,
     atomic_write_json,
@@ -85,6 +85,9 @@ def hook_member(
         member = _bound_hook_member(
             provider, cwd, session_id, _hook_event(payload, default_event)
         )
+        if provider == "codex":
+            codex_wake.register(str(member["member_id"]), session_id=session_id,
+                                prefix="AGENT_ORCHESTRA")
         ensure_monitor(member)
         return member
     except (OrchestraError, OSError):
@@ -165,7 +168,11 @@ def _claim_candidate(
         if member is not None:
             return member
     if owner is not None:
-        member = next((row for row in rows if _as_pid(row.get("owner_pid")) == owner), None)
+        # Codex daemon threads can share an ancestor PID. Their recorded
+        # thread UUID is authoritative; a sibling is not the same session.
+        member = next((row for row in rows if _as_pid(row.get("owner_pid")) == owner
+                       and not (row.get("provider") == "codex" and row.get("session_id")
+                                and row["session_id"] != session_id)), None)
         if member is not None:
             return member
     if event == "UserPromptSubmit":

@@ -1,6 +1,6 @@
 ---
 name: orchestra
-description: Connect this coding-agent session to an Agent Orchestra: a durable hub on an always-on machine, one conductor, and any number of players and their children, on one machine or across a LAN or Tailscale. Use when the user wants to start a hub, accept an or1 invite, mint an invite, send or check orchestra mail, see members or tasks, or leave.
+description: "Connect this coding-agent session to an Agent Orchestra: a durable hub on an always-on machine, one conductor, and any number of players and their children, on one machine or across a LAN or Tailscale. Use when the user wants to start a hub, accept an or1 invite, mint an invite, send or check orchestra mail, see members or tasks, or leave."
 ---
 
 # Agent Orchestra
@@ -32,7 +32,8 @@ a machine may belong to several, one session each.
     prompt adopts the seat), or `unknown` (a monitor from before 0.2.0).
     `unhandled` and `oldest_unhandled_age` say whether anyone is reading. A
     connected member with an empty seat or an old backlog is not working;
-    say so. Report `wake.idle_reawaken` as it comes back.
+    say so. Report `wake.idle_reawaken`, `wake.state`, and `wake.last_error`
+    as they come back.
 - An argument beginning with `or1.`: run `join INVITE --json`. Report the
   member id, role, parent, conductor, hub name, and monitor pid.
 - `hub`: run `hub start --json` here, then hand the complete `or1.` conductor
@@ -293,9 +294,26 @@ every `assign` once, promptly, on the same `TASK`.
 The inbox monitor starts automatically on `join`. Every later command checks it
 and restarts it if needed. A member on the hub machine also restarts a dead hub
 on every command. Claude Code's installed hook can reawaken an idle session
-when mail arrives. Codex surfaces waiting-mail metadata at lifecycle hooks and
-receives a best-effort OS notification; do not claim that an idle Codex CLI can
-always be reawakened.
+when mail arrives. In Codex, the monitor uses native `codex queue` to wake this
+exact thread, bound from `CODEX_THREAD_ID` on join and refreshed by the owning
+session's lifecycle hooks. The binding retains `CODEX_HOME`, including account
+overlays. Use a recent Codex with `queue` support (verified on 0.154.0); the
+thread must remain loaded. An exited session receives its queued notice when
+resumed. No polling turn or Claude-style asynchronous hook is needed.
+
+The queued notice points at this member's current inbox. Follow its command,
+handle the messages under the same collaboration rules, and `finish` only what
+you handled. An empty inbox needs no action. System presence events and task
+attention snapshots never queue a wake; only member mail does. Successful
+notices are deduplicated across monitor restarts, while failed queue commands
+retry and appear in `wake.last_error`. `wake.state=armed` means a target is
+registered, not proof the thread is loaded; report `unbound` or `error` plainly.
+Lifecycle reminders remain available if queue delivery is unavailable.
+Set `AGENT_ORCHESTRA_CODEX_BIN` to the real executable before binding if Codex
+is outside PATH or a wrapper changes accounts. AIQ shims are bypassed for
+queue operations to preserve the bound account home. After upgrading an
+existing membership, run `monitor --restart --provider codex --member-id ID
+--json` once to load the new monitor. A new membership starts it automatically.
 
 Stop hooks peek at locally delivered mail without claiming it and include the
 sender, act, task, need, and message id as a `claim_token`. Blocks come

@@ -8,7 +8,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
-from . import __version__
+from . import __version__, codex_wake
 from .client import (
     DEFAULT_TTL_SECONDS,
     accept_pair,
@@ -22,6 +22,7 @@ from .client import (
     local_messages,
     monitor_loop,
     pair_status,
+    restart_monitor,
     select_endpoint_by_id,
     send_message,
     start_monitor,
@@ -90,6 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     monitor = commands.add_parser("monitor", help="Ensure the inbox monitor is running")
     _common(monitor)
+    monitor.add_argument("--restart", action="store_true", help="Reload the monitor after an upgrade")
 
     internal_serve = commands.add_parser("serve", help=argparse.SUPPRESS)
     internal_serve.add_argument("--pair-id", required=True)
@@ -237,7 +239,9 @@ def run(args: argparse.Namespace) -> int:
         _print(close_pair(endpoint), args.as_json)
         return 0
     if args.command == "monitor":
-        _print({"monitor_pid": start_monitor(endpoint)}, args.as_json)
+        if args.provider == "codex" and args.restart:
+            codex_wake.register(str(endpoint["endpoint_id"]), prefix="AGENT_PAIR")
+        _print({"monitor_pid": (restart_monitor if args.restart else start_monitor)(endpoint)}, args.as_json)
         return 0
     raise AgentPairError(f"Unsupported command: {args.command}")
 

@@ -5,6 +5,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -13,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from . import codex_wake
 from .core import (
     APIError,
     MAX_MESSAGE_BYTES,
@@ -272,6 +274,8 @@ def create_pair(
         "server_pid": server_pid,
     }
     atomic_write_json(endpoint_path(endpoint_id), endpoint)
+    if provider == "codex":
+        codex_wake.register(endpoint_id, prefix="AGENT_PAIR")
     invite = encode_invite(
         {
             "pair_id": pair_id,
@@ -338,6 +342,8 @@ def accept_pair(
         "closed_at": None,
     }
     atomic_write_json(endpoint_path(endpoint_id), endpoint)
+    if provider == "codex":
+        codex_wake.register(endpoint_id, prefix="AGENT_PAIR")
     monitor_pid = start_monitor(endpoint) if start_background_monitor else None
     return {
         "pair_id": pair_id,
@@ -411,6 +417,31 @@ def _monitor_record_alive(record: dict[str, Any]) -> bool:
         _pid_alive(int(record.get("pid", 0)))
         and float(record.get("updated_at", 0)) >= now() - 60
     )
+
+
+def restart_monitor(endpoint: dict[str, Any]) -> int:
+    """Replace this mailbox's monitor after an installed-code update."""
+    path = _monitor_state_path(str(endpoint["endpoint_id"]))
+    try:
+        record = read_json(path)
+    except AgentPairError:
+        record = {}
+    pid = int(record.get("pid") or 0)
+    if _pid_alive(pid):
+        # A stale PID file can point at a reused PID. Verify the exact module
+        # and mailbox argument before signalling anything.
+        result = subprocess.run(["ps", "-p", str(pid), "-o", "args="],
+                                capture_output=True, text=True, timeout=2, check=False)
+        argv = shlex.split(result.stdout)
+        expected = ["-m", "agent_pair", "monitor-run", "--endpoint-id", str(endpoint["endpoint_id"])]
+        if not any(argv[i:i + len(expected)] == expected for i in range(len(argv))):
+            raise AgentPairError("Cannot verify the recorded monitor process; refusing to stop it")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    path.unlink(missing_ok=True)
+    return start_monitor(endpoint)
 
 
 def start_monitor(endpoint: dict[str, Any]) -> int:
@@ -532,6 +563,19 @@ def flush_outbox(endpoint: dict[str, Any]) -> list[dict[str, Any]]:
     return sent
 
 
+def _wake_codex(endpoint: dict[str, Any]) -> None:
+    if endpoint.get("provider") != "codex" or endpoint.get("closed_at"):
+        return
+    if float(endpoint.get("expires_at", 0)) <= now():
+        return
+    endpoint_id = str(endpoint["endpoint_id"])
+    codex_wake.wake(
+        endpoint_id, buckets=[inbox_dir(endpoint_id, b) for b in ("pending", "claimed")],
+        executable=_module_root() / "bin" / "agent-pair",
+        id_flag="--endpoint-id", label="Agent Pair",
+    )
+
+
 def monitor_loop(endpoint_id: str) -> None:
     endpoint = load_endpoint(endpoint_id)
     state_path = _monitor_state_path(endpoint_id)
@@ -547,6 +591,7 @@ def monitor_loop(endpoint_id: str) -> None:
     delay = 0.25
     while float(endpoint.get("expires_at", 0)) > now() and not endpoint.get("closed_at"):
         try:
+            _wake_codex(endpoint)
             flush_handled(endpoint)
             flush_outbox(endpoint)
             result = api_request(
@@ -566,6 +611,7 @@ def monitor_loop(endpoint_id: str) -> None:
                     f"/v1/messages/{envelope['id']}/ack",
                     {},
                 )
+            _wake_codex(endpoint)
             api_request(endpoint, "POST", "/v1/heartbeat", {}, timeout=5)
             if new_count:
                 _notify(endpoint, new_count)
@@ -834,6 +880,10 @@ def pair_status(endpoint: dict[str, Any]) -> dict[str, Any]:
         },
         "remote": remote,
         "remote_error": error,
+        "wake": codex_wake.capability(endpoint_id) if endpoint.get("provider") == "codex" else {
+            "idle_reawaken": endpoint.get("provider") == "claude",
+            "via": "hook-wait (Stop, asyncRewake)" if endpoint.get("provider") == "claude" else "none",
+        },
     }
 
 
@@ -885,6 +935,9 @@ def hook_endpoint(provider: str, payload: dict[str, Any]) -> dict[str, Any] | No
     session_id = str(payload.get("session_id") or "")
     try:
         endpoint = _bound_hook_endpoint(provider, cwd, session_id)
+        if provider == "codex":
+            codex_wake.register(str(endpoint["endpoint_id"]), session_id=session_id,
+                                prefix="AGENT_PAIR")
         ensure_monitor(endpoint)
         return endpoint
     except (AgentPairError, OSError):
@@ -931,7 +984,9 @@ def _bound_hook_endpoint(provider: str, cwd: str, session_id: str) -> dict[str, 
     # parked headless children for hours and injected inbox nags into their
     # final messages.
     endpoint = next(
-        (item for item in rows if str(item["endpoint_id"]) not in bound_ids),
+        (item for item in rows if str(item["endpoint_id"]) not in bound_ids
+         and (provider != "codex" or codex_wake.target(str(item["endpoint_id"])).get(
+             "thread_id", session_id) == session_id)),
         None,
     )
     if endpoint is None:
