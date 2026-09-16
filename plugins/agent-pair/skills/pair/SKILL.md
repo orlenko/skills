@@ -112,7 +112,7 @@ progress on work the peer is not waiting on.
 
 The inbox monitor starts automatically on host and accept. Every later command
 checks and restarts it if needed. Claude Code's installed hook can reawaken an
-idle session when mail arrives. In Codex, the monitor uses native `codex queue`
+idle session when mail arrives. In Codex, the monitor uses Codex's native queue API
 to wake this exact thread, bound automatically from `CODEX_THREAD_ID` on host
 or accept and refreshed by this session's lifecycle hooks. The binding retains
 `CODEX_HOME`, so account overlays do not redirect the notice. Use a recent
@@ -123,7 +123,13 @@ Claude-style asynchronous hook is needed.
 A queued notice contains a command to read this endpoint's current inbox, not
 a peer request. Follow that command, process the messages, then `finish` only
 what you handled. An empty inbox means a prior turn already handled the mail.
-Notices are deduplicated across monitor restarts; failed queue commands retry
+Wakes are limited to one per 60 seconds per Codex thread, shared across Pair
+and Orchestra and preserved across monitor restarts. Mail arriving during
+that minute is coalesced; the monitor rechecks the inbox when the limit expires.
+An empty inbox never queues a notice. Claiming, finishing, or surfacing mail
+in a Stop hook cancels its outstanding notice before the turn ends, preventing
+an extra wake after the work is already done. The monitor also removes stale
+notices left by older versions. Failed submissions obey the same minute limit
 and appear in `status --json` under `wake.last_error`. `wake.state=armed` means
 a target is registered, not proof that the thread is currently loaded. An
 `unbound` or `error` state needs attention; lifecycle reminders remain available.

@@ -175,7 +175,8 @@ Current scope:
 - Delivery states: queued, delivered to the peer monitor, and handled.
 - Local-first `finish` and `close`. Both complete without the peer, and the
   monitor delivers the deferred notice once the peer is reachable again.
-- Automatic monitor startup and restart on every pair command.
+- Automatic monitor startup on every pair command, with a process-lifetime
+  lock preventing duplicate monitors after a delayed heartbeat.
 - A 24-hour default pair lifetime, configurable from 5 minutes to 7 days.
 - Claude Code idle-session reawakening through `asyncRewake`.
 - Codex idle-session wake-up through native `codex queue`, with lifecycle
@@ -260,16 +261,22 @@ Claude Code starts a background `Stop` hook for each participating session.
 When mail arrives, that hook exits with code 2 and `asyncRewake` asks Claude to
 process the inbox even while idle. The watcher is deduplicated per session.
 
-Codex monitors submit a native `codex queue --thread UUID --message NOTICE`
-when unhandled mail arrives. Host/accept and the owning session's hooks bind the
+Codex monitors use the native queue API when unhandled mail arrives.
+Host/accept and the owning session's hooks bind the
 exact thread UUID and `CODEX_HOME`. Loaded idle threads start a turn without a
 user prompt; busy threads process the notice after the current turn. Exited
 threads keep the notice until resumed. Native cross-process queue discovery
 may take about ten seconds. This path was verified with Codex 0.154.0.
 
 The notice points at the current inbox; it contains no peer text. Successful
-submissions are deduplicated across monitor restarts. Failed submissions retry
-and appear in `status --json` under `wake.last_error`; queue acceptance never
+submissions are deduplicated across monitor restarts. Both plugins share a
+60-second wake limit per Codex thread; arrivals during the cooldown coalesce
+and the inbox is rechecked before submission. Only one notice may wait behind
+a busy turn. Claiming, finishing, and Stop-hook previews cancel redundant
+notices before the current turn ends; empty inboxes cancel stale notices,
+including those queued by older versions. Failed submissions retry within
+the same rate limit and appear in `status --json` under `wake.last_error`;
+queue acceptance never
 marks peer mail handled. `wake.state=armed` reports a registered target, not
 proof that the thread is loaded. Older Codex installations still get lifecycle
 reminders and can use explicit `inbox` or `wait`. Set `AGENT_PAIR_CODEX_BIN`
@@ -277,7 +284,9 @@ to the real executable before binding when a custom wrapper redirects homes.
 AIQ is bypassed for queue operations so the registered home is preserved.
 After upgrading either plugin, run `monitor --restart --provider codex` with
 the retained `--endpoint-id` or `--member-id` once to load the new code; newly
-created pairs and memberships start the current monitor.
+created pairs and memberships start the current monitor. A process-lifetime
+lock permits only one monitor per mailbox, even when a slow request makes its
+heartbeat stale.
 
 Stop hooks peek without claiming and inject each waiting message's sender,
 claim token, and up to 4 KiB of body text. A truncated preview points at the
@@ -470,6 +479,9 @@ plugins/undrudge-apply/
 ```sh
 python3 -m unittest discover -s plugins/agent-observer/tests -v
 python3 -m unittest discover -s plugins/agent-pair/tests -v
+# Optional: real Codex queue regression with a local mock model (no account needed).
+AGENT_TEST_CODEX_BIN=/path/to/codex python3 -m unittest discover \
+  -s plugins/agent-pair/tests -p test_codex_native_wake.py -v
 python3 path/to/skill-creator/scripts/quick_validate.py \
   plugins/agent-pair/skills/pair
 python3 path/to/skill-creator/scripts/quick_validate.py \

@@ -965,7 +965,7 @@ class LifecycleHookTest(HooksTestCase):
         self.assertIn("hook-wait", claude_hooks)
         codex = member_module.wake_capability("codex")
         self.assertFalse(codex["idle_reawaken"])
-        self.assertIn("codex queue", codex["via"])
+        self.assertIn("native queue", codex["via"])
         self.assertEqual(codex["state"], "unbound")
         self.assertTrue(member_module.wake_capability("claude")["idle_reawaken"])
         self.assertFalse(member_module.wake_capability("cli")["idle_reawaken"])

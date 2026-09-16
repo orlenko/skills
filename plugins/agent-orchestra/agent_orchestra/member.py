@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import __version__, codex_wake, core
+from . import __version__, codex_wake, core, monitor_lock
 from .core import (
     APIError,
     MAX_MESSAGE_BYTES,
@@ -406,6 +406,11 @@ def restart_monitor(member: dict[str, Any]) -> int:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+    deadline = time.monotonic() + 3
+    while monitor_lock.owner(str(member["member_id"])) == pid and pid:
+        if time.monotonic() >= deadline:
+            raise OrchestraError("The previous inbox monitor has not stopped yet")
+        time.sleep(0.02)
     path.unlink(missing_ok=True)
     return start_monitor(member)
 
@@ -421,6 +426,9 @@ def start_monitor(member: dict[str, Any]) -> int:
     deadline = time.monotonic() + 3
     lock_fd: int | None = None
     while time.monotonic() < deadline:
+        owner_pid = monitor_lock.owner(member_id)
+        if owner_pid:
+            return owner_pid
         try:
             current = read_json(state_path)
             pid = int(current.get("pid", 0))
@@ -774,6 +782,8 @@ def local_messages(member: dict[str, Any], *, claim: bool) -> list[dict[str, Any
                 continue
             item["local_state"] = bucket
             rows.append(item)
+    if claim and member.get("provider") == "codex":
+        codex_wake.observed(member_id, [str(row["id"]) for row in rows], label="Agent Orchestra")
     return sorted(rows, key=_inbox_order)
 
 
@@ -860,6 +870,8 @@ def flush_handled(member: dict[str, Any]) -> list[dict[str, Any]]:
 
 def finish_messages(member: dict[str, Any], message_ids: list[str]) -> list[dict[str, Any]]:
     member_id = str(member["member_id"])
+    if member.get("provider") == "codex":
+        codex_wake.observed(member_id, message_ids, label="Agent Orchestra")
     results: list[dict[str, Any]] = []
     for message_id in message_ids:
         source = None
@@ -1410,6 +1422,12 @@ def _wake_codex(member: dict[str, Any]) -> None:
 
 
 def monitor_loop(member_id: str) -> None:
+    with monitor_lock.hold(member_id) as acquired:
+        if acquired:
+            _monitor_loop(member_id)
+
+
+def _monitor_loop(member_id: str) -> None:
     member = load_member(member_id)
     state_path = _monitor_state_path(member_id)
     started_at = now()

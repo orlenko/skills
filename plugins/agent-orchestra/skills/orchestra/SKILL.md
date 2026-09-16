@@ -294,7 +294,7 @@ every `assign` once, promptly, on the same `TASK`.
 The inbox monitor starts automatically on `join`. Every later command checks it
 and restarts it if needed. A member on the hub machine also restarts a dead hub
 on every command. Claude Code's installed hook can reawaken an idle session
-when mail arrives. In Codex, the monitor uses native `codex queue` to wake this
+when mail arrives. In Codex, the monitor uses Codex's native queue API to wake this
 exact thread, bound from `CODEX_THREAD_ID` on join and refreshed by the owning
 session's lifecycle hooks. The binding retains `CODEX_HOME`, including account
 overlays. Use a recent Codex with `queue` support (verified on 0.154.0); the
@@ -305,8 +305,14 @@ The queued notice points at this member's current inbox. Follow its command,
 handle the messages under the same collaboration rules, and `finish` only what
 you handled. An empty inbox needs no action. System presence events and task
 attention snapshots never queue a wake; only member mail does. Successful
-notices are deduplicated across monitor restarts, while failed queue commands
-retry and appear in `wake.last_error`. `wake.state=armed` means a target is
+notices are limited to one per 60 seconds per Codex thread, shared across
+Orchestra and Pair and preserved across monitor restarts. Mail arriving during
+that minute is coalesced, and the inbox is rechecked before waking. Empty
+inboxes never queue a wake. Claiming, finishing, or surfacing mail in a Stop
+hook cancels its outstanding notice so it cannot start a redundant turn after
+handling. Stale notices from older versions are also removed. Failed
+submissions obey the same minute limit and appear in `wake.last_error`.
+`wake.state=armed` means a target is
 registered, not proof the thread is loaded; report `unbound` or `error` plainly.
 Lifecycle reminders remain available if queue delivery is unavailable.
 Set `AGENT_ORCHESTRA_CODEX_BIN` to the real executable before binding if Codex

@@ -412,6 +412,9 @@ def _nudge_block(member_id: str, row: dict[str, Any], index: int, total: int) ->
 
 def _hook_message_nudge(member: dict[str, Any], provider: str, lead: str) -> str | None:
     rows = local_messages(member, claim=False)
+    if provider == "codex":
+        codex_wake.observed(str(member["member_id"]), [str(row["id"]) for row in rows],
+                            label="Agent Orchestra")
     if not rows:
         return None
     rows = sorted(

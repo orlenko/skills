@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import codex_wake
+from . import codex_wake, monitor_lock
 from .core import (
     APIError,
     MAX_MESSAGE_BYTES,
@@ -440,6 +440,11 @@ def restart_monitor(endpoint: dict[str, Any]) -> int:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+    deadline = time.monotonic() + 3
+    while monitor_lock.owner(str(endpoint["endpoint_id"])) == pid and pid:
+        if time.monotonic() >= deadline:
+            raise AgentPairError("The previous inbox monitor has not stopped yet")
+        time.sleep(0.02)
     path.unlink(missing_ok=True)
     return start_monitor(endpoint)
 
@@ -451,6 +456,9 @@ def start_monitor(endpoint: dict[str, Any]) -> int:
     deadline = time.monotonic() + 3
     lock_fd: int | None = None
     while time.monotonic() < deadline:
+        owner_pid = monitor_lock.owner(endpoint_id)
+        if owner_pid:
+            return owner_pid
         try:
             current = read_json(state_path)
             pid = int(current.get("pid", 0))
@@ -577,6 +585,12 @@ def _wake_codex(endpoint: dict[str, Any]) -> None:
 
 
 def monitor_loop(endpoint_id: str) -> None:
+    with monitor_lock.hold(endpoint_id) as acquired:
+        if acquired:
+            _monitor_loop(endpoint_id)
+
+
+def _monitor_loop(endpoint_id: str) -> None:
     endpoint = load_endpoint(endpoint_id)
     state_path = _monitor_state_path(endpoint_id)
     atomic_write_json(
@@ -690,6 +704,8 @@ def local_messages(endpoint: dict[str, Any], *, claim: bool) -> list[dict[str, A
             item = read_json(path)
             item["local_state"] = bucket
             rows.append(item)
+    if claim and endpoint.get("provider") == "codex":
+        codex_wake.observed(endpoint_id, [str(row["id"]) for row in rows], label="Agent Pair")
     return sorted(rows, key=lambda item: float(item.get("sent_at", 0)))
 
 
@@ -774,6 +790,8 @@ def flush_handled(endpoint: dict[str, Any]) -> list[dict[str, Any]]:
 
 def finish_messages(endpoint: dict[str, Any], message_ids: list[str]) -> list[dict[str, Any]]:
     endpoint_id = str(endpoint["endpoint_id"])
+    if endpoint.get("provider") == "codex":
+        codex_wake.observed(endpoint_id, message_ids, label="Agent Pair")
     results: list[dict[str, Any]] = []
     for message_id in message_ids:
         source = None
@@ -1036,6 +1054,9 @@ def _hook_message_nudge(
     endpoint: dict[str, Any], provider: str, lead: str
 ) -> str | None:
     rows = local_messages(endpoint, claim=False)
+    if provider == "codex":
+        codex_wake.observed(str(endpoint["endpoint_id"]), [str(row["id"]) for row in rows],
+                            label="Agent Pair")
     if not rows:
         return None
 

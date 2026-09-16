@@ -15,6 +15,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_orchestra import codex_wake, core
 
 
+_FAKE_CODEX = r"""
+import json, os, sys, uuid
+from pathlib import Path
+state_path = Path(os.environ['QUEUE_STATE'])
+for line in sys.stdin:
+    message = json.loads(line)
+    if 'id' not in message:
+        continue
+    method = message['method']; params = message.get('params', {})
+    state = json.loads(state_path.read_text()) if state_path.exists() else []
+    if method == 'thread/queue/list':
+        result = {'data': state, 'nextCursor': None}
+    elif method == 'thread/queue/delete':
+        state = [x for x in state if x['id'] != params['queuedSubmissionId']]
+        state_path.write_text(json.dumps(state)); result = {'deleted': True}
+    elif method == 'thread/queue/add':
+        entry = {'id': str(uuid.uuid4()), 'input': params['input'], 'clientUserMessageId': params['clientUserMessageId']}
+        state.append(entry); state_path.write_text(json.dumps(state))
+        with open(os.environ['QUEUE_LOG'], 'a') as f:
+            json.dump({'args':['queue','--thread',params['threadId'],'--message',params['input'][0]['text']], 'home':os.environ['CODEX_HOME'],'bypass':os.environ.get('AIQ_BYPASS')}, f); f.write('\n')
+        result = {'queuedSubmission': entry}
+    else:
+        result = {}
+    print(json.dumps({'id': message['id'], 'result': result}), flush=True)
+"""
+
+
 class CodexWakeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="codex-wake-test-")
@@ -23,17 +50,14 @@ class CodexWakeTests(unittest.TestCase):
         self.thread = str(uuid.uuid4())
         self.fake = self.root / "codex"
         self.log = self.root / "queue.jsonl"
-        self.fake.write_text("#!" + sys.executable + "\n" +
-            "import json, os, sys\n" +
-            "with open(os.environ['QUEUE_LOG'], 'a') as f:\n" +
-            " json.dump({'args':sys.argv[1:], 'home':os.environ['CODEX_HOME'], " +
-            "'bypass':os.environ.get('AIQ_BYPASS')}, f); f.write('\\n')\n")
+        self.fake.write_text("#!" + sys.executable + "\n" + _FAKE_CODEX)
         self.fake.chmod(0o700)
         patcher = mock.patch.dict(os.environ, {
             "AGENT_ORCHESTRA_HOME": str(self.root / "state"),
             "AGENT_ORCHESTRA_CODEX_BIN": str(self.fake), "AGENT_ORCHESTRA_NO_WAIT": "0",
             "CODEX_THREAD_ID": self.thread, "CODEX_HOME": str(self.root / "account"),
-            "QUEUE_LOG": str(self.log),
+            "QUEUE_LOG": str(self.log), "QUEUE_STATE": str(self.root / "queue-state.json"),
+            "AGENT_CODEX_WAKE_HOME": str(self.root / "wake-state"),
         })
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -41,6 +65,9 @@ class CodexWakeTests(unittest.TestCase):
         self.buckets = [self.root / "pending", self.root / "claimed"]
         for path in self.buckets:
             path.mkdir()
+        self.clock = mock.patch.object(codex_wake.time, "time", return_value=1000)
+        self.now = self.clock.start()
+        self.addCleanup(self.clock.stop)
         codex_wake.register(self.mailbox, prefix="AGENT_ORCHESTRA")
 
     def mail(self, name="m_aaaaaaaa", bucket=0):
@@ -70,41 +97,52 @@ class CodexWakeTests(unittest.TestCase):
         self.assertTrue(row.exists())
         self.assertEqual(codex_wake.capability(self.mailbox)["state"], "armed")
 
-    def test_restart_does_not_repeat_notice_but_new_mail_does(self):
+    def test_restart_does_not_repeat_notice_and_new_mail_waits_a_minute(self):
         row = self.mail()
         self.wake()
         importlib.reload(codex_wake)
-        self.wake()
+        # Reloading the adapter must not forget either receipt or cooldown.
+        (self.root / "queue-state.json").write_text("[]")
+        self.wake()  # detect dispatch at t=1000
         row.rename(self.buckets[1] / row.name)
+        self.mail("m_bbbbbbbb")
+        self.now.return_value = 1059
         self.wake()
         self.assertEqual(len(self.calls()), 1)
-        self.mail("m_bbbbbbbb")
+        self.now.return_value = 1060
         self.wake()
         self.assertEqual(len(self.calls()), 2)
 
-    def test_retry_after_failure_and_recovery_is_observable(self):
+    def test_retry_after_failure_obeys_the_same_minute_limit(self):
         self.mail()
-        with mock.patch.object(codex_wake.subprocess, "run", return_value=
-                subprocess.CompletedProcess([], 1, "", "queue unsupported")) as run:
-            with mock.patch.object(codex_wake.time, "time", return_value=100):
-                self.wake()
-                self.wake()
-            self.assertEqual(run.call_count, 1)
-        status = codex_wake.capability(self.mailbox)
-        self.assertFalse(status["idle_reawaken"])
-        self.assertIn("queue unsupported", status["last_error"])
-        with mock.patch.object(codex_wake.time, "time", return_value=116):
+        with mock.patch.object(codex_wake, "_QueueClient") as factory:
+            client = factory.return_value.__enter__.return_value
+            client.notices.return_value = []
+            client.request.side_effect = RuntimeError("queue unsupported")
             self.wake()
+            self.wake()
+            self.assertEqual(client.request.call_count, 1)
+        self.assertFalse(codex_wake.capability(self.mailbox)["idle_reawaken"])
+        self.now.return_value = 1059
+        self.wake()
+        self.assertEqual(self.calls(), [])
+        self.now.return_value = 1060
+        self.wake()
         self.assertEqual(len(self.calls()), 1)
         self.assertTrue(codex_wake.capability(self.mailbox)["idle_reawaken"])
 
-    def test_timeout_does_not_retire_mail(self):
+    def test_timeout_does_not_retire_mail_or_retry_early(self):
         row = self.mail()
-        with mock.patch.object(codex_wake.subprocess, "run",
-                side_effect=subprocess.TimeoutExpired("codex queue", 10)):
+        with mock.patch.object(codex_wake, "_QueueClient") as factory:
+            client = factory.return_value.__enter__.return_value
+            client.notices.return_value = []
+            client.request.side_effect = TimeoutError("queue timeout")
             self.wake()
         self.assertTrue(row.exists())
         self.assertEqual(codex_wake.capability(self.mailbox)["state"], "error")
+        self.now.return_value = 1059
+        self.wake()
+        self.assertEqual(self.calls(), [])
 
     def test_no_mail_means_no_queue(self):
         self.wake()
@@ -113,6 +151,7 @@ class CodexWakeTests(unittest.TestCase):
     def test_rebinding_wakes_new_session_for_unhandled_mail(self):
         self.mail()
         self.wake()
+        (self.root / "queue-state.json").write_text("[]")
         other = str(uuid.uuid4())
         codex_wake.register(self.mailbox, session_id=other, prefix="AGENT_ORCHESTRA")
         self.wake()
@@ -130,7 +169,7 @@ class CodexWakeTests(unittest.TestCase):
     def test_parallel_delivery_has_one_queue_writer(self):
         import fcntl
         self.mail()
-        lock = core.runtime_dir() / f"{self.mailbox}.codex-queue.lock"
+        lock = codex_wake._session_path(codex_wake.target(self.mailbox)).with_suffix(".lock")
         with lock.open("w") as stream:
             fcntl.flock(stream, fcntl.LOCK_EX)
             self.wake()
@@ -148,6 +187,29 @@ class CodexWakeTests(unittest.TestCase):
             transport._wake_codex({**entity, "closed_at": 123})
             self.assertEqual(wake.call_count, 1)
 
+
+    def test_stale_heartbeat_does_not_spawn_a_second_live_monitor(self):
+        from agent_orchestra import member as transport, monitor_lock
+        entity = {"member_id": self.mailbox}
+        core.atomic_write_json(transport._monitor_state_path(self.mailbox),
+                               {"pid": os.getpid(), "updated_at": 1})
+        with monitor_lock.hold(self.mailbox) as acquired:
+            self.assertTrue(acquired)
+            with mock.patch.object(transport, "_spawn_module") as spawn:
+                self.assertEqual(transport.start_monitor(entity), os.getpid())
+                spawn.assert_not_called()
+        self.assertEqual(monitor_lock.owner(self.mailbox), 0)
+
+    def test_duplicate_monitor_cannot_poll_or_wake(self):
+        from agent_orchestra import member as transport, monitor_lock
+        with monitor_lock.hold(self.mailbox):
+            with mock.patch.object(transport, "_monitor_loop") as loop:
+                transport.monitor_loop(self.mailbox)
+                loop.assert_not_called()
+        with mock.patch.object(transport, "_monitor_loop") as loop:
+            transport.monitor_loop(self.mailbox)
+            loop.assert_called_once_with(self.mailbox)
+        self.assertEqual(monitor_lock.owner(self.mailbox), 0)
 
     def test_monitor_restart_checks_process_identity(self):
         from agent_orchestra import member as transport
@@ -226,6 +288,150 @@ class CodexWakeTests(unittest.TestCase):
                  mock.patch.object(transport, "_save_task_snapshot"):
                 transport.monitor_loop(self.mailbox)
         self.assertEqual(self.calls(), [])
+
+
+    def queued(self):
+        path = self.root / "queue-state.json"
+        return json.loads(path.read_text()) if path.exists() else []
+
+    def test_empty_inbox_cancels_a_previously_queued_notice(self):
+        row = self.mail()
+        self.wake()
+        row.unlink()
+        self.wake()
+        self.assertEqual(self.queued(), [])
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_inbox_drained_while_reading_queue_does_not_wake(self):
+        row = self.mail()
+        with mock.patch.object(codex_wake, "_QueueClient") as factory:
+            client = factory.return_value.__enter__.return_value
+            def drain(*args):
+                row.unlink()
+                return []
+            client.notices.side_effect = drain
+            self.wake()
+            client.request.assert_not_called()
+
+    def test_done_row_wins_over_a_pending_file_during_finish(self):
+        row = self.mail()
+        done = self.root / "done"
+        done.mkdir()
+        (done / row.name).write_text(row.read_text())
+        self.wake()
+        self.assertEqual(self.calls(), [])
+
+    def test_observed_mail_cancels_queue_before_inbox_is_drained(self):
+        self.mail()
+        self.wake()
+        codex_wake.observed(self.mailbox, ["m_aaaaaaaa"], label="Agent Orchestra")
+        self.assertEqual(self.queued(), [])
+        self.now.return_value = 1061
+        self.wake()
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_messages_handled_during_cooldown_do_not_trigger_trailing_wake(self):
+        row = self.mail()
+        self.wake()
+        codex_wake.observed(self.mailbox, ["m_aaaaaaaa"], label="Agent Orchestra")
+        row.unlink()
+        self.now.return_value = 1010
+        new = self.mail("m_bbbbbbbb")
+        self.wake()
+        new.unlink()
+        self.now.return_value = 1061
+        self.wake()
+        self.assertEqual(self.queued(), [])
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_only_one_notice_waits_behind_a_busy_turn(self):
+        self.mail()
+        self.wake()
+        self.now.return_value = 1200
+        self.mail("m_bbbbbbbb")
+        self.wake()
+        self.assertEqual(len(self.queued()), 1)
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_cooldown_starts_at_dispatch_not_just_enqueue(self):
+        self.mail()
+        self.wake()
+        self.now.return_value = 1200  # a long active turn finally ends
+        (self.root / "queue-state.json").write_text("[]")
+        self.mail("m_bbbbbbbb")
+        self.wake()
+        self.now.return_value = 1259
+        self.wake()
+        self.assertEqual(len(self.calls()), 1)
+        self.now.return_value = 1260
+        self.wake()
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_other_mailbox_in_same_thread_shares_the_cooldown(self):
+        self.mail()
+        self.wake()
+        codex_wake.observed(self.mailbox, ["m_aaaaaaaa"], label="Agent Orchestra")
+        other = "other_mailbox"
+        codex_wake.register(other, prefix="AGENT_ORCHESTRA")
+        args = dict(buckets=self.buckets, executable=Path("/plugin/bin/agent-orchestra"),
+                    id_flag="--member-id", label="Agent Orchestra")
+        self.now.return_value = 1059
+        codex_wake.wake(other, **args)
+        self.assertEqual(len(self.calls()), 1)
+        self.now.return_value = 1060
+        codex_wake.wake(other, **args)
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_old_duplicate_notices_are_cancelled_without_touching_user_queue(self):
+        self.mail()
+        self.wake()
+        ours = self.queued()[0]
+        duplicate = {**ours, "id": "duplicate"}
+        human = {"id": "human", "input": [{"type": "text", "text": "Please continue my task"}]}
+        (self.root / "queue-state.json").write_text(json.dumps([ours, duplicate, human]))
+        receipt = core.runtime_dir() / f"{self.mailbox}.codex-wake.json"
+        data = json.loads(receipt.read_text())
+        for key in ("queue_checked", "queued_id", "client_id"):
+            data.pop(key, None)
+        receipt.write_text(json.dumps(data))  # receipt from the first release
+        codex_wake.observed(self.mailbox, ["m_aaaaaaaa"], label="Agent Orchestra")
+        self.assertEqual(self.queued(), [human])
+
+    def test_binary_path_change_does_not_reset_deduplication(self):
+        self.mail()
+        self.wake()
+        codex_wake.observed(self.mailbox, ["m_aaaaaaaa"], label="Agent Orchestra")
+        other = self.root / "updated-codex"
+        other.write_bytes(self.fake.read_bytes())
+        other.chmod(0o700)
+        with mock.patch.dict(os.environ, {"AGENT_ORCHESTRA_CODEX_BIN": str(other)}):
+            codex_wake.register(self.mailbox, prefix="AGENT_ORCHESTRA")
+        self.now.return_value = 1100
+        self.wake()
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_finish_cancels_notice_before_retiring_inbox(self):
+        from agent_orchestra import member as transport
+        entity = {"member_id": self.mailbox, "provider": "codex", "expires_at": 9999999999}
+        directory = core.bucket_dir(self.mailbox, "pending")
+        core.atomic_write_json(directory / "m_aaaaaaaa.json", {"id": "m_aaaaaaaa", "text": "mail"})
+        transport._wake_codex(entity)
+        with mock.patch.object(transport, "api_request", return_value={}):
+            transport.finish_messages(entity, ["m_aaaaaaaa"])
+        self.assertEqual(self.queued(), [])
+        self.assertFalse((directory / "m_aaaaaaaa.json").exists())
+        self.assertTrue((core.bucket_dir(self.mailbox, "done") / "m_aaaaaaaa.json").exists())
+
+    def test_claim_cancels_notice_before_returning_mail(self):
+        from agent_orchestra import member as transport
+        entity = {"member_id": self.mailbox, "provider": "codex", "expires_at": 9999999999}
+        core.atomic_write_json(core.bucket_dir(self.mailbox, "pending") / "m_aaaaaaaa.json",
+                               {"id": "m_aaaaaaaa", "text": "mail"})
+        transport._wake_codex(entity)
+        with mock.patch.object(transport, "ensure_monitor", return_value=0):
+            messages = transport.local_messages(entity, claim=True)
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(self.queued(), [])
 
 
 if __name__ == "__main__":
