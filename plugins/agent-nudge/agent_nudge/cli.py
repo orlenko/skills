@@ -13,7 +13,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from . import __version__, daemon, judge, screen, system
+from . import __version__, daemon, judge, orchestra, screen, system
 
 LABEL = "agent-nudge"
 BIN = Path(__file__).resolve().parent.parent / "bin" / "agent-nudge"
@@ -31,6 +31,7 @@ def _print(value, as_json: bool) -> None:
 
 def cmd_panes(args) -> None:
     table = system.process_table()
+    seats = orchestra.seats_by_pid()
     rows = []
     for pane in system.panes():
         system.find_agent(pane, table)
@@ -44,6 +45,10 @@ def cmd_panes(args) -> None:
         rows.append({"pane": pane.id, "session": pane.session, "agent": pane.agent, "path": pane.path,
                      "input_box": scr.has_prompt, "typed": bool(scr.typed), "working": scr.working_marker,
                      "watchers": scr.watchers, "opted_out": pane.opt_out})
+        seat = seats.get(pane.agent_pid)
+        if seat:
+            rows[-1]["orchestra"] = {"member": seat.name, "role": seat.role, "unread": seat.unread,
+                                     "open_tasks": [t for t, _ in seat.open_tasks]}
     if args.json:
         _print(rows, True)
         return
@@ -51,7 +56,10 @@ def cmd_panes(args) -> None:
         state = "working" if row.get("working") else ("no input box" if not row.get("input_box") else "at prompt")
         flags = [f for f, on in (("typed", row.get("typed")), ("opted out", row.get("opted_out"))) if on]
         watchers = f", {row['watchers']} watching" if row.get("watchers") else ""
-        print(f"{row['pane']:>5} {row['agent']:<7} {state}{watchers}{' [' + ', '.join(flags) + ']' if flags else ''}  {row.get('path', '')}")
+        seat = row.get("orchestra")
+        member = (f"  {seat['member']}: {seat['unread']} unread, {len(seat['open_tasks'])} open"
+                  if seat else "")
+        print(f"{row['pane']:>5} {row['agent']:<7} {state}{watchers}{' [' + ', '.join(flags) + ']' if flags else ''}  {row.get('path', '')}{member}")
 
 
 def _recent_log(hours: float) -> list[dict]:

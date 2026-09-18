@@ -27,12 +27,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import judge, screen, system
+from . import judge, orchestra, screen, system
 
 IDLE_ENV = "AGENT_NUDGE_IDLE_MINUTES"
 QUIET_ENV = "AGENT_NUDGE_HUMAN_QUIET_MINUTES"
 DEFAULT_IDLE_MINUTES = 10.0
 DEFAULT_QUIET_MINUTES = 5.0
+# Unread orchestra mail is a fact, not a guess: a session sitting on it is deaf.
+MAIL_IDLE_MINUTES = 2.0
 POLL_SECONDS = 30.0
 WATCHER_FACTOR = 6
 STREAK_FACTOR = 3
@@ -49,6 +51,8 @@ GENERIC = ("[agent-nudge] You have been idle for {minutes} min. Is your goal don
            "blocked? If anything is still unblocked, continue with it. If you are waiting on "
            "someone or something, say what, and set up something that will wake you when it "
            "changes.")
+MAIL = ("[agent-nudge] You have {unread} unread Agent Orchestra message{plural} (oldest {age} "
+        "min) and have been idle for {minutes} min. Read your orchestra inbox and act on it.")
 POINTED = ("[agent-nudge] You have been idle for {minutes} min after saying you would act when "
            "something changes, and nothing is watching for it. Check it now. If it is still "
            "pending, set up something that will wake you (a monitor, a scheduled wake-up, or a "
@@ -147,6 +151,10 @@ class Nudger:
         at = self.now()
         table = system.process_table()
         activity = system.client_activity()
+        try:
+            self.seats = orchestra.seats_by_pid()
+        except Exception:  # noqa: BLE001 - orchestra state is a bonus, never a requirement
+            self.seats = {}
         rows, seen = [], set()
         for pane in system.panes():
             system.find_agent(pane, table)
@@ -193,12 +201,16 @@ class Nudger:
             return self._note(pane, rec, at, "skip", "no input box: dialog open or agent exited")
         if scr.working_marker:
             return None
-        base = _minutes(IDLE_ENV, DEFAULT_IDLE_MINUTES) * 60
+        seat = getattr(self, "seats", {}).get(pane.agent_pid)
+        mail = bool(seat and seat.unread)
+        base = (MAIL_IDLE_MINUTES if mail else _minutes(IDLE_ENV, DEFAULT_IDLE_MINUTES)) * 60
         needed, streak = _required_idle(rec, base)
-        if scr.watchers:
+        if scr.watchers and not mail:
             needed = min(needed * WATCHER_FACTOR, MAX_WAIT_SECONDS)
         if idle < needed:
             return None
+        if seat and not mail and not seat.open_tasks and seat.role != "conductor":
+            return self._note(pane, rec, at, "skip", f"orchestra player {seat.name} has nothing open or unread")
         if rec.get("last_nudge_hash") == scr.body_hash:
             return None
         if scr.typed:
@@ -223,16 +235,26 @@ class Nudger:
                 rec["jev"] = {"hash": scr.body_hash, "answers": verdict}
             if verdict["state"] != "idle":
                 return self._note(pane, rec, at, "skip", f"judge says {verdict['state']}")
-            if verdict["needs_human_p"] >= 0.5:
+            if verdict["needs_human_p"] >= 0.5 and not mail:
                 return self._note(pane, rec, at, "skip", "judge says the last message asks a person")
         elif live:
             return self._note(pane, rec, at, "skip", "live mode needs TYPESAFE_API_KEY for the judge")
         pointed = bool(verdict and verdict["waiting_p"] >= 0.5 and not scr.watchers)
-        text = (POINTED if pointed else GENERIC).format(minutes=int(idle // 60))
+        minutes = int(idle // 60)
+        if mail:
+            age = int((at - (seat.oldest_unread_at or at)) // 60)
+            text = MAIL.format(unread=seat.unread, plural="" if seat.unread == 1 else "s", age=age, minutes=minutes)
+            kind = "mail"
+        else:
+            text = (POINTED if pointed else GENERIC).format(minutes=minutes)
+            kind = "pointed" if pointed else "generic"
+            if seat and seat.open_tasks:
+                text += " Your open orchestra tasks: " + ", ".join(f"{t} ({st})" for t, st in seat.open_tasks[:5]) + "."
         row = {"ts": at, "event": "nudge" if live else "would_nudge", "pane": pane.id,
                "session": pane.session, "agent": pane.agent, "path": pane.path,
                "idle_seconds": round(idle), "streak": streak, "watchers": scr.watchers,
-               "kind": "pointed" if pointed else "generic", "jev": verdict, "tail": scr.tail[-1500:]}
+               "kind": kind, "jev": verdict, "tail": scr.tail[-1500:],
+               "orchestra": {"member": seat.name, "unread": seat.unread, "open_tasks": len(seat.open_tasks)} if seat else None}
         if live:
             try:
                 system.send(pane.id, text)

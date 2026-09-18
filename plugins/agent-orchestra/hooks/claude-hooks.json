@@ -43,6 +43,19 @@
           }
         ]
       }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/agent-orchestra",
+            "args": ["hook-wait", "--provider", "claude"],
+            "asyncRewake": true,
+            "timeout": 86400
+          }
+        ]
+      }
     ]
   }
 }

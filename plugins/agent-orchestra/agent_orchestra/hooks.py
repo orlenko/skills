@@ -490,21 +490,85 @@ def hook_stop(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
     return {"decision": "block", "reason": reason}
 
 
+def _sleep_unless_closed(member_id: str, seconds: float) -> None:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        time.sleep(min(_WAIT_POLL_SECONDS * 4, max(0.0, deadline - time.monotonic())))
+        try:
+            if load_member(member_id).get("closed_at"):
+                return
+        except OrchestraError:
+            return
+
+
 def _watch_lock_path(member_id: str, session_id: str) -> Path:
     digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:20]
     return runtime_dir() / f"{member_id}.wake.{digest}.json"
 
 
+# A turn that ends in one of these needs a person; waking it only fails again.
+_FAILURE_NEEDS_PERSON = frozenset({
+    "authentication_failed", "oauth_org_not_allowed", "account_on_hold", "billing_error",
+    "model_not_found", "cloud_credential_error",
+})
+_FAILURE_FIRST_DELAY_SECONDS = 120
+_FAILURE_MAX_DELAY_SECONDS = 3600
+
+
+def _failure_path(member_id: str, session_id: str) -> Path:
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:20]
+    return runtime_dir() / f"{member_id}.stopfailure.{digest}.json"
+
+
+def _failure_delay(member_id: str, session_id: str) -> float:
+    """Seconds to hold before waking after an API error: 2 min, then 8, 32, capped at an hour.
+
+    A rate limit or an overloaded API answers the next turn the same way, so an
+    immediate wake would spin. A normal Stop clears the streak.
+    """
+    path = _failure_path(member_id, session_id)
+    try:
+        streak = int(read_json(path).get("streak", 0))
+    except (OrchestraError, ValueError, TypeError):
+        streak = 0
+    atomic_write_json(path, {"streak": streak + 1, "at": now()})
+    return min(_FAILURE_FIRST_DELAY_SECONDS * 4 ** streak, _FAILURE_MAX_DELAY_SECONDS)
+
+
 def hook_wait(provider: str, payload: dict[str, Any]) -> int:
+    """Park until member mail arrives, then wake the session (exit 2).
+
+    Registered on Stop and on StopFailure. Claude Code runs StopFailure instead of
+    Stop when a turn ends in an API error, so without it an errored turn left no
+    waiter: on 2026-09-18 Triangle's 11:30 turn ended that way, and 58 messages
+    sat unread for seven and a half hours. After a failure no Stop hook blocked
+    on mail already waiting, so this wakes on it after a delay instead of
+    leaving it to the Stop hook.
+    """
     member = hook_member(provider, payload)
-    if not member or pending_count(member):
+    if not member:
         return 0
+    failed = _hook_event(payload, "Stop") == "StopFailure"
     session_id = str(payload.get("session_id") or f"cwd:{payload.get('cwd') or os.getcwd()}")
     member_id = str(member["member_id"])
+    if failed:
+        if str(payload.get("error") or "") in _FAILURE_NEEDS_PERSON:
+            return 0
+        delay = _failure_delay(member_id, session_id)
+    else:
+        _failure_path(member_id, session_id).unlink(missing_ok=True)
+        if pending_count(member):
+            return 0
     lock_path = _watch_lock_path(member_id, session_id)
     if not acquire_pid_lock(lock_path):
         return 0
     try:
+        if failed:
+            _sleep_unless_closed(member_id, delay)
+            try:
+                member = load_member(member_id)
+            except OrchestraError:
+                return 0
         next_monitor_check = 0.0
         while not member.get("closed_at"):
             if time.monotonic() >= next_monitor_check:

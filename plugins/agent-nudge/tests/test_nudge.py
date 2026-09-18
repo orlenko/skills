@@ -10,7 +10,7 @@ from pathlib import Path
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 os.sys.path.insert(0, str(PLUGIN_ROOT))
 
-from agent_nudge import daemon, judge, screen, system  # noqa: E402
+from agent_nudge import daemon, judge, orchestra, screen, system  # noqa: E402
 
 DIM = "\x1b[2m"
 RESET = "\x1b[0m"
@@ -91,6 +91,33 @@ class TmuxOutputTest(unittest.TestCase):
         self.assertEqual((pane.id, pane.pid, pane.path, pane.opt_out), ("%3", 74923, "/home/vlad/code/ops", False))
 
 
+class OrchestraFilesTest(unittest.TestCase):
+    def test_reads_seat_mail_and_tasks(self):
+        root = Path(tempfile.mkdtemp(prefix="orch-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        saved = os.environ.get("AGENT_ORCHESTRA_HOME")
+        os.environ["AGENT_ORCHESTRA_HOME"] = str(root)
+        self.addCleanup(lambda: os.environ.pop("AGENT_ORCHESTRA_HOME") if saved is None
+                        else os.environ.__setitem__("AGENT_ORCHESTRA_HOME", saved))
+        member = root / "members" / "mb_t"
+        (member / "pending").mkdir(parents=True)
+        (root / "runtime").mkdir()
+        (member / "member.json").write_text(json.dumps({"member_id": "mb_t", "name": "triangle", "role": "player", "owner_pid": 74923}))
+        (member / "pending" / "m_1.json").write_text(json.dumps({"received_at": 100.0}))
+        (member / "pending" / "m_2.json").write_text(json.dumps({"received_at": 50.0}))
+        (root / "runtime" / "mb_t.tasks.json").write_text(json.dumps({"tasks": [
+            {"task": "t_a", "owners": [{"id": "mb_t", "state": "started"}]},
+            {"task": "t_b", "owners": [{"id": "mb_t", "state": "done"}]},
+            {"task": "t_c", "owners": [{"id": "mb_x", "state": "started"}]}]}))
+        closed = root / "members" / "mb_old"
+        closed.mkdir()
+        (closed / "member.json").write_text(json.dumps({"member_id": "mb_old", "owner_pid": 5, "closed_at": 1}))
+        seats = orchestra.seats_by_pid()
+        self.assertEqual(list(seats), [74923])
+        seat = seats[74923]
+        self.assertEqual((seat.unread, seat.oldest_unread_at, seat.open_tasks), (2, 50.0, [("t_a", "started")]))
+
+
 class FakeClock:
     def __init__(self):
         self.t = 1_000_000.0
@@ -109,6 +136,9 @@ class NudgerTest(unittest.TestCase):
         self.saved = {name: getattr(system, name) for name in
                       ("panes", "process_table", "client_activity", "capture", "send")}
         self.saved_ask = judge.ask
+        self.saved_seats = orchestra.seats_by_pid
+        self.seats = {}
+        orchestra.seats_by_pid = lambda: self.seats
         self.screen = claude_screen(IDLE_BODY)
         self.sent: list[str] = []
         self.activity = {}
@@ -136,6 +166,7 @@ class NudgerTest(unittest.TestCase):
         for name, fn in self.saved.items():
             setattr(system, name, fn)
         judge.ask = self.saved_ask
+        orchestra.seats_by_pid = self.saved_seats
         for k, v in self.env.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -235,6 +266,39 @@ class NudgerTest(unittest.TestCase):
         self.advance(1)
         self.advance(1)
         self.assertEqual(self.asks, 1)
+
+    def test_unread_orchestra_mail_nudges_after_two_minutes(self):
+        daemon.set_mode("live")
+        self.seats = {10: orchestra.Seat("mb_t", "triangle", "player", unread=58,
+                                         oldest_unread_at=self.clock.t - 3600)}
+        self.verdict["needs_human_p"] = 0.9  # mail beats "the last message asks a person"
+        self.nudger.tick()
+        self.advance(1)
+        self.assertEqual(self.sent, [])
+        self.advance(1.5)
+        self.assertIn("58 unread Agent Orchestra messages", self.sent[0])
+
+    def test_player_with_nothing_open_is_left_alone(self):
+        daemon.set_mode("live")
+        self.seats = {10: orchestra.Seat("mb_t", "triangle", "player")}
+        self.nudger.tick()
+        [row] = self.advance(11)
+        self.assertIn("nothing open or unread", row["reason"])
+        self.assertEqual(self.sent, [])
+
+    def test_conductor_is_nudged_without_tasks(self):
+        daemon.set_mode("live")
+        self.seats = {10: orchestra.Seat("mb_m", "maestro", "conductor")}
+        self.nudger.tick()
+        self.advance(11)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_open_tasks_are_named(self):
+        daemon.set_mode("live")
+        self.seats = {10: orchestra.Seat("mb_t", "trumpet", "player", open_tasks=[("t_ci-sweep", "started")])}
+        self.nudger.tick()
+        self.advance(11)
+        self.assertIn("t_ci-sweep (started)", self.sent[0])
 
     def test_gone_pane_forgotten(self):
         self.nudger.tick()

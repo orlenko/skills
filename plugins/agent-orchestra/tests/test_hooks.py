@@ -762,6 +762,51 @@ class DisabledTest(HooksTestCase):
             self.assertEqual(hooks.hook_stop(self.provider, self.payload())["decision"], "block")
 
 
+class HookWaitAfterFailureTest(HooksTestCase):
+    """Claude runs StopFailure, not Stop, when a turn ends in an API error."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        previous = hooks._FAILURE_FIRST_DELAY_SECONDS
+        hooks._FAILURE_FIRST_DELAY_SECONDS = 0.2
+        self.addCleanup(setattr, hooks, "_FAILURE_FIRST_DELAY_SECONDS", previous)
+
+    def test_mail_already_waiting_wakes_after_the_delay(self) -> None:
+        member = self.make_member()
+        self.add_message(str(member["member_id"]), "m_" + "b" * 16, act="ask", need="sha")
+        buffer = io.StringIO()
+        started = time.monotonic()
+        with redirect_stderr(buffer):
+            code = hooks.hook_wait(self.provider, self.payload(event="StopFailure", error="rate_limit"))
+        self.assertEqual(code, 2)
+        self.assertGreaterEqual(time.monotonic() - started, 0.2)
+        self.assertIn("claim_token: m_" + "b" * 16, buffer.getvalue())
+
+    def test_errors_only_a_person_can_fix_do_not_park(self) -> None:
+        member = self.make_member()
+        self.add_message(str(member["member_id"]), "m_" + "c" * 16)
+        payload = self.payload(event="StopFailure", error="billing_error")
+        self.assertEqual(hooks.hook_wait(self.provider, payload), 0)
+        self.assertEqual(list(runtime_dir().glob("*.wake.*.json")), [])
+
+    def test_delay_grows_per_failure_and_a_normal_stop_resets_it(self) -> None:
+        member = self.make_member()
+        member_id = str(member["member_id"])
+        self.assertEqual(hooks._failure_delay(member_id, "session-one"), 0.2)
+        self.assertEqual(hooks._failure_delay(member_id, "session-one"), 0.8)
+        self.add_message(member_id, "m_" + "d" * 16)
+        self.assertEqual(hooks.hook_wait(self.provider, self.payload()), 0)  # a normal Stop
+        self.assertEqual(list(runtime_dir().glob("*.stopfailure.*.json")), [])
+        self.assertEqual(hooks._failure_delay(member_id, "session-one"), 0.2)
+
+    def test_claude_registers_the_waiter_on_stop_failure(self) -> None:
+        config = json.loads((Path(hooks.__file__).resolve().parents[1] / "hooks" / "claude-hooks.json").read_text())
+        [entry] = config["hooks"]["StopFailure"]
+        [hook] = entry["hooks"]
+        self.assertEqual(hook["args"][0], "hook-wait")
+        self.assertTrue(hook["asyncRewake"])
+
+
 class HookWaitTest(HooksTestCase):
     def test_pending_mail_never_parks(self) -> None:
         member = self.make_member()
