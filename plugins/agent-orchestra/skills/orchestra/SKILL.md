@@ -226,6 +226,12 @@ every `assign` once, promptly, on the same `TASK`.
   owner. Give it a `TASK` id that reads as an id (`t_i18n-zhtw-fonts`), and put
   the done-criteria in the body as `Done when:` lines a player can check
   without asking.
+- An assignment ends in exactly two ways: its `Done when:` lines hold, or the
+  owner sends `block`. Write every limit as a `Done when:` line about the
+  work. For a deadline, put the time in `NEED` (`NEED done: sha by 18:00Z`) as
+  something to report against. Accounts, quota, and session length belong to
+  the runtime underneath: aiq moves a session to a fresh account with a
+  handoff note, and the owner carries on.
 - Scope every assignment. Name its intended effects, including each store or
   data write the operation is meant to make, and anchor the user's
   authorization: who approved it, where, and when. The owner checks a later
@@ -268,6 +274,10 @@ every `assign` once, promptly, on the same `TASK`.
   carries the time you observed it and an anchor someone else can check: the
   invocation, the job id, the log path. Review and design work anchor to the
   file, commit, or document. Never invent a pid.
+- Work an assignment until its `Done when:` lines hold or you send `block`.
+  At every turn end, the next step is the next unblocked piece of the
+  assignment. If an assignment names another reason to stop, such as a clock
+  time or a quota level, ask the conductor which `Done when:` line it serves.
 - Send `done` to `parent` with evidence: the commit sha, the test command, and
   the result. A `done` with no falsifiable anchor is worth nothing. `done`
   means finished. Work with a named remainder is `STATE started` with the

@@ -71,6 +71,7 @@ def _recent_log(hours: float) -> list[dict]:
 
 
 def cmd_status(args) -> None:
+    daemon.load_env_file()  # report the judge as the service sees it
     rows = _recent_log(24)
     outcomes = [r for r in rows if r.get("event") == "outcome"]
     value = {
