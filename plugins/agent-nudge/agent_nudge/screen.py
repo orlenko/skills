@@ -18,7 +18,10 @@ _OTHER_ESC = re.compile(r"\x1b\][^\x07]*\x07|\x1b[@-Z\\-_]")
 _RULE = re.compile(r"^[\s─━═╌┄-]+(\S.*\S\s*[─━═]+\s*)?$")
 # Claude's footer counts what keeps running after a turn: "· 1 monitor ·",
 # "2 background tasks", "1 shell". Any of them can wake the session.
-_WATCHERS = re.compile(r"\b(\d+)\s+(monitors?|background\s+tasks?|shells?|bashes|jobs?)\b", re.I)
+# A narrow pane cuts the footer mid-word ("· 1 monit"), and the finished-turn
+# line may say it instead ("done 6:33 PM · 1 monitor still running"), so both
+# are read and a truncated word still counts.
+_WATCHERS = re.compile(r"\b(\d+)\s+(monit\w*|background\s+tasks?|shells?|bash\w*|jobs?)", re.I)
 _WORKING = re.compile(r"esc to interrupt|ctrl\+c to interrupt|press esc to stop", re.I)
 # Claude's live spinner: a glyph and one word ending in an ellipsis ("✳ Nucleating…").
 # The finished line reads "✻ Cogitated for 13s · done 5:42 PM", with no ellipsis.
@@ -57,6 +60,10 @@ def _plain_and_dim(line: str) -> tuple[str, list[bool]]:
     return "".join(text), dim_mask
 
 
+def _count_watchers(text: str) -> int:
+    return sum(int(m.group(1)) for m in _WATCHERS.finditer(text))
+
+
 def parse(raw: str, agent: str, tail_lines: int = 40) -> Screen:
     glyph = PROMPT_GLYPHS.get(agent, "❯")
     lines = raw.rstrip("\n").split("\n")
@@ -89,7 +96,7 @@ def parse(raw: str, agent: str, tail_lines: int = 40) -> Screen:
         body_hash=hashlib.sha256(body.encode("utf-8")).hexdigest(),
         tail=tail,
         footer=footer,
-        watchers=sum(int(m.group(1)) for m in _WATCHERS.finditer(footer)),
+        watchers=max(_count_watchers(footer), _count_watchers(" ".join(body_lines[-3:]))),
         working_marker=bool(_WORKING.search(tail[-600:] + "\n" + footer))
         or any(_SPINNER.match(line) for line in body_lines[-4:]),
     )

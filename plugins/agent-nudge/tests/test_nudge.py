@@ -45,6 +45,11 @@ class ScreenTest(unittest.TestCase):
         scr = screen.parse(claude_screen(IDLE_BODY, footer="  ⏵⏵ bypass permissions on · 1 monitor ·"), "claude")
         self.assertEqual(scr.watchers, 1)
 
+    def test_watchers_in_a_narrow_pane(self):
+        body = IDLE_BODY.replace("done 11:30 AM", "done 6:33 PM · 1\n  monitor still running")
+        scr = screen.parse(claude_screen(body, footer="  ⏵⏵ bypass permissions on · 1 monit"), "claude")
+        self.assertEqual(scr.watchers, 1)
+
     def test_dialog_has_no_prompt(self):
         dialog = "Do you want to proceed?\n  1. Yes\n  2. No\n\nEsc to cancel"
         self.assertFalse(screen.parse(dialog, "claude").has_prompt)
