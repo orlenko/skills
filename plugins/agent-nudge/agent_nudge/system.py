@@ -23,7 +23,9 @@ run: Runner = _run
 # An agent is a process whose executable is named for it. Node-installed Codex
 # runs as `node .../@openai/codex/bin/codex.js`, so the script name counts too.
 AGENTS = {"claude": "claude", "codex": "codex"}
-_SEP = "\x1f"
+# Printable on purpose: tmux 3.4 (Ubuntu 24.04) prints a control character in
+# -F output as an octal escape ("\\037"), so a \x1f separator never splits there.
+_SEP = "|:nudge:|"
 
 
 @dataclass

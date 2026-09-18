@@ -79,6 +79,18 @@ class AgentDetectionTest(unittest.TestCase):
         self.assertEqual((pane.agent, pane.agent_pid), ("codex", 12))
 
 
+class TmuxOutputTest(unittest.TestCase):
+    def test_panes_split_on_a_printable_separator(self):
+        saved = system.run
+        line = system._SEP.join(["%3", "74923", "aiq-ops5", "@2", "/home/vlad/code/ops", "0", ""])
+        system.run = lambda args: line + "\n"
+        try:
+            [pane] = system.panes()
+        finally:
+            system.run = saved
+        self.assertEqual((pane.id, pane.pid, pane.path, pane.opt_out), ("%3", 74923, "/home/vlad/code/ops", False))
+
+
 class FakeClock:
     def __init__(self):
         self.t = 1_000_000.0
