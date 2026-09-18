@@ -490,6 +490,10 @@ def hook_stop(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
     return {"decision": "block", "reason": reason}
 
 
+def _pending_ids(member_id: str) -> set[str]:
+    return {path.stem for path in bucket_dir(member_id, "pending").glob("*.json")}
+
+
 def _sleep_unless_closed(member_id: str, seconds: float) -> None:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -555,10 +559,17 @@ def hook_wait(provider: str, payload: dict[str, Any]) -> int:
         if str(payload.get("error") or "") in _FAILURE_NEEDS_PERSON:
             return 0
         delay = _failure_delay(member_id, session_id)
+        # No Stop hook ran, so nothing waiting has been shown: all of it counts.
+        seen: set[str] = set()
     else:
         _failure_path(member_id, session_id).unlink(missing_ok=True)
-        if pending_count(member):
-            return 0
+        # Mail already waiting was shown by the Stop hook, now or at an earlier
+        # stop. This used to exit here, and an agent that read FYI copies and
+        # left them unfinished got no waiter at all: the next stop carries
+        # stop_hook_active, so the Stop hook stays quiet too. Three Ubuntu
+        # seats sat on 2 to 8 unread messages that way on 2026-09-18. Park
+        # instead, and wake only on mail that arrives after this point.
+        seen = _pending_ids(member_id)
     lock_path = _watch_lock_path(member_id, session_id)
     if not acquire_pid_lock(lock_path):
         return 0
@@ -585,7 +596,7 @@ def hook_wait(provider: str, payload: dict[str, Any]) -> int:
                 next_monitor_check = time.monotonic() + _WAIT_MONITOR_SECONDS
             # Events land in events/ and never in pending/, so a presence line
             # can never wake the session; only real member mail does.
-            if pending_count(member):
+            if _pending_ids(member_id) - seen:
                 reason = _hook_message_nudge(member, provider, "")
                 if reason:
                     sys.stderr.write(f"{reason}\n")

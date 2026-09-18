@@ -341,8 +341,10 @@ held seat logs Jev's read of the session's transcript beside the task timers
 (`<member>.jev.jsonl`); that log steers nothing. Do not act on those files and
 never quote them in mail.
 
-In Claude Code the idle waiter (`hook-wait`) is registered on `Stop` and on
-`StopFailure`. Claude runs `StopFailure` instead of `Stop` when a turn ends in
+In Claude Code the idle waiter (`hook-wait`) wakes the session on mail that
+arrives after the turn ended. Mail it was already shown and left unfinished,
+such as FYI copies, doesn't wake it and doesn't stop it from waiting. It is
+registered on `Stop` and on `StopFailure`. Claude runs `StopFailure` instead of `Stop` when a turn ends in
 an API error. The waiter then holds for 2 minutes (8, then 32 on repeated
 failures, capped at an hour) before it wakes the session on mail, so a rate
 limit does not spin. After billing, authentication, or account errors it does

@@ -51,8 +51,8 @@ GENERIC = ("[agent-nudge] You have been idle for {minutes} min. Is your goal don
            "blocked? If anything is still unblocked, continue with it. If you are waiting on "
            "someone or something, say what, and set up something that will wake you when it "
            "changes.")
-MAIL = ("[agent-nudge] You have {unread} unread Agent Orchestra message{plural} (oldest {age} "
-        "min) and have been idle for {minutes} min. Read your orchestra inbox and act on it.")
+MAIL = ("[agent-nudge] {unread} Agent Orchestra message{plural} arrived while you were idle "
+        "(oldest {age} min) and nothing woke you. Read your orchestra inbox and act on it.")
 POINTED = ("[agent-nudge] You have been idle for {minutes} min after saying you would act when "
            "something changes, and nothing is watching for it. Check it now. If it is still "
            "pending, set up something that will wake you (a monitor, a scheduled wake-up, or a "
@@ -202,7 +202,11 @@ class Nudger:
         if scr.working_marker:
             return None
         seat = getattr(self, "seats", {}).get(pane.agent_pid)
-        mail = bool(seat and seat.unread)
+        # Only mail that landed after the screen went still is unheard. Mail
+        # older than that the agent was shown and chose to leave, often FYI
+        # copies, and nudging about it again would be noise.
+        unheard = [t for t in (seat.unread_times if seat else []) if t >= rec["changed_at"] - 5]
+        mail = bool(unheard)
         base = (MAIL_IDLE_MINUTES if mail else _minutes(IDLE_ENV, DEFAULT_IDLE_MINUTES)) * 60
         needed, streak = _required_idle(rec, base)
         if scr.watchers and not mail:
@@ -210,7 +214,7 @@ class Nudger:
         if idle < needed:
             return None
         if seat and not mail and not seat.open_tasks and seat.role != "conductor":
-            return self._note(pane, rec, at, "skip", f"orchestra player {seat.name} has nothing open or unread")
+            return self._note(pane, rec, at, "skip", f"orchestra player {seat.name} has nothing open and no new mail")
         if rec.get("last_nudge_hash") == scr.body_hash:
             return None
         if scr.typed:
@@ -242,8 +246,8 @@ class Nudger:
         pointed = bool(verdict and verdict["waiting_p"] >= 0.5 and not scr.watchers)
         minutes = int(idle // 60)
         if mail:
-            age = int((at - (seat.oldest_unread_at or at)) // 60)
-            text = MAIL.format(unread=seat.unread, plural="" if seat.unread == 1 else "s", age=age, minutes=minutes)
+            age = int((at - min(unheard)) // 60)
+            text = MAIL.format(unread=len(unheard), plural="" if len(unheard) == 1 else "s", age=age, minutes=minutes)
             kind = "mail"
         else:
             text = (POINTED if pointed else GENERIC).format(minutes=minutes)

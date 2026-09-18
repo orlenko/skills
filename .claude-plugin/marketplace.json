@@ -24,7 +24,7 @@
       "displayName": "Agent Orchestra",
       "source": "./plugins/agent-orchestra",
       "description": "Durable many-agent messaging with a hub, a conductor, and players across machines.",
-      "version": "0.2.6",
+      "version": "0.2.7",
       "author": {
         "name": "Vlad Orlenko",
         "url": "https://github.com/orlenko"
@@ -37,7 +37,7 @@
       "displayName": "Agent Nudge",
       "source": "./plugins/agent-nudge",
       "description": "A daemon that finds idle Claude and Codex sessions in tmux and asks them, once, whether their goal is done.",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "author": {
         "name": "Vlad Orlenko",
         "url": "https://github.com/orlenko"

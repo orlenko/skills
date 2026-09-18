@@ -43,10 +43,12 @@ takes one for its user.
 
 When a pane's agent holds an Agent Orchestra seat, the nudger reads that
 member's files. The seat's `owner_pid` is the agent process in the pane.
-- Unread mail in the member's local inbox means the session isn't hearing its
-  wake-ups. The nudge comes after 2 idle minutes instead of 10, even if the last
-  message asks the user something, and says how many messages wait.
-- A player with no open task and no unread mail is idle by design and is not
+- Mail that reached the member's local inbox after the pane went still means
+  the session didn't hear its wake-up. The nudge then comes after 2 idle minutes
+  instead of 10, even if the last message asks the user something, and says how
+  many messages arrived. Mail older than the stop was already shown to the agent
+  and doesn't count.
+- A player with no open task and no new mail is idle by design and is not
   nudged. The conductor assigns work. The conductor itself is nudged like any
   other session.
 - A nudge to a player with open tasks names them.

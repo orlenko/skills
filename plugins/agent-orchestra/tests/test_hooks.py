@@ -794,9 +794,17 @@ class HookWaitAfterFailureTest(HooksTestCase):
         member_id = str(member["member_id"])
         self.assertEqual(hooks._failure_delay(member_id, "session-one"), 0.2)
         self.assertEqual(hooks._failure_delay(member_id, "session-one"), 0.8)
-        self.add_message(member_id, "m_" + "d" * 16)
-        self.assertEqual(hooks.hook_wait(self.provider, self.payload()), 0)  # a normal Stop
-        self.assertEqual(list(runtime_dir().glob("*.stopfailure.*.json")), [])
+        worker = threading.Thread(  # a normal Stop parks, and clears the streak on the way
+            target=lambda: hooks.hook_wait(self.provider, self.payload()), daemon=True)
+        with redirect_stderr(io.StringIO()):
+            worker.start()
+            deadline = time.monotonic() + 5
+            while list(runtime_dir().glob("*.stopfailure.*.json")) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(list(runtime_dir().glob("*.stopfailure.*.json")), [])
+            self.add_message(member_id, "m_" + "d" * 16)
+            worker.join(timeout=10)
+        self.assertFalse(worker.is_alive())
         self.assertEqual(hooks._failure_delay(member_id, "session-one"), 0.2)
 
     def test_claude_registers_the_waiter_on_stop_failure(self) -> None:
@@ -808,11 +816,30 @@ class HookWaitAfterFailureTest(HooksTestCase):
 
 
 class HookWaitTest(HooksTestCase):
-    def test_pending_mail_never_parks(self) -> None:
+    def test_mail_left_unfinished_still_parks_and_new_mail_wakes(self) -> None:
+        # The agent read FYI copies and left them; the next stop is stop_hook_active.
         member = self.make_member()
-        self.add_message(str(member["member_id"]), "m_" + "a" * 16)
-        self.assertEqual(hooks.hook_wait(self.provider, self.payload()), 0)
-        self.assertEqual(list(runtime_dir().glob("*.wake.*.json")), [])
+        member_id = str(member["member_id"])
+        self.add_message(member_id, "m_" + "a" * 16)
+        result: dict[str, Any] = {}
+        buffer = io.StringIO()
+
+        def run() -> None:
+            result["code"] = hooks.hook_wait(self.provider, self.payload(stop_hook_active=True))
+
+        with redirect_stderr(buffer):
+            worker = threading.Thread(target=run, daemon=True)
+            worker.start()
+            deadline = time.monotonic() + 5
+            while not list(runtime_dir().glob("*.wake.*.json")) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(list(runtime_dir().glob("*.wake.*.json")), "hook_wait did not park")
+            time.sleep(0.8)
+            self.assertTrue(worker.is_alive(), "mail it had already seen woke it")
+            self.add_message(member_id, "m_" + "e" * 16, act="ask", need="sha")
+            worker.join(timeout=10)
+        self.assertEqual(result.get("code"), 2)
+        self.assertIn("claim_token: m_" + "e" * 16, buffer.getvalue())
 
     def test_parks_until_mail_arrives_and_ignores_events(self) -> None:
         member = self.make_member()

@@ -24,6 +24,7 @@ class Seat:
     role: str
     unread: int = 0
     oldest_unread_at: float | None = None
+    unread_times: list[float] = field(default_factory=list)
     open_tasks: list[tuple[str, str]] = field(default_factory=list)
 
 
@@ -63,6 +64,7 @@ def seats_by_pid() -> dict[int, Seat]:
             stamp = row.get("received_at") or row.get("sent_at")
             if isinstance(stamp, (int, float)):
                 seat.oldest_unread_at = min(seat.oldest_unread_at or stamp, stamp)
+                seat.unread_times.append(float(stamp))
         snapshot = _read(root / "runtime" / f"{member_id}.tasks.json")
         for task in snapshot.get("tasks") or []:
             if not isinstance(task, dict):

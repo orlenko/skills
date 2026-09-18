@@ -116,6 +116,7 @@ class OrchestraFilesTest(unittest.TestCase):
         self.assertEqual(list(seats), [74923])
         seat = seats[74923]
         self.assertEqual((seat.unread, seat.oldest_unread_at, seat.open_tasks), (2, 50.0, [("t_a", "started")]))
+        self.assertEqual(sorted(seat.unread_times), [50.0, 100.0])
 
 
 class FakeClock:
@@ -269,21 +270,31 @@ class NudgerTest(unittest.TestCase):
 
     def test_unread_orchestra_mail_nudges_after_two_minutes(self):
         daemon.set_mode("live")
-        self.seats = {10: orchestra.Seat("mb_t", "triangle", "player", unread=58,
-                                         oldest_unread_at=self.clock.t - 3600)}
         self.verdict["needs_human_p"] = 0.9  # mail beats "the last message asks a person"
         self.nudger.tick()
+        old = self.clock.t - 3600  # shown before this stop and left unfinished
+        new = [self.clock.t + 30, self.clock.t + 40]
+        self.seats = {10: orchestra.Seat("mb_t", "triangle", "player", unread=3, unread_times=[old] + new)}
         self.advance(1)
         self.assertEqual(self.sent, [])
         self.advance(1.5)
-        self.assertIn("58 unread Agent Orchestra messages", self.sent[0])
+        self.assertIn("2 Agent Orchestra messages arrived while you were idle", self.sent[0])
+
+    def test_mail_the_agent_already_left_is_not_news(self):
+        daemon.set_mode("live")
+        self.nudger.tick()
+        self.seats = {10: orchestra.Seat("mb_t", "triangle", "player", unread=5,
+                                         unread_times=[self.clock.t - 600] * 5)}
+        [row] = self.advance(11)
+        self.assertIn("no new mail", row["reason"])
+        self.assertEqual(self.sent, [])
 
     def test_player_with_nothing_open_is_left_alone(self):
         daemon.set_mode("live")
         self.seats = {10: orchestra.Seat("mb_t", "triangle", "player")}
         self.nudger.tick()
         [row] = self.advance(11)
-        self.assertIn("nothing open or unread", row["reason"])
+        self.assertIn("nothing open and no new mail", row["reason"])
         self.assertEqual(self.sent, [])
 
     def test_conductor_is_nudged_without_tasks(self):
