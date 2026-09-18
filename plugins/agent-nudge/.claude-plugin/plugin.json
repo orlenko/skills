@@ -1,0 +1,15 @@
+{
+  "name": "agent-nudge",
+  "displayName": "Agent Nudge",
+  "version": "0.1.0",
+  "description": "A daemon that finds idle Claude and Codex sessions in tmux and asks them, once, whether their goal is done.",
+  "author": {
+    "name": "Vlad Orlenko",
+    "url": "https://github.com/orlenko"
+  },
+  "homepage": "https://github.com/orlenko/skills/tree/main/plugins/agent-nudge",
+  "repository": "https://github.com/orlenko/skills",
+  "license": "MIT",
+  "keywords": ["agents", "tmux", "supervision", "codex", "claude"],
+  "skills": "./skills/"
+}

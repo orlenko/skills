@@ -33,6 +33,19 @@
       "tags": ["agents", "orchestra", "coordination"]
     },
     {
+      "name": "agent-nudge",
+      "displayName": "Agent Nudge",
+      "source": "./plugins/agent-nudge",
+      "description": "A daemon that finds idle Claude and Codex sessions in tmux and asks them, once, whether their goal is done.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Vlad Orlenko",
+        "url": "https://github.com/orlenko"
+      },
+      "category": "productivity",
+      "tags": ["agents", "tmux", "supervision"]
+    },
+    {
       "name": "design-skeptic",
       "displayName": "Design Skeptic",
       "source": "./plugins/design-skeptic",

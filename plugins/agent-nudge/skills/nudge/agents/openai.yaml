@@ -1,0 +1,7 @@
+interface:
+  display_name: "Agent Nudge"
+  short_description: "Wake idle coding agents in tmux that stopped short of their goal"
+  default_prompt: "Use $nudge to install or check the agent nudger."
+
+policy:
+  allow_implicit_invocation: true

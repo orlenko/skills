@@ -1,0 +1,74 @@
+---
+name: nudge
+description: "Run agent-nudge on this machine: a daemon that finds Claude Code and Codex sessions in tmux that sit idle after their turn, and types one polite question into each: is your goal done, or are you blocked? Use when the user wants to install, start, stop, check, or switch the nudger between dry-run and live, see what it nudged, or opt a tmux pane out."
+---
+
+# Agent Nudge
+
+Use the bundled `bin/agent-nudge` executable. Resolve its absolute path from
+this skill: the plugin root is two directories above this skill directory.
+
+Agents often stop short of their goal. They report and stop, or they say they
+will act when a CI job finishes and set nothing up to wake them. One outside
+line ("still waiting?") usually restarts them. The nudger sends that line to
+tmux panes that run `claude` or `codex`, one daemon per machine.
+
+## What it does, and when it holds back
+
+Every 30 s it reads each agent pane's screen. It types into a pane only when
+all of these hold:
+
+- The screen above the input box has not changed for 10 minutes
+  (`AGENT_NUDGE_IDLE_MINUTES`). A monitor or background task in the footer
+  stretches that to 60.
+- The input box is empty. Dim autosuggestions count as empty; anything a person
+  has typed does not.
+- No attached tmux client in that session has had keyboard activity in the last
+  5 minutes (`AGENT_NUDGE_HUMAN_QUIET_MINUTES`).
+- There is no spinner and no dialog.
+- TypeSafe Jev reads the screen as idle, and the last message is not a question
+  for the user.
+
+It nudges once per stop. If the agent answers and stops again, the next wait
+triples, up to 4 hours. Anything else that wakes the agent, a person or mail,
+resets the wait. There is a cap of 12 nudges per pane per day.
+
+When Jev reads the last message as waiting on something outside the agent,
+and nothing in the footer is watching for it, the nudge says so and asks the
+agent to check now or to set up a watch. Every other nudge asks whether the
+goal is done or blocked. Nudges start with `[agent-nudge]`, so an agent never
+takes one for its user.
+
+## Commands
+
+- `status [--json]`: mode, whether the daemon runs, whether the judge is on,
+  and the last 24 hours. `resumed_work_after_nudge` counts nudges followed by
+  at least two minutes of work.
+- `panes [--json]`: the agent panes it sees and what each screen shows.
+- `log [-n 30] [--hours 24] [--json]`: recent decisions.
+- `mode [dry-run|live]`: show or set the mode. It starts as `dry-run`, which
+  logs what it would send and types nothing.
+- `install` / `uninstall`: the launchd (macOS) or systemd `--user` (Linux)
+  service. Run `install` again after a plugin update, because the service
+  points at the plugin copy that installed it.
+- `run --once`: one pass in the foreground, printing what it logged.
+
+## Setup
+
+1. The judge needs `TYPESAFE_API_KEY`. A service starts with a bare
+   environment, so put `TYPESAFE_API_KEY=...` in `~/.config/agent-nudge/env`
+   (mode 600). Never copy a key into a repository. Live mode refuses to type
+   without the judge. Dry-run works without it.
+2. Run `install`, then `status`.
+3. After a day or so in dry-run, read `log`. If its choices look right and the
+   user agrees, run `mode live`. Switching to live is the user's decision: ask,
+   do not assume.
+
+To keep a pane out of it: `tmux set-option -p -t <pane> @nudge off`.
+
+## Privacy
+
+With the key set, the last ~40 lines of an idle agent's screen go to TypeSafe,
+a third party, once per stop. The log in `~/.local/state/agent-nudge/`
+(mode 600) keeps the screen tail of every nudge so the choices can be
+reviewed.

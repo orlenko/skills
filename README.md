@@ -394,6 +394,40 @@ Both send content to that third party.
 
 `AGENT_ORCHESTRA_JEV_SHADOW=1`, the 0.2.3 name, still works.
 
+## Agent Nudge
+
+Coding agents often stop short of their goal. They report and stop, or they
+say they will act when a CI job finishes and set nothing up to wake them. A
+single outside line like "still waiting?" usually gets them going again.
+`agent-nudge` is a per-machine daemon that sends that line to Claude Code and
+Codex sessions running in tmux.
+
+Every 30 s it reads each agent pane with `tmux capture-pane`. It types one
+question into a pane only when all of these hold:
+
+- the screen above the input box has not changed for 10 minutes;
+- the input box is empty (dim suggestions count as empty);
+- no one has typed in that tmux session for 5 minutes;
+- TypeSafe Jev reads the screen as idle, with no question for the user.
+
+It asks whether the goal is done or blocked. If the agent said it was waiting
+on something and nothing in the footer is watching, it says that instead. It
+nudges once per stop, and a repeat stop after a nudge triples the wait. It
+starts in dry-run and logs what it would have typed.
+
+```sh
+claude plugin install agent-nudge@orlenko-skills     # or: codex plugin add agent-nudge@orlenko-skills
+echo 'TYPESAFE_API_KEY=...' > ~/.config/agent-nudge/env && chmod 600 ~/.config/agent-nudge/env
+plugins/agent-nudge/bin/agent-nudge install          # launchd or systemd --user
+plugins/agent-nudge/bin/agent-nudge status
+plugins/agent-nudge/bin/agent-nudge log
+plugins/agent-nudge/bin/agent-nudge mode live        # after a dry-run day looks right
+```
+
+Opt a pane out with `tmux set-option -p -t <pane> @nudge off`. With the key
+set, an idle agent's last ~40 screen lines go to TypeSafe, a third party, once
+per stop.
+
 ## Undrudge Workflows
 
 `undrudge-apply` is the acting half of [`undrudge`](https://github.com/orlenko/undrudge),
@@ -473,6 +507,11 @@ plugins/agent-pair/
   .claude-plugin/plugin.json
   skills/pair/SKILL.md
   bin/agent-pair
+plugins/agent-nudge/
+  .codex-plugin/plugin.json
+  .claude-plugin/plugin.json
+  skills/nudge/SKILL.md
+  bin/agent-nudge
 plugins/agent-observer/
   .codex-plugin/plugin.json
   .claude-plugin/plugin.json
@@ -495,6 +534,7 @@ plugins/undrudge-apply/
 ```sh
 python3 -m unittest discover -s plugins/agent-observer/tests -v
 python3 -m unittest discover -s plugins/agent-pair/tests -v
+python3 -m unittest discover -s plugins/agent-nudge/tests -v
 # Optional: real Codex queue regression with a local mock model (no account needed).
 AGENT_TEST_CODEX_BIN=/path/to/codex python3 -m unittest discover \
   -s plugins/agent-pair/tests -p test_codex_native_wake.py -v
