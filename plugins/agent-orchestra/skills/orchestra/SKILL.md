@@ -321,6 +321,16 @@ queue operations to preserve the bound account home. After upgrading an
 existing membership, run `monitor --restart --provider codex --member-id ID
 --json` once to load the new monitor. A new membership starts it automatically.
 
+Shadow judge (off by default). With `AGENT_ORCHESTRA_JEV_SHADOW=1` and
+`TYPESAFE_API_KEY` in the session's environment, the monitor of a held seat
+reads the tail of that session's transcript at most once a minute
+(`AGENT_ORCHESTRA_JEV_INTERVAL` seconds), asks TypeSafe Jev whether the session
+is working, waiting, blocked on a prompt, or ended, and appends the answer
+beside the task timers to `<member>.jev.jsonl` in the runtime dir. Tails are
+kept in `<member>.jev-tails/`. It sends transcript tails to a third party,
+which is why it is opt-in. It only logs: lifecycle, attention, hub state, and
+wakes never read it. Do not act on those files; never quote them in mail.
+
 Stop hooks peek at locally delivered mail without claiming it and include the
 sender, act, task, need, and message id as a `claim_token`. Blocks come
 first, then reply-required messages. Bodies stay out of the nudge — orchestra mail is

@@ -378,6 +378,16 @@ mail wakes a session; system presence events and task attention do not. The
 executable override is `AGENT_ORCHESTRA_CODEX_BIN`. Lifecycle reminders remain
 a fallback, and `status --json` reports queue failures in `wake.last_error`.
 
+### Shadow judge
+
+Off by default. With `AGENT_ORCHESTRA_JEV_SHADOW=1` and `TYPESAFE_API_KEY`
+exported where the session starts, a seated member's monitor sends the last
+~4 KB of that session's transcript, rendered as plain text, to TypeSafe Jev at
+most once a minute and logs the answer next to what the task timers say
+(`<member>.jev.jsonl` and `<member>.jev-tails/` in the runtime dir). This sends
+transcript content to a third party. It is a benchmark and changes no
+behaviour: nothing reads its output.
+
 ## Undrudge Workflows
 
 `undrudge-apply` is the acting half of [`undrudge`](https://github.com/orlenko/undrudge),

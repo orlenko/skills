@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import codex_wake, core
+from . import codex_wake, core, jev_shadow
 from .core import (
     OrchestraError,
     atomic_write_json,
@@ -88,6 +88,8 @@ def hook_member(
         if provider == "codex":
             codex_wake.register(str(member["member_id"]), session_id=session_id,
                                 prefix="AGENT_ORCHESTRA")
+        if jev_shadow.enabled():
+            jev_shadow.record_transcript(member, provider, payload)
         ensure_monitor(member)
         return member
     except (OrchestraError, OSError):

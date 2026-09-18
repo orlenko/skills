@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import __version__, codex_wake, core, monitor_lock
+from . import __version__, codex_wake, core, jev_shadow, monitor_lock
 from .core import (
     APIError,
     MAX_MESSAGE_BYTES,
@@ -1461,9 +1461,8 @@ def _monitor_loop(member_id: str) -> None:
                     new_count += 1
                 api_request(member, "POST", f"/v1/messages/{message_id}/ack", {})
             _wake_codex(member)
-            api_request(
-                member, "POST", "/v1/heartbeat", {"seat": seat_state(member)}, timeout=5
-            )
+            seat = seat_state(member)
+            api_request(member, "POST", "/v1/heartbeat", {"seat": seat}, timeout=5)
             roster = api_request(member, "GET", "/v1/members", timeout=10)
             _apply_self_row(member, _self_row(roster, member_id), roster.get("conductor_id", _MISSING))
             if new_count:
@@ -1478,6 +1477,8 @@ def _monitor_loop(member_id: str) -> None:
                 )
             except OrchestraError:
                 pass
+            # Log only: its answers reach nothing the monitor or hooks decide on.
+            jev_shadow.tick(member, seat)
             delay = 0.25
             atomic_write_json(state_path, _monitor_record(os.getpid(), started_at))
         except APIError as exc:
