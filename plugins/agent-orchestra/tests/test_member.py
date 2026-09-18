@@ -214,6 +214,33 @@ class MemberTestCase(unittest.TestCase):
 
     # tests -----------------------------------------------------------------
 
+    def test_send_warns_when_body_asks_but_need_is_none(self):
+        from agent_orchestra import jev
+        created = self._create_hub()
+        conductor = self._join(created["conductor_invite"], "conductor", "Conductor")
+        minted = member_module.invite(conductor, role="player", parent="self")
+        self._join(minted["invite"], "player", "Player")
+        for key, value in ((jev.FLAG_ENV, "1"), (jev.KEY_ENV, "k")):
+            previous = os.environ.get(key)
+            os.environ[key] = value
+            if previous is None:
+                self.addCleanup(os.environ.pop, key, None)
+            else:
+                self.addCleanup(os.environ.__setitem__, key, previous)
+        probability = {"p": 0.95}
+        self._patch(jev, "ask", lambda state, questions, timeout: (
+            {"needs_reply": {"noul": probability["p"]}}, {"latency_ms": 1}))
+
+        asked = member_module.send(conductor, "ACT tell\nTO all\nNEED none\n\nCan you confirm the parser is merged?")
+        self.assertIn(asked["state"], {"queued", "delivered"})
+        self.assertIn(f"RE {asked['id']}", asked["warning"])
+
+        probability["p"] = 0.5
+        told = member_module.send(conductor, "ACT tell\nTO all\n\nThe parser merged at git:abc1234.")
+        self.assertNotIn("warning", told)
+        needed = member_module.send(conductor, "ACT ask\nTO all\nNEED yes/no\n\nIs the parser merged now?")
+        self.assertNotIn("warning", needed)
+
     def test_four_member_topology_routes_every_alias(self):
         created = self._create_hub()
         orchestra_id = created["orchestra_id"]

@@ -10,7 +10,7 @@ Nothing here feeds back. Rows go to `<member>.jev.jsonl` and tails to
 `<member>.jev-tails/` in the runtime dir; lifecycle, attention, hub state, and
 wakes never read them.
 
-Off unless AGENT_ORCHESTRA_JEV_SHADOW=1 and TYPESAFE_API_KEY are both in the
+Off unless `jev.enabled()`: AGENT_ORCHESTRA_JEV=1 and TYPESAFE_API_KEY in the
 monitor's environment. It sends transcript tails to a third party, which is
 why it is opt-in. The call runs on a daemon thread, one in flight per member,
 at most once per interval, and every failure lands in the row.
@@ -24,20 +24,18 @@ import os
 import threading
 import time
 import urllib.error
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from . import jev
 from .core import OrchestraError, atomic_write_json, bucket_dir, now, read_json, runtime_dir
 from .lifecycle import attention as lifecycle_attention, thresholds
 
 
-FLAG_ENV = "AGENT_ORCHESTRA_JEV_SHADOW"
-KEY_ENV = "TYPESAFE_API_KEY"
+FLAG_ENV = jev.FLAG_ENV
+KEY_ENV = jev.KEY_ENV
 INTERVAL_ENV = "AGENT_ORCHESTRA_JEV_INTERVAL"
-ENDPOINT = "https://api.typesafe.ai/v1/systemone"
-MODEL = "jev-latest"
 DEFAULT_INTERVAL_SECONDS = 60.0
 TIMEOUT_SECONDS = 5.0
 TAIL_EVENTS = 40
@@ -103,12 +101,7 @@ _LOCK = threading.Lock()
 _STATE: dict[str, dict[str, Any]] = {}
 
 
-def _truthy(value: str | None) -> bool:
-    return (value or "").strip().lower() not in {"", "0", "false", "no", "off"}
-
-
-def enabled() -> bool:
-    return _truthy(os.environ.get(FLAG_ENV)) and bool(os.environ.get(KEY_ENV, "").strip())
+enabled = jev.enabled
 
 
 def interval() -> float:
@@ -369,26 +362,15 @@ def _epoch(value: Any) -> float | None:
 # ---- Jev --------------------------------------------------------------------
 
 
-def ask_jev(state: str, *, key: str, timeout: float = TIMEOUT_SECONDS) -> dict[str, Any]:
-    body = json.dumps({"state": state, "model": MODEL, "questions": QUESTIONS}).encode()
-    request = urllib.request.Request(
-        ENDPOINT, data=body, method="POST",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-    )
-    started = time.perf_counter()
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        data = json.load(response)
-    latency = time.perf_counter() - started
-    answers = data["answers"]
+def ask_jev(state: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str, Any]:
+    answers, meta = jev.ask(state, QUESTIONS, timeout=timeout)
     return {
         "activity": answers["activity"]["choice"],
         "activity_probs": answers["activity"].get("probabilities"),
         "activity_conf": answers["activity"].get("confidence"),
         "needs_human_p": answers["needs_human"]["noul"],
         "reported_recently_p": answers["reported_recently"]["noul"],
-        "input_tokens": (data.get("usage") or {}).get("input_tokens"),
-        "model": data.get("model"),
-        "latency_ms": round(latency * 1000),
+        **meta,
     }
 
 
@@ -499,7 +481,7 @@ def sample(member: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
             row["reused"] = True
             return _append(member_id, row)
         try:
-            answer = ask_jev(tail["text"], key=os.environ.get(KEY_ENV, "").strip())
+            answer = ask_jev(tail["text"])
         except urllib.error.HTTPError as exc:
             row["error"] = f"jev http {exc.code}"
             return _append(member_id, row)

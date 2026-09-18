@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import __version__, codex_wake, core, jev_shadow, monitor_lock
+from . import __version__, codex_wake, core, jev, jev_shadow, monitor_lock
 from .core import (
     APIError,
     MAX_MESSAGE_BYTES,
@@ -750,9 +750,16 @@ def send(member: dict[str, Any], text: str, to: list[str] | None = None) -> dict
     try:
         results = flush_outbox(member)
     except OrchestraError as exc:
-        return {"id": message_id, "state": "queued-locally", "detail": str(exc)}
-    result = next((item for item in results if str(item.get("id")) == message_id), None)
-    return result or {"id": message_id, "state": "queued-locally"}
+        result = {"id": message_id, "state": "queued-locally", "detail": str(exc)}
+    else:
+        found = next((item for item in results if str(item.get("id")) == message_id), None)
+        result = found or {"id": message_id, "state": "queued-locally"}
+    if result.get("state") not in {"rejected", "closed"}:
+        # After the send, so delivery never waits on it; advice only.
+        warning = jev.send_check(member_id, message_id, envelope.act, envelope.need, envelope.text)
+        if warning:
+            result["warning"] = warning
+    return result
 
 
 def _inbox_order(row: dict[str, Any]) -> tuple[int, float]:
