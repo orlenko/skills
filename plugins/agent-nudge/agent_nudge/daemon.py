@@ -196,7 +196,7 @@ class Nudger:
             append_log({"ts": at, "event": "outcome", "pane": pane.id, "agent": pane.agent,
                         "path": pane.path, "ran_seconds": round(run), "streak": rec.get("streak", 0)})
         if pane.opt_out:
-            return self._note(pane, rec, at, "skip", "opted out (@nudge off)")
+            return None  # a standing choice, not a decision: logging it every stop is noise
         if not scr.has_prompt:
             return self._note(pane, rec, at, "skip", "no input box: dialog open or agent exited")
         if scr.working_marker:
