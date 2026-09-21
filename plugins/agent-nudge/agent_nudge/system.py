@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -83,9 +84,39 @@ def capture(pane_id: str) -> str:
     return run(["tmux", "capture-pane", "-p", "-e", "-t", pane_id])
 
 
-def send(pane_id: str, text: str) -> None:
+# Codex reads keys that arrive in a burst as a paste, and an Enter inside the
+# burst becomes a newline in the composer: on 2026-09-21 three Codex nudges sat
+# typed but unsent. A pause lets the burst end before Enter lands.
+SUBMIT_PAUSE_SECONDS = 0.8
+SUBMIT_CHECK_SECONDS = 1.5
+_PROMPT_GLYPHS = ("❯", "›")
+
+
+def _still_in_composer(pane_id: str, text: str) -> bool:
+    """Whether the start of `text` still sits after the prompt glyph, unsent."""
+    try:
+        screen = run(["tmux", "capture-pane", "-p", "-t", pane_id])
+    except (OSError, subprocess.SubprocessError):
+        return False
+    head = " ".join(text.split())[:24]
+    for line in reversed(screen.splitlines()):
+        stripped = line.strip(" │┃")
+        if stripped.startswith(_PROMPT_GLYPHS):
+            return head in " ".join(stripped[1:].split())
+    return False
+
+
+def send(pane_id: str, text: str, *, sleep: Callable[[float], None] = time.sleep) -> bool:
+    """Type `text` and submit it. Returns False if it still sat unsent after a second Enter."""
     run(["tmux", "send-keys", "-t", pane_id, "-l", "--", text])
+    sleep(SUBMIT_PAUSE_SECONDS)
     run(["tmux", "send-keys", "-t", pane_id, "Enter"])
+    for _ in range(2):
+        sleep(SUBMIT_CHECK_SECONDS)
+        if not _still_in_composer(pane_id, text):
+            return True
+        run(["tmux", "send-keys", "-t", pane_id, "Enter"])
+    return not _still_in_composer(pane_id, text)
 
 
 def process_table() -> dict[int, tuple[int, list[str]]]:
@@ -119,7 +150,12 @@ def agent_of(argv: list[str]) -> str | None:
 
 
 def find_agent(pane: Pane, table: dict[int, tuple[int, list[str]]], depth: int = 4) -> None:
-    """The first agent process at or below the pane's shell, breadth first."""
+    """The first agent process at or below the pane's shell, breadth first.
+
+    `extra["agent_pids"]` holds that process and the agent processes under it.
+    npm's Codex is a `node .../bin/codex` wrapper around a native `codex`, and a
+    hook records the inner one as the session's pid.
+    """
     children: dict[int, list[int]] = {}
     for pid, (ppid, _) in table.items():
         children.setdefault(ppid, []).append(pid)
@@ -129,6 +165,12 @@ def find_agent(pane: Pane, table: dict[int, tuple[int, list[str]]], depth: int =
             agent = agent_of(table.get(pid, (0, []))[1])
             if agent:
                 pane.agent, pane.agent_pid = agent, pid
+                pids, frontier = [pid], [pid]
+                for _ in range(2):
+                    frontier = [c for p in frontier for c in children.get(p, [])
+                                if agent_of(table.get(c, (0, []))[1])]
+                    pids.extend(frontier)
+                pane.extra["agent_pids"] = pids
                 return
         level = [child for pid in level for child in sorted(children.get(pid, []))]
         if not level:

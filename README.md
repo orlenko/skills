@@ -411,9 +411,15 @@ question into a pane only when all of these hold:
 - TypeSafe Jev reads the screen as idle, with no question for the user.
 
 It asks whether the goal is done or blocked. If the agent said it was waiting
-on something and nothing in the footer is watching, it says that instead. It
-nudges once per stop, and a repeat stop after a nudge triples the wait. It
-starts in dry-run and logs what it would have typed.
+on something and nothing in the footer is watching, it says that instead. Jev
+also decides directly whether asking again could plausibly help. The daemon
+gives it trusted continuity facts that a clipped terminal screen cannot prove:
+the unchanged duration, consecutive nudge/reply count and span, and whether a
+non-nudge wake interrupted the chain. An unchanged pane that explicitly
+answered "the goal is done" therefore stays quiet instead of receiving the same
+question at ever-longer intervals. Authoritative new Orchestra mail or an open
+task still overrides that judgment. When a repeat is useful, its wait triples.
+It starts in dry-run and logs what it would have typed.
 
 ```sh
 claude plugin install agent-nudge@orlenko-skills     # or: codex plugin add agent-nudge@orlenko-skills

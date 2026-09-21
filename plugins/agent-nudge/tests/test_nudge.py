@@ -72,6 +72,16 @@ class AgentDetectionTest(unittest.TestCase):
         self.assertIsNone(system.agent_of(["/bin/zsh", "-l"]))
         self.assertIsNone(system.agent_of(["npm", "exec", "@playwright/mcp"]))
 
+    def test_wrapped_codex_keeps_the_inner_pid(self):
+        table = {10: (1, ["-zsh"]),
+                 11: (10, ["node", "/home/v/.nvm/versions/node/v22/bin/codex", "--enable", "hooks"]),
+                 12: (11, ["/home/v/.nvm/.../codex/codex", "--enable", "hooks"]),
+                 13: (12, ["codex-code-mode"])}
+        pane = system.Pane(id="%1", pid=10, session="s", window="@1", path="/w", opt_out=False)
+        system.find_agent(pane, table)
+        self.assertEqual((pane.agent, pane.agent_pid), ("codex", 11))
+        self.assertEqual(pane.extra["agent_pids"], [11, 12])
+
     def test_tree_walk_finds_child(self):
         table = {10: (1, ["-zsh"]), 11: (10, ["aiq", "long"]), 12: (11, ["/bin/codex", "--yolo"])}
         pane = system.Pane(id="%1", pid=10, session="s", window="@1", path="/w", opt_out=False)
@@ -89,6 +99,38 @@ class TmuxOutputTest(unittest.TestCase):
         finally:
             system.run = saved
         self.assertEqual((pane.id, pane.pid, pane.path, pane.opt_out), ("%3", 74923, "/home/vlad/code/ops", False))
+
+
+class SendTest(unittest.TestCase):
+    def setUp(self):
+        self.saved = system.run
+        self.calls = []
+        self.composer = ""
+
+        def run(args):
+            self.calls.append(args)
+            if args[1] == "send-keys" and args[-1] == "Enter":
+                if self.submits_on.pop(0):
+                    self.composer = ""
+            elif args[1] == "send-keys":
+                self.composer = args[-1]
+            return f"output\n› {self.composer}\n  footer" if args[1] == "capture-pane" else ""
+        system.run = run
+
+    def tearDown(self):
+        system.run = self.saved
+
+    def test_pauses_before_enter_and_retries_once(self):
+        self.submits_on = [False, True]  # the first Enter becomes a newline, the second submits
+        pauses = []
+        self.assertTrue(system.send("%1", "[agent-nudge] still waiting?", sleep=pauses.append))
+        self.assertEqual(pauses[0], system.SUBMIT_PAUSE_SECONDS)
+        self.assertEqual([c[-1] for c in self.calls if c[1] == "send-keys"],
+                         ["[agent-nudge] still waiting?", "Enter", "Enter"])
+
+    def test_reports_text_left_unsent(self):
+        self.submits_on = [False, False, False]
+        self.assertFalse(system.send("%1", "[agent-nudge] still waiting?", sleep=lambda s: None))
 
 
 class OrchestraFilesTest(unittest.TestCase):
@@ -143,18 +185,21 @@ class NudgerTest(unittest.TestCase):
         self.screen = claude_screen(IDLE_BODY)
         self.sent: list[str] = []
         self.activity = {}
-        self.verdict = {"state": "idle", "needs_human_p": 0.1, "waiting_p": 0.1}
+        self.verdict = {"state": "idle", "needs_human_p": 0.1, "waiting_p": 0.1,
+                        "nudge_again_p": 0.9}
         self.asks = 0
+        self.judge_contexts: list[str] = []
         self.pane_list = [("%1", 10)]
         system.panes = lambda: [system.Pane(id=p, pid=pid, session="s", window="@1", path="/w", opt_out=False)
                                 for p, pid in self.pane_list]
         system.process_table = lambda: {10: (1, ["/usr/bin/claude"])}
         system.client_activity = lambda: self.activity
         system.capture = lambda pane_id: self.screen
-        system.send = lambda pane_id, text: (self.sent.append(text), self._answer(text))
+        system.send = lambda pane_id, text: (self.sent.append(text), self._answer(text), True)[2]
 
-        def ask(tail):
+        def ask(tail, *, context=""):
             self.asks += 1
+            self.judge_contexts.append(context)
             return dict(self.verdict)
         judge.ask = ask
         self.clock = FakeClock()
@@ -215,6 +260,41 @@ class NudgerTest(unittest.TestCase):
         self.advance(0.5)
         self.advance(11)
         self.assertEqual(len(self.sent), 2)
+
+    def test_terminal_answer_retires_repeated_nudges(self):
+        daemon.set_mode("live")
+        self.nudger.tick()
+        self.advance(11)
+        self.advance(0.5)
+        self.screen = claude_screen(
+            IDLE_BODY + "\n❯ [agent-nudge] Is your goal done?\n"
+            "⏺ The goal is complete; nothing is pending or blocked."
+        )
+        self.verdict["nudge_again_p"] = 0.05
+        self.advance(0.5)
+        [row] = self.advance(31)
+        self.assertIn("another nudge would not help", row["reason"])
+        self.assertIn("uninterrupted chain of 1 prior nudge/reply cycle", self.judge_contexts[-1])
+        self.assertIn("No non-nudge screen wake interrupted the chain", self.judge_contexts[-1])
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.advance(240), [])
+
+    def test_continuity_context_recovers_full_span_from_old_state(self):
+        at = self.clock.t
+        rec = {"run_from_nudge": True, "last_nudge_at": at - 60,
+               "nudges": [at - 6 * 3600, at - 3 * 3600, at - 3600]}
+        context = daemon._judge_context(rec, at, idle=55 * 60, streak=3)
+        self.assertIn("3 prior nudge/reply cycles spanning 360.0 minutes", context)
+
+    def test_open_orchestra_task_overrides_terminal_screen_verdict(self):
+        daemon.set_mode("live")
+        self.verdict["nudge_again_p"] = 0.05
+        self.seats = {10: orchestra.Seat("mb_t", "triangle", "player",
+                                         open_tasks=[("t_still-open", "started")])}
+        self.nudger.tick()
+        self.advance(11)
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("t_still-open (started)", self.sent[0])
 
     def _held_back(self, arrange):
         daemon.set_mode("live")

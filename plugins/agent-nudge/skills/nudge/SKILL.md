@@ -29,9 +29,15 @@ all of these hold:
 - TypeSafe Jev reads the screen as idle, and the last message is not a question
   for the user.
 
-It nudges once per stop. If the agent answers and stops again, the next wait
-triples, up to 4 hours. Anything else that wakes the agent, a person or mail,
-resets the wait. There is a cap of 12 nudges per pane per day.
+It nudges once per stop. Before a repeat, Jev reads the visible conversation
+and receives trusted continuity facts from the daemon: the unchanged duration,
+the number and elapsed span of consecutive nudge/reply cycles, and whether any
+non-nudge wake interrupted them. It decides whether asking again could
+plausibly cause useful work or a useful blocker report. An explicit terminal
+answer such as "the goal is done; nothing is pending" leaves that unchanged
+pane quiet. When another nudge still makes sense, the next wait triples, up to
+4 hours. Anything else that wakes the agent, a person or mail, resets the wait.
+There is a cap of 12 nudges per pane per day.
 
 When Jev reads the last message as waiting on something outside the agent,
 and nothing in the footer is watching for it, the nudge says so and asks the

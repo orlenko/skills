@@ -45,7 +45,7 @@ def cmd_panes(args) -> None:
         rows.append({"pane": pane.id, "session": pane.session, "agent": pane.agent, "path": pane.path,
                      "input_box": scr.has_prompt, "typed": bool(scr.typed), "working": scr.working_marker,
                      "watchers": scr.watchers, "opted_out": pane.opt_out})
-        seat = seats.get(pane.agent_pid)
+        seat = next((seats[p] for p in pane.extra.get("agent_pids", [pane.agent_pid]) if p in seats), None)
         if seat:
             rows[-1]["orchestra"] = {"member": seat.name, "role": seat.role, "unread": seat.unread,
                                      "open_tasks": [t for t, _ in seat.open_tasks]}

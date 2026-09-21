@@ -58,6 +58,22 @@ QUESTIONS = {
                      "anything outside it that it waits for.",
         },
     },
+    "nudge_again": {
+        "type": "noul",
+        "instructions": PREAMBLE + "Would sending another agent-nudge now plausibly cause useful "
+                        "work or a useful blocker report? Use the trusted runtime continuity facts "
+                        "above the terminal transcript as well as the visible conversation. This is "
+                        "about whether asking again helps, not merely whether the session is idle.",
+        "criteria": {
+            "true": "The agent stopped short of a stated goal, left an actionable next step, gave an "
+                    "unclear status, or said it was waiting without arranging a way to wake. A prior "
+                    "nudge may have led to work that again stopped unfinished.",
+            "false": "The agent explicitly says the goal is complete with nothing pending or blocked, "
+                     "especially when runtime facts show an uninterrupted chain of nudge/reply cycles "
+                     "and the transcript shows terminal answers rather than useful intervening work. "
+                     "Also false when another identical prompt would only elicit the same answer.",
+        },
+    },
 }
 
 
@@ -65,8 +81,9 @@ def enabled() -> bool:
     return bool(os.environ.get(KEY_ENV, "").strip())
 
 
-def ask(tail: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str, Any]:
-    body = json.dumps({"state": tail, "model": "jev-latest", "questions": QUESTIONS}).encode()
+def ask(tail: str, *, context: str = "", timeout: float = TIMEOUT_SECONDS) -> dict[str, Any]:
+    state = f"{context.strip()}\n\nVisible terminal transcript:\n{tail}" if context.strip() else tail
+    body = json.dumps({"state": state, "model": "jev-latest", "questions": QUESTIONS}).encode()
     request = urllib.request.Request(
         ENDPOINT, data=body, method="POST",
         headers={"Authorization": f"Bearer {os.environ.get(KEY_ENV, '').strip()}",
@@ -81,6 +98,7 @@ def ask(tail: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str, Any]:
         "state_conf": answers["state"].get("confidence"),
         "needs_human_p": answers["needs_human"]["noul"],
         "waiting_p": answers["waiting"]["noul"],
+        "nudge_again_p": answers["nudge_again"]["noul"],
         "input_tokens": (data.get("usage") or {}).get("input_tokens"),
         "latency_ms": round((time.perf_counter() - started) * 1000),
     }

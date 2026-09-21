@@ -10,9 +10,10 @@ sends that line, with care:
   tmux client has typed recently;
 - never while a dialog is open or the agent is mid-turn, and never when Jev
   reads the last message as a question for the user;
-- once per stop. If a nudge is followed by another stop, the threshold for the
-  next one triples, up to four hours. A stop that something else woke (a person,
-  mail) resets it.
+- once per stop. Jev decides whether asking again would plausibly help; an
+  explicit terminal answer such as "the goal is done" leaves the unchanged
+  pane quiet. If another nudge still makes sense, the threshold triples, up to
+  four hours. A stop that something else woke (a person, mail) resets it.
 
 It starts in dry-run: it logs what it would have sent and types nothing until
 the mode is `live`.
@@ -140,6 +141,34 @@ def _required_idle(rec: dict[str, Any], base: float) -> tuple[float, int]:
     return min(base * STREAK_FACTOR ** streak, MAX_WAIT_SECONDS), streak
 
 
+def _judge_context(rec: dict[str, Any], at: float, idle: float, streak: int) -> str:
+    """Facts the state machine knows but a clipped terminal screen cannot show."""
+    lines = [
+        "Trusted agent-nudge runtime facts:",
+        f"- The current screen has been unchanged for {idle / 60:.1f} minutes.",
+    ]
+    if rec.get("run_from_nudge"):
+        started = rec.get("nudge_streak_started_at")
+        if started is None:
+            # State written before continuity timestamps existed still has the
+            # nudge times and streak count. Recover the start of that chain so
+            # the first verdict after an upgrade sees hours, not one interval.
+            nudges = rec.get("nudges") or []
+            started = nudges[-streak] if streak and len(nudges) >= streak else rec.get("last_nudge_at")
+        started = float(started or at)
+        lines.extend([
+            f"- This is an uninterrupted chain of {streak} prior nudge/reply cycle"
+            f"{'s' if streak != 1 else ''} spanning {(at - started) / 60:.1f} minutes.",
+            "- No non-nudge screen wake interrupted the chain; no separate visible turn from a "
+            "person, mail, or another source occurred between those cycles.",
+            "- The visible transcript may be clipped, so absence from it is not evidence against "
+            "these continuity facts.",
+        ])
+    else:
+        lines.append("- This stop is not part of an uninterrupted nudge/reply chain.")
+    return "\n".join(lines)
+
+
 class Nudger:
     def __init__(self, *, now=time.time, sleep=time.sleep):
         self.now = now
@@ -181,10 +210,13 @@ class Nudger:
             quiet_before = at - rec.get("changed_at", at)
             nudged_at = rec.get("last_nudge_at")
             if rec.get("awaiting") and nudged_at and at - nudged_at <= RESPONSE_WINDOW_SECONDS:
+                if not rec.get("run_from_nudge"):
+                    rec["nudge_streak_started_at"] = nudged_at
                 rec["run_from_nudge"] = True
             elif quiet_before >= QUIET_SPELL_SECONDS or "hash" not in rec:
                 rec["run_from_nudge"] = False
                 rec["streak"] = 0
+                rec.pop("nudge_streak_started_at", None)
             rec["awaiting"] = False
             rec["hash"], rec["changed_at"] = scr.body_hash, at
             rec.pop("reason", None)
@@ -201,7 +233,8 @@ class Nudger:
             return self._note(pane, rec, at, "skip", "no input box: dialog open or agent exited")
         if scr.working_marker:
             return None
-        seat = getattr(self, "seats", {}).get(pane.agent_pid)
+        seats = getattr(self, "seats", {})
+        seat = next((seats[p] for p in pane.extra.get("agent_pids", [pane.agent_pid]) if p in seats), None)
         # Only mail that landed after the screen went still is unheard. Mail
         # older than that the agent was shown and chose to leave, often FYI
         # copies, and nudging about it again would be noise.
@@ -229,11 +262,13 @@ class Nudger:
         verdict = None
         if judge.enabled():
             cached = rec.get("jev") or {}
-            if cached.get("hash") == scr.body_hash:
-                verdict = cached.get("answers")
+            answers = cached.get("answers")
+            if (cached.get("hash") == scr.body_hash and isinstance(answers, dict)
+                    and "nudge_again_p" in answers):
+                verdict = answers
             else:
                 try:
-                    verdict = judge.ask(scr.tail)
+                    verdict = judge.ask(scr.tail, context=_judge_context(rec, at, idle, streak))
                 except Exception as exc:  # noqa: BLE001
                     return self._note(pane, rec, at, "skip", f"judge failed: {type(exc).__name__}")
                 rec["jev"] = {"hash": scr.body_hash, "answers": verdict}
@@ -241,6 +276,12 @@ class Nudger:
                 return self._note(pane, rec, at, "skip", f"judge says {verdict['state']}")
             if verdict["needs_human_p"] >= 0.5 and not mail:
                 return self._note(pane, rec, at, "skip", "judge says the last message asks a person")
+            # Mail and typed task lifecycle are harder facts than a screen
+            # reading. Otherwise ask Jev the actual policy question: whether
+            # repeating the prompt can still change what this session does.
+            if (verdict["nudge_again_p"] < 0.5 and not mail
+                    and not (seat and seat.open_tasks)):
+                return self._note(pane, rec, at, "skip", "judge says another nudge would not help")
         elif live:
             return self._note(pane, rec, at, "skip", "live mode needs TYPESAFE_API_KEY for the judge")
         pointed = bool(verdict and verdict["waiting_p"] >= 0.5 and not scr.watchers)
@@ -261,7 +302,8 @@ class Nudger:
                "orchestra": {"member": seat.name, "unread": seat.unread, "open_tasks": len(seat.open_tasks)} if seat else None}
         if live:
             try:
-                system.send(pane.id, text)
+                if not system.send(pane.id, text):
+                    row["submit"] = "unsent: text still in the input box after two Enters"
             except Exception as exc:  # noqa: BLE001
                 row.update(event="skip", reason=f"send failed: {type(exc).__name__}")
                 append_log(row)
