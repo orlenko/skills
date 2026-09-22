@@ -4,10 +4,11 @@ import json
 import os
 import signal
 import ssl
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import Any
 from urllib.parse import urlparse
 
+from .httpserver import QuickBindHTTPServer
 from .remote import (
     MAX_SNAPSHOT_BYTES,
     RemoteError,
@@ -144,7 +145,7 @@ def run_exporter(config: ObserverConfig, *, bind: str, port: int) -> int:
         raise RemoteError("remote snapshot listener is not enabled")
     if bind != str(listener["bind"]) or port != int(listener["port"]):
         raise RemoteError("remote export process does not match its enabled configuration")
-    server = ThreadingHTTPServer((bind, port), _handler(config, listener))
+    server = QuickBindHTTPServer((bind, port), _handler(config, listener))
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(str(listener["cert"]), str(listener["key"]))
     server.socket = context.wrap_socket(server.socket, server_side=True)

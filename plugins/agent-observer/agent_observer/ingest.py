@@ -4,10 +4,11 @@ import json
 import os
 import signal
 import ssl
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import Any
 from urllib.parse import urlparse
 
+from .httpserver import QuickBindHTTPServer
 from .remote import MAX_SNAPSHOT_BYTES, RemoteError, load_home_config, validate_snapshot
 from .runtime import write_ingest_info
 from .service import Observer, ObserverConfig
@@ -143,7 +144,7 @@ def run_ingest(config: ObserverConfig, *, bind: str, port: int) -> int:
         raise RemoteError(
             "remote ingest process does not match the enabled configuration"
         )
-    server = ThreadingHTTPServer((bind, port), _handler(config))
+    server = QuickBindHTTPServer((bind, port), _handler(config))
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(str(home["cert"]), str(home["key"]))
     server.socket = context.wrap_socket(server.socket, server_side=True)

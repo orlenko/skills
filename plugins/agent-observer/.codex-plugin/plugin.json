@@ -1,6 +1,6 @@
 {
   "name": "agent-observer",
-  "version": "0.7.0+codex.20260806180000",
+  "version": "0.7.1+codex.20260922112650",
   "description": "A passive local and remote dashboard with activity-gated subscription analysis for Claude and Codex sessions.",
   "author": {
     "name": "Vlad Orlenko",

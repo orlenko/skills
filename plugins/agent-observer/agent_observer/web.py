@@ -5,11 +5,12 @@ import json
 import os
 import signal
 from http import cookies
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .httpserver import QuickBindHTTPServer
 from .presentation import dashboard_projection
 from .runtime import (
     consume_bootstrap_token,
@@ -227,7 +228,7 @@ def _handler(config: ObserverConfig, token: str, port: int):
 
 def run_server(config: ObserverConfig, *, port: int) -> int:
     token = ensure_auth_token(config)
-    server = ThreadingHTTPServer(("127.0.0.1", port), _handler(config, token, port))
+    server = QuickBindHTTPServer(("127.0.0.1", port), _handler(config, token, port))
     actual_port = int(server.server_address[1])
     info_path = write_server_info(config, port=actual_port)
 
