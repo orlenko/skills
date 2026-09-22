@@ -418,7 +418,11 @@ the unchanged duration, consecutive nudge/reply count and span, and whether a
 non-nudge wake interrupted the chain. An unchanged pane that explicitly
 answered "the goal is done" therefore stays quiet instead of receiving the same
 question at ever-longer intervals. Authoritative new Orchestra mail or an open
-task still overrides that judgment. When a repeat is useful, its wait triples.
+task still overrides that judgment. When a repeat is useful, its wait triples. If the agent answered a nudge by
+naming an obstacle and stopping ("blocked on…", "waiting for #73 to merge",
+"asked for a ruling first"), the next nudge pushes back once: check whether
+someone already fixed it, ask your conductor or partner, or fix it yourself
+in a stacked PR and carry on.
 It starts in dry-run and logs what it would have typed.
 
 ```sh

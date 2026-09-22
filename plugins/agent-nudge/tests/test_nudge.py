@@ -50,6 +50,30 @@ class ScreenTest(unittest.TestCase):
         scr = screen.parse(claude_screen(body, footer="  ⏵⏵ bypass permissions on · 1 monit"), "claude")
         self.assertEqual(scr.watchers, 1)
 
+    def test_blocker_phrases(self):
+        yes = ["I didn't touch the stale lock or start anything — asked the conductor for a ruling "
+               "first. If you'd rather I just go, say so.",
+               "Nothing for me to do on it until someone merges #73 and lands the pin bump.",
+               "BLOCKED on an APRS ENGINE DEFECT, not on this PR's code.",
+               "Everything is waiting on verdicts."]
+        no = ["The queue is finished and nothing is waiting or blocked.",
+              "That's a PR that looks blocked and isn't.",
+              "Waiting on your next recording.",
+              "The goal is done, with no pending or blocked work.",
+              "Pushed the fix at abc1234; tests pass."]
+        for text in yes:
+            self.assertTrue(screen.claims_blocker(text), text)
+        for text in no:
+            self.assertFalse(screen.claims_blocker(text), text)
+
+    def test_reply_skips_the_wrapped_nudge(self):
+        sent = daemon.GENERIC.format(minutes=10)
+        wrapped = sent[:90] + "\n  " + sent[90:]
+        body = "⏺ earlier work\n❯ " + wrapped + "\n⏺ Blocked on the engine defect; waiting for #73 to merge."
+        self.assertEqual(screen.reply_to_nudge(body, sent),
+                         "⏺ Blocked on the engine defect; waiting for #73 to merge.")
+        self.assertIsNone(screen.reply_to_nudge("⏺ nothing nudged here"))
+
     def test_dialog_has_no_prompt(self):
         dialog = "Do you want to proceed?\n  1. Yes\n  2. No\n\nEsc to cancel"
         self.assertFalse(screen.parse(dialog, "claude").has_prompt)
@@ -295,6 +319,44 @@ class NudgerTest(unittest.TestCase):
         self.advance(11)
         self.assertEqual(len(self.sent), 1)
         self.assertIn("t_still-open (started)", self.sent[0])
+
+    def _stop_with_reply(self, reply):
+        self.nudger.tick()
+        self.advance(11)                       # first nudge
+        sent = self.sent[-1]
+        self.screen = claude_screen(IDLE_BODY + f"\n❯ {sent}\n⏺ {reply}")
+        self.advance(0.5)                      # the reply: a run caused by the nudge
+
+    def test_pushback_when_the_reply_names_an_obstacle(self):
+        daemon.set_mode("live")
+        self._stop_with_reply("Asked the conductor for a ruling first. If you'd rather I just go, say so.")
+        # Trumpet's case: it asked permission, had no open orchestra task, and
+        # the repeat question alone reads as unhelpful.
+        self.verdict["needs_human_p"] = 0.8
+        self.verdict["nudge_again_p"] = 0.1
+        self.seats = {10: orchestra.Seat("mb_t", "trumpet", "player")}
+        self.advance(31)
+        self.assertEqual(len(self.sent), 2)
+        self.assertIn("obstacle has you stopped", self.sent[1])
+        self.assertIn("your orchestra conductor", self.sent[1])
+
+    def test_pushback_once_per_chain(self):
+        daemon.set_mode("live")
+        self._stop_with_reply("Blocked on the engine defect until #73 merges.")
+        self.advance(31)
+        pushed = self.sent[-1]
+        self.assertIn("obstacle has you stopped", pushed)
+        self.screen = claude_screen(IDLE_BODY + f"\n❯ {pushed}\n⏺ Still blocked on the engine defect.")
+        self.advance(0.5)
+        self.advance(240)
+        self.assertNotIn("obstacle has you stopped", self.sent[-1])
+
+    def test_no_pushback_for_a_plain_reply(self):
+        daemon.set_mode("live")
+        self._stop_with_reply("Done: pushed abc1234, tests pass.")
+        self.advance(31)
+        self.assertEqual(len(self.sent), 2)
+        self.assertNotIn("obstacle", self.sent[1])
 
     def _held_back(self, arrange):
         daemon.set_mode("live")

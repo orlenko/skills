@@ -54,6 +54,11 @@ GENERIC = ("[agent-nudge] You have been idle for {minutes} min. Is your goal don
            "changes.")
 MAIL = ("[agent-nudge] {unread} Agent Orchestra message{plural} arrived while you were idle "
         "(oldest {age} min) and nothing woke you. Read your orchestra inbox and act on it.")
+PUSHBACK = ("[agent-nudge] It sounds like an obstacle has you stopped. Can you do something about "
+            "it? It may already be fixed: check recent PRs and branches for someone else's fix. "
+            "Ask {whom} whether anyone has solved it. If not, fix it yourself in a PR of your "
+            "own, stack it under your work, and carry on. If it truly needs a person, name the "
+            "exact decision you need.")
 POINTED = ("[agent-nudge] You have been idle for {minutes} min after saying you would act when "
            "something changes, and nothing is watching for it. Check it now. If it is still "
            "pending, set up something that will wake you (a monitor, a scheduled wake-up, or a "
@@ -217,6 +222,7 @@ class Nudger:
                 rec["run_from_nudge"] = False
                 rec["streak"] = 0
                 rec.pop("nudge_streak_started_at", None)
+                rec.pop("pushed_back", None)
             rec["awaiting"] = False
             rec["hash"], rec["changed_at"] = scr.body_hash, at
             rec.pop("reason", None)
@@ -246,7 +252,12 @@ class Nudger:
             needed = min(needed * WATCHER_FACTOR, MAX_WAIT_SECONDS)
         if idle < needed:
             return None
-        if seat and not mail and not seat.open_tasks and seat.role != "conductor":
+        # Once per chain: the agent answered a nudge by naming an obstacle and
+        # stopped. Trumpet did that with no open orchestra task, so this goes
+        # before the idle-player rule.
+        reply = screen.reply_to_nudge(scr.body, rec.get("last_text", "")) if rec.get("run_from_nudge") else None
+        pushback = bool(reply and not rec.get("pushed_back") and screen.claims_blocker(reply))
+        if seat and not mail and not pushback and not seat.open_tasks and seat.role != "conductor":
             return self._note(pane, rec, at, "skip", f"orchestra player {seat.name} has nothing open and no new mail")
         if rec.get("last_nudge_hash") == scr.body_hash:
             return None
@@ -274,12 +285,14 @@ class Nudger:
                 rec["jev"] = {"hash": scr.body_hash, "answers": verdict}
             if verdict["state"] != "idle":
                 return self._note(pane, rec, at, "skip", f"judge says {verdict['state']}")
-            if verdict["needs_human_p"] >= 0.5 and not mail:
+            # A permission question about a step inside its own work is the
+            # push-back case, so it doesn't count as asking a person.
+            if verdict["needs_human_p"] >= 0.5 and not mail and not pushback:
                 return self._note(pane, rec, at, "skip", "judge says the last message asks a person")
             # Mail and typed task lifecycle are harder facts than a screen
             # reading. Otherwise ask Jev the actual policy question: whether
             # repeating the prompt can still change what this session does.
-            if (verdict["nudge_again_p"] < 0.5 and not mail
+            if (verdict["nudge_again_p"] < 0.5 and not mail and not pushback
                     and not (seat and seat.open_tasks)):
                 return self._note(pane, rec, at, "skip", "judge says another nudge would not help")
         elif live:
@@ -290,6 +303,11 @@ class Nudger:
             age = int((at - min(unheard)) // 60)
             text = MAIL.format(unread=len(unheard), plural="" if len(unheard) == 1 else "s", age=age, minutes=minutes)
             kind = "mail"
+        elif pushback:
+            whom = ("your orchestra conductor" if seat and seat.role != "conductor"
+                    else "the agent you report to or your pair partner")
+            text = PUSHBACK.format(whom=whom)
+            kind = "pushback"
         else:
             text = (POINTED if pointed else GENERIC).format(minutes=minutes)
             kind = "pointed" if pointed else "generic"
@@ -311,6 +329,9 @@ class Nudger:
         # A dry run types nothing, so nothing after it can be its answer.
         rec.update(last_nudge_at=at, last_nudge_hash=scr.body_hash, awaiting=live, streak=streak,
                    outcome_logged=False, nudges=recent + [at])
+        rec["last_text"] = text
+        if kind == "pushback":
+            rec["pushed_back"] = True
         append_log(row)
         return row
 

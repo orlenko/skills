@@ -28,6 +28,65 @@ _WORKING = re.compile(r"esc to interrupt|ctrl\+c to interrupt|press esc to stop"
 _SPINNER = re.compile(r"^\s*\S\s+[A-Z][\w-]*…")
 
 
+# A reply that stops at an obstacle: "blocked on", "waiting for X", "until #73
+# merges", "asked the conductor for a ruling", "if you'd rather I just go". A
+# wait on the user ("waiting on your recording") is a person's call and doesn't
+# count. Jev couldn't tell these apart on real screens (good and bad cases both
+# scored 0.3-0.75), so this is a phrase match: a wrong push-back costs one line.
+_BLOCKER = re.compile(
+    r"\bblocked\b|\bblock(?:s|ing) on\b"
+    r"|\bwaiting (?:on|for) (?!(?:you|your|the user|vlad)\b)"
+    r"|\b(?:until|once|when)\b[^.\n]{0,80}\b(?:merges?|merged|lands?|landed|lifts?|clears?)\b"
+    r"|\bgates? (?:are|is) (?:still )?shut\b|\bnothing (?:else )?for me to do\b"
+    r"|\b(?:asked|asking|await(?:ing)?)\b[^.\n]{0,60}\b(?:ruling|go-ahead|permission|sign-off)\b"
+    r"|\bif you'?d rather I\b|\bsay so and I'?ll\b",
+    re.I,
+)
+
+
+def reply_to_nudge(body: str, sent: str = "") -> str | None:
+    """What the agent wrote after the last nudge on screen, or None if no nudge is visible.
+
+    The nudge wraps over several screen lines, so the text `sent` is skipped
+    character by character, ignoring the whitespace wrapping put in.
+    """
+    start = body.rfind("[agent-nudge]")
+    if start < 0:
+        return None
+    rest = body[start:]
+    if sent:
+        wanted = [c for c in sent if not c.isspace()]
+        i = matched = 0
+        while i < len(rest) and matched < len(wanted):
+            if rest[i].isspace():
+                i += 1
+            elif rest[i] == wanted[matched]:
+                i += 1
+                matched += 1
+            else:
+                break
+        rest = rest[i:]
+    else:
+        rest = rest.split("\n", 1)[1] if "\n" in rest else ""
+    reply = rest.strip()
+    return reply or None
+
+
+_NEGATED_BEFORE = re.compile(r"\b(?:nothing|not|no|no longer|isn't|aren't|never|without)\b[^.;:\n]{0,40}$", re.I)
+_NEGATED_AFTER = re.compile(r"^[^.;:\n]{0,15}\b(?:and|but) (?:isn't|is not|aren't)\b", re.I)
+
+
+def claims_blocker(text: str) -> bool:
+    """A stated obstacle, not a denial of one ("nothing is blocked", "looks blocked and isn't")."""
+    flat = " ".join(text.split())
+    for match in _BLOCKER.finditer(flat):
+        before, after = flat[max(0, match.start() - 60):match.start()], flat[match.end():match.end() + 30]
+        if _NEGATED_BEFORE.search(before) or _NEGATED_AFTER.search(after):
+            continue
+        return True
+    return False
+
+
 @dataclass
 class Screen:
     has_prompt: bool

@@ -45,6 +45,17 @@ agent to check now or to set up a watch. Every other nudge asks whether the
 goal is done or blocked. Nudges start with `[agent-nudge]`, so an agent never
 takes one for its user.
 
+When an agent answers a nudge by naming an obstacle and stopping ("blocked on
+the engine defect", "waiting for #73 to merge", "asked the conductor for a
+ruling; if you'd rather I just go, say so"), the next nudge in that chain
+pushes back once: can you do something about it? Check recent PRs for
+someone else's fix, ask your conductor, manager agent or pair partner, or fix
+it yourself in a PR stacked under your work. If it truly needs a person, name
+the decision. This goes out even when the reply was a permission question or
+the player has no open task. A wait on the user ("waiting on your recording")
+doesn't count, and neither does a denial ("nothing is blocked"). It's a phrase
+match on the reply, because Jev couldn't separate these cases on real screens.
+
 ## Agent Orchestra players
 
 When a pane's agent holds an Agent Orchestra seat, the nudger reads that
