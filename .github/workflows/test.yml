@@ -33,14 +33,25 @@ jobs:
           python -m json.tool plugins/agent-orchestra/.claude-plugin/plugin.json >/dev/null
           python -m json.tool plugins/agent-orchestra/hooks/hooks.json >/dev/null
           python -m json.tool plugins/agent-orchestra/hooks/claude-hooks.json >/dev/null
+          python -m json.tool plugins/agent-nudge/.codex-plugin/plugin.json >/dev/null
+          python -m json.tool plugins/agent-nudge/.claude-plugin/plugin.json >/dev/null
           python -m json.tool plugins/agent-observer/.codex-plugin/plugin.json >/dev/null
           python -m json.tool plugins/agent-observer/.claude-plugin/plugin.json >/dev/null
           python -m json.tool plugins/design-skeptic/.codex-plugin/plugin.json >/dev/null
           python -m json.tool plugins/design-skeptic/.claude-plugin/plugin.json >/dev/null
           python -m json.tool plugins/undrudge-apply/.codex-plugin/plugin.json >/dev/null
           python -m json.tool plugins/undrudge-apply/.claude-plugin/plugin.json >/dev/null
-      - name: Run tests
-        run: |
-          python -W error::ResourceWarning -m unittest discover -s plugins/agent-observer/tests -v
-          python -W error::ResourceWarning -m unittest discover -s plugins/agent-pair/tests -v
-          python -W error::ResourceWarning -m unittest discover -s plugins/agent-orchestra/tests -v
+      # One step per plugin, each run even after another fails: a single red
+      # suite used to stop the step and hide whether the rest passed.
+      - name: Test agent-observer
+        if: ${{ !cancelled() }}
+        run: python -W error::ResourceWarning -m unittest discover -s plugins/agent-observer/tests -v
+      - name: Test agent-pair
+        if: ${{ !cancelled() }}
+        run: python -W error::ResourceWarning -m unittest discover -s plugins/agent-pair/tests -v
+      - name: Test agent-orchestra
+        if: ${{ !cancelled() }}
+        run: python -W error::ResourceWarning -m unittest discover -s plugins/agent-orchestra/tests -v
+      - name: Test agent-nudge
+        if: ${{ !cancelled() }}
+        run: python -W error::ResourceWarning -m unittest discover -s plugins/agent-nudge/tests -v

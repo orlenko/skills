@@ -168,6 +168,19 @@ def _spawn(config: ObserverConfig, kind: str, extra: list[str]) -> int:
     return process.pid
 
 
+def _log_tails(runtime: Path, lines: int = 20) -> str:
+    """The end of each sidecar log, so a readiness failure says why, not just where."""
+    parts = []
+    for path in sorted(runtime.glob("*.log")):
+        try:
+            tail = path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]
+        except OSError:
+            continue
+        if tail:
+            parts.append(f"--- {path.name} ---\n" + "\n".join(tail))
+    return "\n".join(parts)
+
+
 def service_status(config: ObserverConfig) -> dict[str, Any]:
     from .remote import load_home_config, load_listener_config
 
@@ -382,7 +395,8 @@ def start_services(config: ObserverConfig) -> dict[str, Any]:
         time.sleep(0.05)
     stop_services(config)
     raise OSError(
-        f"observer sidecars did not become ready; inspect the runtime logs in {runtime}"
+        f"observer sidecars did not become ready; inspect the runtime logs in {runtime}\n"
+        + _log_tails(runtime)
     )
 
 
@@ -427,7 +441,8 @@ def start_remote_services(config: ObserverConfig) -> dict[str, Any]:
         time.sleep(0.05)
     stop_services(config)
     raise OSError(
-        f"remote Observer collector did not become ready; inspect {runtime / 'daemon.log'}"
+        f"remote Observer collector did not become ready; inspect {runtime / 'daemon.log'}\n"
+        + _log_tails(runtime)
     )
 
 
