@@ -58,9 +58,13 @@ a machine may belong to several, one session each.
   `not-submitted` (the text sits unsent in the box), `not-allowed`,
   `tmux-error`, or `no-reply-yet` (the answer arrives later as mail with `RE`
   the type message id). Flags: `--no-enter` types without submitting,
-  `--anytime` skips the idle check, `--task T` and `--quiet SECONDS` (default
-  1800, 0 for none) control the quiet below, `--stdin` reads multi-line text,
-  which goes in as one paste.
+  `--anytime` skips the idle check, `--task T`, `--quiet SECONDS` (default
+  1800, 0 for none) and `--quiet-until started|done` control the quiet below,
+  `--stdin` reads multi-line text, which goes in as one paste.
+- `quiet` (conductor only): `quiet --to MEMBER --for SECONDS [--task T]
+  [--until started|done] --json` holds that member's mail at the hub and keeps
+  the orchestra silent in its session, without typing. `--until` defaults to
+  `done`. `quiet --to MEMBER --off --json` lifts it, and the held mail flows.
 - `adopt`: a seat stays with the agent that joined it (Claude or Codex), and
   another agent's commands cannot take it over. When a session of the other
   agent really replaces the one that joined, run `adopt --member-id M
@@ -274,10 +278,14 @@ every `assign` once, promptly, on the same `TASK`.
 - Use `type` when a command must arrive as the session's own user message,
   such as `/qc 3696` or `/aprs 3711`, whose harness relays the latest user
   message as the request. After typing, the orchestra stays silent in that
-  session: no hook context, no wake, no Codex queue notice, no agent-nudge
-  line. The silence lasts until the member sends `STATE started` (for the
-  `--task` given, if any) or the quiet runs out. So assign first, then type,
-  and expect `STATE started` before sending that member anything else. Every
+  session. The hub holds that member's mail, so none reaches its machine
+  whatever hook version the session runs. Locally there is no hook context,
+  no wake, no Codex queue notice, no agent-nudge line. The hold lasts until
+  the member sends `STATE started` (or, with `--quiet-until done`, only its
+  `done` or `block`) on the `--task` given, or the quiet runs out. A refused
+  type holds nothing. For a /qc or /aprs that launches several PRs, pass
+  `--task` and `--quiet-until done`: the later launches come long after the
+  first `STATE started`. Held mail is delivered when the hold ends. Every
   typed text is logged in the member's `typed.jsonl`.
 - Roll `block` rows up to the human. A block names a decision or a resource the
   orchestra cannot supply itself, so report it with the task id and the

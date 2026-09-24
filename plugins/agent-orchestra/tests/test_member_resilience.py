@@ -397,6 +397,72 @@ class ResilienceTestCase(unittest.TestCase):
         # The reply was finished by the command that waited for it.
         self.assertEqual(member_module.pending_count(conductor), 0)
 
+    def _inbox_after(self, member_id: str, seconds: float = 3.0) -> int:
+        time.sleep(seconds)
+        return member_module.pending_count(member_module.load_member(member_id))
+
+    def _hold(self, conductor, member_id: str):
+        return next(row for row in member_module.members(conductor)["members"]
+                    if row["id"] == member_id).get("hold_until")
+
+    def test_a_multi_pr_qc_keeps_mail_off_the_member_until_done(self):
+        # 2026-09-24: Cowbell's /qc 3693 3696 reported STATE started at #3693,
+        # and #3696 launched half an hour later. Its session ran 0.2.7 hooks,
+        # which know nothing of a local quiet; only the hub can hold the mail.
+        conductor, player_id, typed = self._typing_topology(
+            keys.Prompt(shown=True, typed="", working=False)
+        )
+        player = member_module.load_member(player_id)
+        self._assign(conductor, player_id, "t_qc-batch")
+        self.assertEqual(self._inbox_after(player_id), 1)
+        member_module.finish_messages(player, [
+            row["id"] for row in member_module.local_messages(player, claim=True)])
+        result = member_module.type_into(
+            conductor, player_id, "/qc 3693 3696", task="t_qc-batch",
+            options=TypeOptions(until="done"), wait=20,
+        )
+        self.assertEqual(result["outcome"], "typed", result)
+        self.assertIsNotNone(self._hold(conductor, player_id))
+
+        member_module.send(conductor, f"ACT tell\nTO {player_id}\n\nfyi one")
+        member_module.send(player, "ACT status\nTO conductor\nTASK t_qc-batch\nSTATE started\n\n#3693 launched")
+        self.assertEqual(self._inbox_after(player_id), 0, "mail reached a held member")
+        self.assertIsNotNone(member_module.quiet_until(player_id))
+
+        member_module.send(player, "ACT done\nTO conductor\nTASK t_qc-batch\n\nboth verdicts published")
+        self.assertIsNone(self._hold(conductor, player_id))
+        self.assertIsNone(member_module.quiet_until(player_id))
+        self.assertEqual(self._inbox_after(player_id, 4), 1)
+
+    def test_a_refused_type_does_not_hold_the_mail(self):
+        conductor, player_id, _ = self._typing_topology(
+            keys.Prompt(shown=True, typed="", working=True)
+        )
+        result = member_module.type_into(conductor, player_id, "/qc 1", options=TypeOptions(),
+                                         wait=20)
+        self.assertEqual(result["outcome"], "refused-busy", result)
+        self.assertIsNone(self._hold(conductor, player_id))
+        member_module.send(conductor, f"ACT tell\nTO {player_id}\n\nstill reaches you")
+        self.assertEqual(self._inbox_after(player_id), 1)
+
+    def test_quiet_holds_and_releases_without_typing(self):
+        conductor, player_id, typed = self._typing_topology(
+            keys.Prompt(shown=True, typed="", working=False)
+        )
+        held = member_module.type_into(conductor, player_id, "",
+                                       options=TypeOptions(quiet=600, until="done", hold_only=True),
+                                       wait=20)
+        self.assertEqual(held["outcome"], "held", held)
+        self.assertEqual(typed, [])
+        self.assertIsNotNone(member_module.quiet_until(player_id))
+        member_module.send(conductor, f"ACT tell\nTO {player_id}\n\nwaits at the hub")
+        self.assertEqual(self._inbox_after(player_id), 0)
+        released = member_module.type_into(conductor, player_id, "",
+                                           options=TypeOptions(quiet=0, hold_only=True), wait=20)
+        self.assertEqual(released["outcome"], "released", released)
+        self.assertIsNone(member_module.quiet_until(player_id))
+        self.assertEqual(self._inbox_after(player_id, 4), 1)
+
     def test_a_busy_session_is_refused_and_left_alone(self):
         conductor, player_id, typed = self._typing_topology(
             keys.Prompt(shown=True, typed="", working=True)

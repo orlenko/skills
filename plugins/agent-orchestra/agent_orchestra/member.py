@@ -785,8 +785,7 @@ def send(member: dict[str, Any], text: str, to: list[str] | None = None) -> dict
         raise OrchestraError(f"Message exceeds {MAX_MESSAGE_BYTES} bytes")
     member_id = str(member["member_id"])
     message_id = _queue_outbox(member_id, envelope)
-    if envelope.lifecycle == "started":
-        clear_quiet(member_id, envelope.task)
+    _release_quiet_on(member_id, envelope)
     ensure_hub_if_local(member)
     try:
         ensure_monitor(member)
@@ -1345,6 +1344,10 @@ def _presence_summary(row: dict[str, Any]) -> dict[str, Any]:
         "seat": row.get("seat") or "unknown",
         "unhandled": int(row.get("unhandled") or 0),
         "oldest_unhandled_age": _age(row.get("oldest_unhandled_at")),
+        # Set while the conductor holds this member's mail at the hub.
+        "hold_until": row.get("hold_until") if float(row.get("hold_until") or 0) > now() else None,
+        "hold_task": row.get("hold_task"),
+        "hold_ends_on": row.get("hold_state"),
     }
 
 
@@ -1596,6 +1599,32 @@ def clear_quiet(member_id: str, task: str | None = None) -> None:
     path.unlink(missing_ok=True)
 
 
+def _release_quiet_on(member_id: str, envelope: Any) -> None:
+    """This member's own report ends its quiet, on the rules the hub uses.
+
+    STATE started ends a quiet set `until=started`; done or block on the task
+    ends either kind. A multi-PR /qc reports started at its first launch and
+    still has later launches to relay.
+    """
+    path = _quiet_path(member_id)
+    try:
+        record = read_json(path)
+    except OrchestraError:
+        return
+    if record.get("task") and record.get("task") != envelope.task:
+        return
+    until = record.get("until_state") or "started"
+    if envelope.act in ("done", "block") or (envelope.lifecycle == "started" and until == "started"):
+        path.unlink(missing_ok=True)
+
+
+def _set_quiet(member_id: str, options: TypeOptions, task: str | None, message_id: str) -> None:
+    atomic_write_json(_quiet_path(member_id), {
+        "until": now() + options.quiet, "task": task, "until_state": options.until,
+        "message_id": message_id, "set_at": now(),
+    })
+
+
 def _typed_log(member_id: str) -> Path:
     return core.member_dir(member_id) / "typed.jsonl"
 
@@ -1631,6 +1660,17 @@ def _type_into_pane(
     if not sender_id or sender_id != str(member.get("conductor_id") or ""):
         # The hub checks this too; a stale or forged sender still stops here.
         return "not-allowed", "only the current conductor types into a session", None
+    if options.hold_only:
+        # The hub holds this member's mail already; this mirrors it here for
+        # the hooks, the Codex wake and agent-nudge.
+        if options.quiet:
+            _set_quiet(member_id, options, task, message_id)
+            until = time.strftime("%H:%M:%SZ", time.gmtime(now() + options.quiet))
+            ends = "STATE started" if options.until == "started" else "done or block"
+            scope = f" on {task}" if task else ""
+            return "held", f"quiet until {until} or its {ends}{scope}", None
+        clear_quiet(member_id)
+        return "released", "quiet lifted; held mail flows now", None
     owner = _as_pid(member.get("owner_pid"))
     if owner is None or not _pid_alive(owner):
         return "no-pane", "no live agent session holds this seat", None
@@ -1650,10 +1690,7 @@ def _type_into_pane(
             if shown.typed and body:
                 return "refused-busy", "the input box already holds text", pane.id
         if options.quiet:
-            atomic_write_json(_quiet_path(member_id), {
-                "until": now() + options.quiet, "task": task, "message_id": message_id,
-                "set_at": now(),
-            })
+            _set_quiet(member_id, options, task, message_id)
         submitted = True
         if body:
             submitted = keys.type_text(
@@ -1744,7 +1781,7 @@ def type_into(
     `target` is a member id or a roster name. With `wait`, poll this inbox for
     the target's reply and finish it, so the answer is the command's output.
     """
-    if not text.strip() and not options.keys:
+    if not text.strip() and not options.keys and not options.hold_only:
         raise OrchestraError("Nothing to type: give text, --key NAME, or both")
     target_id = target
     if not re.fullmatch(core.MEMBER_ID_RE, target):

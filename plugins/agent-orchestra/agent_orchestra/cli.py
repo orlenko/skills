@@ -132,12 +132,30 @@ def build_parser() -> argparse.ArgumentParser:
     typing.add_argument("--quiet", type=int, default=DEFAULT_TYPE_QUIET_SECONDS, metavar="SECONDS",
                         help="Keep the orchestra silent in that session this long, or until it "
                              "reports STATE started (default %(default)s; 0 for none)")
-    typing.add_argument("--task", help="Tie the quiet to this task's STATE started")
+    typing.add_argument("--task", help="Tie the quiet to this task")
+    typing.add_argument("--quiet-until", choices=("started", "done"), default="started",
+                        help="End the quiet on the member's STATE started (default), or only "
+                             "on its done or block: for a /qc that launches several PRs")
     typing.add_argument("--key", action="append", default=[], metavar="NAME",
                         help="Press this tmux key after the text, instead of Enter; repeatable. "
                              "Alone, `--key Enter` submits what the input box already holds")
     typing.add_argument("--wait", type=float, default=45, metavar="SECONDS",
                         help="Wait this long for the result (default %(default)s; 0 to not wait)")
+
+    quiet = commands.add_parser(
+        "quiet",
+        help="Conductor: hold a member's mail at the hub and keep the orchestra silent in its "
+             "session, without typing anything",
+    )
+    _common(quiet)
+    quiet.add_argument("--to", required=True, metavar="MEMBER", help="Member id or name")
+    quiet.add_argument("--for", dest="seconds", type=int, default=3600, metavar="SECONDS",
+                       help="How long (default %(default)s)")
+    quiet.add_argument("--task", help="Only this task's reports end it")
+    quiet.add_argument("--until", choices=("started", "done"), default="done",
+                       help="What report ends it early (default %(default)s: done or block)")
+    quiet.add_argument("--off", action="store_true", help="Lift the hold now")
+    quiet.add_argument("--wait", type=float, default=45, metavar="SECONDS")
 
     close_tasks = commands.add_parser(
         "close-tasks",
@@ -499,7 +517,7 @@ def run(args: argparse.Namespace) -> int:
         result = member_api.type_into(
             member, args.to, text.rstrip("\n"),
             options=TypeOptions(submit=not args.no_enter, anytime=args.anytime, quiet=args.quiet,
-                                keys=tuple(args.key)),
+                                keys=tuple(args.key), until=args.quiet_until),
             task=args.task, wait=args.wait,
         )
         _print(result, args.as_json)
@@ -524,6 +542,14 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command == "members":
         _print(member_api.members(member), args.as_json)
+        return 0
+    if args.command == "quiet":
+        _print(member_api.type_into(
+            member, args.to, "",
+            options=TypeOptions(quiet=0 if args.off else args.seconds, until=args.until,
+                                hold_only=True),
+            task=args.task, wait=args.wait,
+        ), args.as_json)
         return 0
     if args.command == "close-tasks":
         _print(member_api.close_tasks(

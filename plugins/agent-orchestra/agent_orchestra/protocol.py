@@ -59,12 +59,20 @@ class TypeOptions:
     quiet: int = DEFAULT_TYPE_QUIET_SECONDS
     # Named keys pressed after the text, instead of the automatic Enter.
     keys: tuple[str, ...] = ()
+    # What ends the quiet early: the member's STATE started on the task, or
+    # only its done or block. A multi-PR /qc launches its later PRs long
+    # after the first STATE started.
+    until: str = "started"
+    # Set the quiet and type nothing.
+    hold_only: bool = False
 
     def header(self) -> str:
         return " ".join((
             "enter" if self.submit else "no-enter",
             "anytime" if self.anytime else "idle",
             f"quiet={self.quiet}",
+            f"until={self.until}",
+            *(("hold",) if self.hold_only else ()),
             *(f"key={name}" for name in self.keys),
         ))
 
@@ -100,7 +108,7 @@ def parse_message(text: str, extra_to: list[str] | None = None) -> Envelope:
     if act == "type":
         _check_type_recipients(recipients)
         typing = parse_type_options(headers.get("TYPE"))
-        if not message_body(text).strip() and not typing.keys:
+        if not message_body(text).strip() and not typing.keys and not typing.hold_only:
             raise ProtocolError("ACT type needs a body, the text to type, or a key=NAME")
     elif "TYPE" in headers:
         raise ProtocolError("The TYPE header goes on ACT type")
@@ -120,9 +128,16 @@ def parse_message(text: str, extra_to: list[str] | None = None) -> Envelope:
 
 def parse_type_options(raw: str | None) -> TypeOptions:
     submit, anytime, quiet = True, False, DEFAULT_TYPE_QUIET_SECONDS
+    until, hold_only = "started", False
     names: list[str] = []
     for token in (raw or "").split():
-        if token.startswith("key="):
+        if token == "hold":
+            hold_only = True
+        elif token.startswith("until="):
+            until = token[len("until="):]
+            if until not in ("started", "done"):
+                raise ProtocolError(f"TYPE {token!r}: until is started or done")
+        elif token.startswith("key="):
             name = token[len("key="):]
             if not _KEY_NAME.fullmatch(name):
                 raise ProtocolError(f"TYPE {token!r}: a key is a tmux key name such as Enter or C-c")
@@ -141,9 +156,10 @@ def parse_type_options(raw: str | None) -> TypeOptions:
         else:
             raise ProtocolError(
                 f"Unknown TYPE token {token!r}; expected enter|no-enter, idle|anytime, "
-                "quiet=SECONDS, key=NAME"
+                "quiet=SECONDS, until=started|done, hold, key=NAME"
             )
-    return TypeOptions(submit=submit, anytime=anytime, quiet=quiet, keys=tuple(names))
+    return TypeOptions(submit=submit, anytime=anytime, quiet=quiet, keys=tuple(names),
+                       until=until, hold_only=hold_only)
 
 
 def message_body(text: str) -> str:

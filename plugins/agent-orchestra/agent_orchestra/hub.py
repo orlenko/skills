@@ -42,7 +42,7 @@ from .core import (
 )
 from .core import SEAT_STATES
 from .lifecycle import ASSIGNER_STATES, OWNER_STATES, TERMINAL, aggregate, derive_owners
-from .protocol import ProtocolError, validate_fields
+from .protocol import ProtocolError, message_body, parse_message, validate_fields
 
 
 PRESENCE_INTERVAL_SECONDS = 10.0
@@ -122,7 +122,13 @@ _ADDED_COLUMNS = (
     ("messages", "lifecycle", "TEXT"),
     ("members", "seat", "TEXT"),
     ("members", "seat_at", "REAL"),
+    ("members", "hold_until", "REAL"),
+    ("members", "hold_task", "TEXT"),
+    ("members", "hold_state", "TEXT"),
+    ("members", "hold_message", "TEXT"),
 )
+# What ends a hold early, by the member's own message on the held task.
+_HOLD_ENDS = {"started": ("started",), "done": ()}
 
 
 def public_member(row: dict[str, Any]) -> dict[str, Any]:
@@ -140,6 +146,9 @@ def public_member(row: dict[str, Any]) -> dict[str, Any]:
         "revoked_reason": row["revoked_reason"],
         "seat": row.get("seat"),
         "seat_at": row.get("seat_at"),
+        "hold_until": row.get("hold_until"),
+        "hold_task": row.get("hold_task"),
+        "hold_state": row.get("hold_state"),
     }
 
 
@@ -494,6 +503,47 @@ class HubStore:
             rows = self.db.execute("SELECT * FROM tasks ORDER BY created_at ASC").fetchall()
             return {"tasks": [self._task_view(row) for row in rows]}
 
+    def _held(self, member_id: str) -> bool:
+        row = self._member(member_id)
+        return bool(row and float(row.get("hold_until") or 0) > now())
+
+    def _set_hold(
+        self, member_id: str, seconds: float, task: str | None, until: str,
+        message_id: str | None = None,
+    ) -> dict[str, Any]:
+        if seconds > 0:
+            values = (now() + seconds, task, until, message_id)
+        else:
+            values = (None, None, None, None)
+        self.db.execute(
+            "UPDATE members SET hold_until=?, hold_task=?, hold_state=?, hold_message=?"
+            " WHERE id=?",
+            (*values, member_id),
+        )
+        return {"member": member_id, "hold_until": values[0], "hold_task": values[1],
+                "hold_state": values[2]}
+
+    def _release_hold_on(
+        self, sender_id: str, act: str, task: Any, lifecycle: Any, reference: Any, text: str
+    ) -> None:
+        """The held member's own report on its held task ends the hold.
+
+        So does its monitor's reply to the ACT type that set it, when nothing
+        was typed: a refused type must not hold the member's mail anyway.
+        """
+        row = self._member(sender_id)
+        if not row or float(row.get("hold_until") or 0) <= now():
+            return
+        if reference and reference == row.get("hold_message"):
+            outcome = message_body(text).lstrip().split(":", 1)[0]
+            if outcome not in ("type typed", "type held"):
+                self._set_hold(sender_id, 0, None, "started")
+            return
+        if row.get("hold_task") and row["hold_task"] != task:
+            return
+        if act in ("done", "block") or lifecycle in _HOLD_ENDS.get(row.get("hold_state") or "started", ()):
+            self._set_hold(sender_id, 0, None, "started")
+
     def close_tasks(self, member: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         """Conductor: cancel open tasks without delivering a message to anyone.
 
@@ -726,6 +776,19 @@ class HubStore:
             recipients = self._resolve(member, list(to))
             if lifecycle is not None:
                 self._check_lifecycle(member["id"], str(task), str(lifecycle), recipients)
+            if act == "type":
+                try:
+                    typing = parse_message(text).typing
+                except ProtocolError as exc:
+                    raise APIError(400, str(exc)) from exc
+                # develop's /qc and /aprs relay a session's latest user message
+                # as the request. A quiet kept only on the member's machine
+                # ends there, and a session still running older hooks never
+                # honours it; a hold here keeps mail off that machine. A
+                # hold-only type with quiet=0 lifts it.
+                if typing and (typing.quiet or typing.hold_only):
+                    self._set_hold(recipients[0], typing.quiet, task, typing.until, message_id)
+            self._release_hold_on(member["id"], str(act), task, lifecycle, reference, text)
             moment = now()
             if act == "assign":
                 try:
@@ -866,10 +929,14 @@ class HubStore:
         with self.changed:
             while True:
                 self._live(member["id"])
+                # While held, only keystrokes and system events go out; mail
+                # stays queued here and flows when the hold ends.
+                held = " AND (m.act='type' OR m.sender=?)" if self._held(member["id"]) else ""
                 rows = self.db.execute(
                     "SELECT m.* FROM deliveries d JOIN messages m ON m.id = d.message_id"
-                    " WHERE d.recipient=? AND d.state='queued' ORDER BY m.sent_at ASC LIMIT ?",
-                    (member["id"], capped),
+                    " WHERE d.recipient=? AND d.state='queued'" + held
+                    + " ORDER BY m.sent_at ASC LIMIT ?",
+                    (member["id"], *((SYSTEM_SENDER,) if held else ()), capped),
                 ).fetchall()
                 if rows:
                     return self._page(rows)
