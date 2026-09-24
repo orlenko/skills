@@ -8,6 +8,9 @@ import json
 import os
 import secrets
 import ssl
+import struct
+import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -17,6 +20,15 @@ from urllib.parse import urlencode, urlsplit
 
 PROTOCOL_VERSION = 1
 MAX_MESSAGE_BYTES = 256 * 1024
+AGENT_ANCESTOR_LEVELS = 20
+AGENT_COMMAND_MARKERS = ("claude", "codex")
+# A tool call runs its command in a shell whose own command line carries the
+# agent's plugin, state, and snapshot paths, so "claude" appears in the args of
+# a process that exits with the command. Anchoring a binding there records a pid
+# that is dead a second later, so a shell is never the agent whatever it quotes.
+AGENT_SHELL_COMMANDS = frozenset(
+    {"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "ash", "busybox"}
+)
 
 
 class AgentPairError(RuntimeError):
@@ -123,6 +135,17 @@ def endpoint_path(endpoint_id: str) -> Path:
 
 def runtime_dir() -> Path:
     return ensure_private_dir(ensure_private_dir(state_root()) / "runtime")
+
+
+def binding_records() -> list[tuple[Path, dict[str, Any]]]:
+    """Every session binding on this machine, with the file that holds it."""
+    rows: list[tuple[Path, dict[str, Any]]] = []
+    for path in runtime_dir().glob("binding-*.json"):
+        try:
+            rows.append((path, read_json(path)))
+        except AgentPairError:
+            continue
+    return rows
 
 
 def inbox_dir(endpoint_id: str, bucket: str) -> Path:
@@ -274,3 +297,146 @@ def api_request(
             client.close()
     detail = "; ".join(failures) if failures else "no usable endpoints"
     raise AgentPairError(f"Could not reach peer: {detail}")
+
+
+# libproc's proc_pidinfo(PROC_PIDTBSDINFO) fills a 136-byte proc_bsdinfo with
+# pbi_ppid at offset 16; sysctl {CTL_KERN, KERN_PROCARGS2, pid} returns argc,
+# the executable path, NUL padding, then the arguments.
+_PROC_PIDTBSDINFO = 3
+_PROC_BSDINFO_SIZE = 136
+_PROC_BSDINFO_PPID_OFFSET = 16
+_CTL_KERN = 1
+_KERN_PROCARGS2 = 49
+_LIBC: Any = None
+
+
+def _libc() -> Any:
+    global _LIBC
+    if _LIBC is None:
+        try:
+            import ctypes
+            import ctypes.util
+
+            library = ctypes.CDLL(None, use_errno=True)
+            if not hasattr(library, "proc_pidinfo"):
+                library = ctypes.CDLL(ctypes.util.find_library("proc"), use_errno=True)
+            library.proc_pidinfo  # noqa: B018 - AttributeError when absent
+            _LIBC = library
+        except (OSError, AttributeError, TypeError):
+            _LIBC = False
+    return _LIBC
+
+
+def _native_field(flag: str, pid: int) -> str | None:
+    """`ppid=` or `args=` for a process, read in-process without running ps.
+
+    The nono `safe-claude` profile denies exec of /bin/ps (agent-orchestra hit
+    this first), so inside it a ps-only walk never finds the agent ancestor.
+    libproc and sysctl on macOS, and /proc on Linux, answer the same two
+    questions inside it.
+    """
+    try:
+        if sys.platform == "darwin":
+            return _darwin_field(flag, int(pid))
+        if sys.platform.startswith("linux"):
+            return _linux_field(flag, int(pid))
+    except (OSError, ValueError, AttributeError, IndexError, struct.error):
+        return None
+    return None
+
+
+def _darwin_field(flag: str, pid: int) -> str | None:
+    import ctypes
+
+    library = _libc()
+    if not library or pid <= 0:
+        return None
+    if flag == "ppid=":
+        buffer = ctypes.create_string_buffer(_PROC_BSDINFO_SIZE)
+        size = library.proc_pidinfo(
+            ctypes.c_int(pid), _PROC_PIDTBSDINFO, ctypes.c_uint64(0), buffer, _PROC_BSDINFO_SIZE
+        )
+        if size != _PROC_BSDINFO_SIZE:
+            return None
+        return str(struct.unpack_from("I", buffer.raw, _PROC_BSDINFO_PPID_OFFSET)[0])
+    if flag == "args=":
+        mib = (ctypes.c_int * 3)(_CTL_KERN, _KERN_PROCARGS2, pid)
+        size = ctypes.c_size_t(0)
+        if library.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0 or not size.value:
+            return None
+        buffer = ctypes.create_string_buffer(size.value)
+        if library.sysctl(mib, 3, buffer, ctypes.byref(size), None, 0) != 0:
+            return None
+        raw = buffer.raw[: size.value]
+        argc = struct.unpack_from("i", raw, 0)[0]
+        rest = raw[4:]
+        rest = rest[rest.index(b"\0") :].lstrip(b"\0")
+        args = [part.decode("utf-8", "replace") for part in rest.split(b"\0")[:argc]]
+        return " ".join(args) or None
+    return None
+
+
+def _linux_field(flag: str, pid: int) -> str | None:
+    base = Path("/proc") / str(pid)
+    if flag == "ppid=":
+        stat = (base / "stat").read_text(encoding="utf-8", errors="replace")
+        # The command name may hold spaces and parentheses; the fields after
+        # the last ")" cannot.
+        return stat[stat.rindex(")") + 2 :].split()[1]
+    if flag == "args=":
+        raw = (base / "cmdline").read_bytes()
+        args = [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+        return " ".join(args) or None
+    return None
+
+
+def _ps_field(flag: str, pid: int) -> str | None:
+    native = _native_field(flag, pid)
+    if native is not None:
+        return native
+    try:
+        result = subprocess.run(
+            ["ps", "-o", flag, "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return lines[-1] if lines else None
+
+
+def _is_agent_command(args: str) -> bool:
+    tokens = args.split()
+    if tokens and Path(tokens[0]).name.lower() in AGENT_SHELL_COMMANDS:
+        return False
+    lowered = args.lower()
+    return any(marker in lowered for marker in AGENT_COMMAND_MARKERS)
+
+
+def agent_ancestor_pid(pid: int | None = None) -> int | None:
+    """The pid of the nearest ancestor process that is a coding agent.
+
+    A hook binding records it so that a binding whose session has exited reads
+    as stale, instead of holding its endpoint away from every later session.
+    """
+    try:
+        current = os.getpid() if pid is None else int(pid)
+    except (TypeError, ValueError):
+        return None
+    for _ in range(AGENT_ANCESTOR_LEVELS):
+        parent = _ps_field("ppid=", current)
+        if not parent:
+            return None
+        try:
+            current = int(parent)
+        except ValueError:
+            return None
+        if current <= 1:
+            return None
+        if _is_agent_command(_ps_field("args=", current) or ""):
+            return current
+    return None

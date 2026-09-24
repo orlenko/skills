@@ -261,7 +261,7 @@ class CodexWakeTests(unittest.TestCase):
 
     def test_stale_heartbeat_does_not_spawn_a_second_live_monitor(self):
         from agent_pair import client as transport, monitor_lock
-        entity = {"endpoint_id": self.mailbox}
+        entity = {"endpoint_id": self.mailbox, "expires_at": 9999999999}
         core.atomic_write_json(transport._monitor_state_path(self.mailbox),
                                {"pid": os.getpid(), "updated_at": 1})
         with monitor_lock.hold(self.mailbox) as acquired:

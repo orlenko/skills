@@ -19,8 +19,10 @@ from .core import (
     APIError,
     MAX_MESSAGE_BYTES,
     AgentPairError,
+    agent_ancestor_pid,
     api_request,
     atomic_write_json,
+    binding_records,
     certificate_fingerprint,
     decode_invite,
     encode_invite,
@@ -45,6 +47,12 @@ _HANDLED_RETRY_SECONDS = 60
 _HANDLED_RETRIES_PER_PASS = 10
 _HOOK_BODY_PREVIEW_BYTES = 4 * 1024
 _UNSYNCABLE_STATUSES = frozenset({400, 403, 404, 410})
+_BINDING_STALE_SECONDS = 300
+# A binding with no pid proves its session alive only by its age, so the session
+# that holds it rewrites it at most this often while it keeps firing hooks.
+_BINDING_REFRESH_SECONDS = 60
+_RETIRED_KEEP_SECONDS = 7 * 24 * 60 * 60
+_PRUNE_INTERVAL_SECONDS = 60 * 60
 _BACKGROUND_PROCESSES: list[subprocess.Popen[bytes]] = []
 
 
@@ -92,6 +100,14 @@ def _pid_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
+
+
+def _as_pid(value: Any) -> int | None:
+    try:
+        pid = int(value)
+    except (TypeError, ValueError):
+        return None
+    return pid if pid > 1 else None
 
 
 def _reap_spawned_processes(pids: list[int], timeout: float = 5.0) -> None:
@@ -361,18 +377,79 @@ def iter_endpoints(*, provider: str, cwd: str) -> list[dict[str, Any]]:
         return []
     key = instance_key(provider, cwd)
     rows: list[dict[str, Any]] = []
+    retired: list[tuple[Path, dict[str, Any]]] = []
     for path in root.glob("*.json"):
         try:
             item = read_json(path)
         except AgentPairError:
             continue
-        if (
-            item.get("instance_key") == key
-            and not item.get("closed_at")
-            and float(item.get("expires_at", 0)) > now()
-        ):
+        ended = _retired_at(item)
+        if ended is not None:
+            if now() - ended > _RETIRED_KEEP_SECONDS:
+                retired.append((path, item))
+            continue
+        if item.get("instance_key") == key:
             rows.append(item)
+    if retired:
+        _prune_retired(retired)
     return sorted(rows, key=lambda item: float(item.get("created_at", 0)), reverse=True)
+
+
+def _retired_at(item: dict[str, Any]) -> float | None:
+    """When this endpoint closed or expired, or None while it is still open."""
+    try:
+        if item.get("closed_at"):
+            return float(item["closed_at"])
+        expires_at = float(item.get("expires_at", 0))
+    except (TypeError, ValueError):
+        # Unreadable dates: never offered to a hook, never old enough to prune.
+        return now()
+    return expires_at if expires_at <= now() else None
+
+
+def _prune_retired(rows: list[tuple[Path, dict[str, Any]]]) -> None:
+    """Delete endpoints that ended over a week ago, at most once an hour.
+
+    Nothing deleted them before: on 2026-09-24 one machine held 53 expired
+    endpoint files of 56, some from July, and every hook in every session read
+    all of them. A mailbox that still holds pending, claimed, or outbox mail,
+    or whose monitor is still running, is left alone. So is the mailbox itself.
+    """
+    try:
+        stamp = runtime_dir() / "prune.stamp"
+        try:
+            if now() - stamp.stat().st_mtime < _PRUNE_INTERVAL_SECONDS:
+                return
+        except FileNotFoundError:
+            pass
+        stamp.touch()
+        bindings = binding_records()
+        for path, item in rows:
+            _prune_endpoint(path, item, bindings)
+    except (AgentPairError, OSError):
+        # Pruning is housekeeping; it never costs a hook its answer.
+        pass
+
+
+def _prune_endpoint(
+    path: Path, item: dict[str, Any], bindings: list[tuple[Path, dict[str, Any]]]
+) -> bool:
+    endpoint_id = path.stem
+    if str(item.get("endpoint_id") or "") != endpoint_id:
+        return False
+    if monitor_alive(item) or monitor_lock.owner(endpoint_id):
+        return False
+    mailbox = state_root() / "mailboxes" / endpoint_id
+    for bucket in ("pending", "claimed", "outbox"):
+        if next((mailbox / bucket).glob("*.json"), None) is not None:
+            return False
+    path.unlink(missing_ok=True)
+    for runtime_file in runtime_dir().glob(f"{endpoint_id}.*"):
+        runtime_file.unlink(missing_ok=True)
+    for binding_path, record in bindings:
+        if str(record.get("endpoint_id") or "") == endpoint_id:
+            binding_path.unlink(missing_ok=True)
+    return True
 
 
 def select_endpoint(*, provider: str, cwd: str, pair_id: str | None = None) -> dict[str, Any]:
@@ -449,8 +526,19 @@ def restart_monitor(endpoint: dict[str, Any]) -> int:
     return start_monitor(endpoint)
 
 
+def _endpoint_ended(endpoint: dict[str, Any]) -> bool:
+    try:
+        return bool(endpoint.get("closed_at")) or float(endpoint.get("expires_at", 0)) <= now()
+    except (TypeError, ValueError):
+        return True
+
+
 def start_monitor(endpoint: dict[str, Any]) -> int:
     endpoint_id = str(endpoint["endpoint_id"])
+    if _endpoint_ended(endpoint):
+        # A closed or expired endpoint has nothing to poll; its monitor exits
+        # on its own, and a hook respawning it would only loop that again.
+        return 0
     state_path = _monitor_state_path(endpoint_id)
     lock_path = runtime_dir() / f"{endpoint_id}.monitor-start.lock"
     deadline = time.monotonic() + 3
@@ -503,7 +591,18 @@ def start_monitor(endpoint: dict[str, Any]) -> int:
 
 
 def ensure_monitor(endpoint: dict[str, Any]) -> int:
-    return start_monitor(endpoint)
+    """Start the monitor unless the endpoint on disk has closed or expired.
+
+    A caller's copy can predate a close from another process, so the record
+    is read again; the one in hand decides only when there is none on disk.
+    """
+    try:
+        current = load_endpoint(str(endpoint["endpoint_id"]))
+    except (AgentPairError, KeyError):
+        return start_monitor(endpoint)
+    if current.get("closed_at"):
+        endpoint["closed_at"] = current["closed_at"]
+    return start_monitor(current)
 
 
 def monitor_alive(endpoint: dict[str, Any]) -> bool:
@@ -701,7 +800,12 @@ def local_messages(endpoint: dict[str, Any], *, claim: bool) -> list[dict[str, A
     rows: list[dict[str, Any]] = []
     for bucket in buckets:
         for path in inbox_dir(endpoint_id, bucket).glob("*.json"):
-            item = read_json(path)
+            try:
+                item = read_json(path)
+            except AgentPairError:
+                # One unreadable row used to fail the whole read, so the Stop
+                # hook answered {} and no other message ever surfaced.
+                continue
             item["local_state"] = bucket
             rows.append(item)
     if claim and endpoint.get("provider") == "codex":
@@ -971,6 +1075,78 @@ def _binding_path(provider: str, cwd: str, session_id: str) -> Path:
     return runtime_dir() / f"binding-{digest}.json"
 
 
+def _binding_is_stale(record: dict[str, Any]) -> bool:
+    """True when the session that wrote this binding cannot be running.
+
+    Bindings carried no pid and nothing deleted them, so a session that had
+    exited still held its endpoint: on 2026-09-24 one machine had 42 of them,
+    and every new session in such a directory went inert with "Every active
+    endpoint is bound to another session". A binding now records its agent's
+    pid; one without a pid is trusted only while it is young, and the session
+    holding it keeps it young (_keep_binding).
+    """
+    owner = _as_pid(record.get("owner_pid"))
+    if owner is not None:
+        return not _pid_alive(owner)
+    return _binding_age(record) > _BINDING_STALE_SECONDS
+
+
+def _binding_age(record: dict[str, Any]) -> float:
+    try:
+        return now() - float(record.get("bound_at") or 0)
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+def _bound_endpoint_ids() -> set[str]:
+    bound: set[str] = set()
+    for path, record in binding_records():
+        if _binding_is_stale(record):
+            path.unlink(missing_ok=True)
+            continue
+        try:
+            bound.add(str(record["endpoint_id"]))
+        except KeyError:
+            continue
+    return bound
+
+
+def _write_binding(
+    path: Path, endpoint: dict[str, Any], provider: str, cwd: str, session_id: str,
+    owner: int | None,
+) -> None:
+    atomic_write_json(
+        path,
+        {
+            "endpoint_id": endpoint["endpoint_id"],
+            "provider": normalize_provider(provider),
+            "cwd": str(Path(cwd).resolve()),
+            "session_id": session_id,
+            "owner_pid": owner,
+            "bound_at": now(),
+        },
+    )
+
+
+def _keep_binding(
+    path: Path, binding: dict[str, Any], endpoint: dict[str, Any], provider: str, cwd: str,
+    session_id: str,
+) -> None:
+    """Keep this session's own binding from reading as stale to other sessions.
+
+    A record from an older version carries no pid, and one from a process this
+    session replaced (a resume) carries a dead one; either way the session
+    holding it is this one, now. With no pid to find, only a fresh bound_at
+    keeps it.
+    """
+    recorded = _as_pid(binding.get("owner_pid"))
+    if recorded is not None and _pid_alive(recorded):
+        return
+    owner = agent_ancestor_pid()
+    if owner != recorded or _binding_age(binding) > _BINDING_REFRESH_SECONDS:
+        _write_binding(path, endpoint, provider, cwd, session_id, owner)
+
+
 def _bound_hook_endpoint(provider: str, cwd: str, session_id: str) -> dict[str, Any]:
     if not session_id:
         return select_endpoint(provider=provider, cwd=cwd)
@@ -980,22 +1156,19 @@ def _bound_hook_endpoint(provider: str, cwd: str, session_id: str) -> dict[str, 
         endpoint = load_endpoint(str(binding["endpoint_id"]))
         if (
             endpoint.get("instance_key") == instance_key(provider, cwd)
-            and not endpoint.get("closed_at")
-            and float(endpoint.get("expires_at", 0)) > now()
+            and not _endpoint_ended(endpoint)
         ):
+            _keep_binding(path, binding, endpoint, provider, cwd, session_id)
             return endpoint
     except (AgentPairError, KeyError):
         pass
 
+    # Hooks run in every session on the machine; only one in a directory with
+    # an open endpoint pays for the sweep and the process walk below.
     rows = iter_endpoints(provider=provider, cwd=cwd)
     if not rows:
         raise AgentPairError("No active endpoint")
-    bound_ids: set[str] = set()
-    for binding_path in runtime_dir().glob("binding-*.json"):
-        try:
-            bound_ids.add(str(read_json(binding_path)["endpoint_id"]))
-        except (AgentPairError, KeyError):
-            continue
+    bound_ids = _bound_endpoint_ids()
     # An endpoint some session already bound belongs to that session. Hooks in
     # every other session sharing the directory — print-mode children, second
     # terminals — must stay inert instead of adopting it: adopting is what
@@ -1009,16 +1182,7 @@ def _bound_hook_endpoint(provider: str, cwd: str, session_id: str) -> dict[str, 
     )
     if endpoint is None:
         raise AgentPairError("Every active endpoint is bound to another session")
-    atomic_write_json(
-        path,
-        {
-            "endpoint_id": endpoint["endpoint_id"],
-            "provider": normalize_provider(provider),
-            "cwd": str(Path(cwd).resolve()),
-            "session_id": session_id,
-            "bound_at": now(),
-        },
-    )
+    _write_binding(path, endpoint, provider, cwd, session_id, agent_ancestor_pid())
     return endpoint
 
 
@@ -1162,30 +1326,63 @@ def _acquire_watch_lock(path: Path) -> bool:
     return False
 
 
+def _inbox_ids(endpoint_id: str) -> set[str]:
+    return {
+        path.stem
+        for bucket in ("pending", "claimed")
+        for path in inbox_dir(endpoint_id, bucket).glob("*.json")
+    }
+
+
+def _keep_own_binding(provider: str, payload: dict[str, Any], endpoint: dict[str, Any]) -> None:
+    session_id = str(payload.get("session_id") or "")
+    if not session_id:
+        return
+    cwd = str(payload.get("cwd") or os.getcwd())
+    path = _binding_path(provider, cwd, session_id)
+    try:
+        binding = read_json(path)
+        if str(binding.get("endpoint_id")) == str(endpoint["endpoint_id"]):
+            _keep_binding(path, binding, endpoint, provider, cwd, session_id)
+    except (AgentPairError, OSError):
+        pass
+
+
 def hook_wait(provider: str, payload: dict[str, Any]) -> int:
+    """Park until mail arrives, then wake the session (exit 2).
+
+    Mail already waiting was shown by the Stop hook, now or at an earlier stop.
+    This used to exit whenever any was waiting, and an agent that left shown
+    mail unfinished got no waiter at all: the next stop carries
+    stop_hook_active, so the Stop hook stays quiet too, and the session went
+    deaf to everything after it (agent-orchestra fixed the same on 2026-09-18).
+    Park instead, and wake only on mail that arrives after this point.
+    """
     endpoint = hook_endpoint(provider, payload)
-    if not endpoint or pending_count(endpoint):
+    if not endpoint:
         return 0
+    endpoint_id = str(endpoint["endpoint_id"])
+    seen = _inbox_ids(endpoint_id)
     session_id = str(payload.get("session_id") or f"cwd:{payload.get('cwd') or os.getcwd()}")
-    lock_path = _watch_lock_path(str(endpoint["endpoint_id"]), session_id)
+    lock_path = _watch_lock_path(endpoint_id, session_id)
     if not _acquire_watch_lock(lock_path):
         return 0
     try:
         next_monitor_check = 0.0
-        while float(endpoint.get("expires_at", 0)) > now():
+        while not _endpoint_ended(endpoint):
             if time.monotonic() >= next_monitor_check:
                 ensure_monitor(endpoint)
+                # A parked session fires no other hook, so without this its
+                # pid-less binding would read as stale and be taken.
+                _keep_own_binding(provider, payload, endpoint)
                 next_monitor_check = time.monotonic() + 5
-            count = pending_count(endpoint)
-            if count:
+            if _inbox_ids(endpoint_id) - seen:
                 reason = _hook_message_nudge(endpoint, provider, "")
                 if reason:
                     sys.stderr.write(f"{reason}\n")
                     return 2
             time.sleep(0.25)
-            endpoint = load_endpoint(str(endpoint["endpoint_id"]))
-            if endpoint.get("closed_at"):
-                return 0
+            endpoint = load_endpoint(endpoint_id)
         return 0
     finally:
         try:
