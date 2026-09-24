@@ -106,7 +106,7 @@ class ParserTest(unittest.TestCase):
             self.parser.parse_args(["--version"])
         self.assertEqual(caught.exception.code, 0)
         self.assertEqual(out.getvalue().strip(), f"agent-orchestra {__version__}")
-        self.assertEqual(__version__, "0.2.13")
+        self.assertEqual(__version__, "0.2.14")
 
     def test_unknown_command_exits_non_zero(self) -> None:
         err = io.StringIO()

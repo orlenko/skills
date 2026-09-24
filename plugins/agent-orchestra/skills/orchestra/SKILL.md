@@ -68,8 +68,11 @@ a machine may belong to several, one session each.
 - `adopt`: a seat stays with the agent that joined it (Claude or Codex), and
   another agent's commands cannot take it over. When a session of the other
   agent really replaces the one that joined, run `adopt --member-id M
-  --provider claude|codex --json` from that session. It moves the seat to this
-  agent and directory, so its hooks, wake, and `type` follow the new agent.
+  --provider P --json` from that session, where P is the agent you are (a
+  Claude session passes `claude`), never the provider the roster shows. It
+  moves the seat to this agent and directory, so its hooks, wake, and `type`
+  follow the new agent. The hub's roster keeps the provider the seat joined
+  with; that is expected, not something to adopt back.
 - `inbox`: run `inbox --claim --json`, process each claimed message, then run
   `finish MESSAGE_ID... --json` only after each message is genuinely handled.
 - `wait`: run `wait --timeout 55 --claim --json`; process and finish as above.

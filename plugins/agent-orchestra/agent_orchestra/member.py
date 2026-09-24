@@ -337,6 +337,13 @@ def adopt(member_id: str, *, provider: str, cwd: str) -> dict[str, Any]:
     new agent.
     """
     provider = normalize_provider(provider)
+    caller = core.agent_session_pid()
+    kind = core.agent_kind(caller) if caller else None
+    if kind and provider in ("claude", "codex") and kind != provider:
+        # 2026-09-24: Trumpet, a Claude session, adopted its seat back as codex.
+        # No Claude process may own a Codex seat, so that unlinked the seat
+        # from the session and hid two messages from its hooks.
+        raise OrchestraError(f"This session is {kind}; run adopt with --provider {kind}")
     lock_path = runtime_dir() / f"{member_id}.owner.lock"
     if not acquire_pid_lock(lock_path):
         raise OrchestraError("Another command is changing this seat; try again")

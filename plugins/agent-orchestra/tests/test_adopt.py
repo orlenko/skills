@@ -61,6 +61,11 @@ class AdoptTests(unittest.TestCase):
         rows = member_module.iter_members(provider="claude", cwd=str(self.cwd))
         self.assertEqual([row["member_id"] for row in rows], [MEMBER])
 
+    def test_a_session_adopts_only_as_its_own_agent(self):
+        with self.assertRaisesRegex(core.OrchestraError, "This session is claude"):
+            member_module.adopt(MEMBER, provider="codex", cwd=str(self.cwd))
+        self.assertIsNone(member_module.load_member(MEMBER).get("adopted"))
+
     def test_a_closed_seat_is_not_adopted(self):
         seat = member_module.load_member(MEMBER)
         seat["closed_at"] = 1.0
