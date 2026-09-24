@@ -8,9 +8,9 @@ from .core import MEMBER_ID_RE, MESSAGE_ID_RE, TASK_ID_RE, OrchestraError
 from .lifecycle import ASSIGNER_STATES, OWNER_STATES, STATE_VALUES
 
 
-ACTS = ("ask", "tell", "done", "block", "dissent", "assign", "status")
+ACTS = ("ask", "tell", "done", "block", "dissent", "assign", "status", "type")
 ALIASES = ("conductor", "parent", "children", "siblings", "all")
-HEADER_KEYS = ("ACT", "TO", "RE", "TASK", "NEED", "REF", "STATE")
+HEADER_KEYS = ("ACT", "TO", "RE", "TASK", "NEED", "REF", "STATE", "TYPE")
 MAX_HEADER_LINES = 20
 
 _HEADER_LINE = re.compile(r"^([A-Z]+)[ \t]+(.+)$")
@@ -22,6 +22,8 @@ _TASK_ID = re.compile(TASK_ID_RE)
 # competed with real blockers for attention.
 _AMBIGUOUS_NONE = re.compile(r"none\b")
 _STATE_AS_ACT = {"blocked": "block", "block": "block", "done": "done"}
+DEFAULT_TYPE_QUIET_SECONDS = 1800
+MAX_TYPE_QUIET_SECONDS = 4 * 3600
 
 
 class ProtocolError(OrchestraError):
@@ -38,6 +40,28 @@ class Envelope:
     refs: list[str] = field(default_factory=list)
     text: str = ""
     lifecycle: str | None = None
+    typing: TypeOptions | None = None
+
+
+@dataclass(frozen=True)
+class TypeOptions:
+    """How the target's monitor types an ACT type body into the member's pane.
+
+    `TYPE` header tokens: `enter` or `no-enter`, `idle` or `anytime`, and
+    `quiet=SECONDS`: how long, after typing, the orchestra stays silent in that
+    session unless the member reports STATE started first.
+    """
+
+    submit: bool = True
+    anytime: bool = False
+    quiet: int = DEFAULT_TYPE_QUIET_SECONDS
+
+    def header(self) -> str:
+        return " ".join((
+            "enter" if self.submit else "no-enter",
+            "anytime" if self.anytime else "idle",
+            f"quiet={self.quiet}",
+        ))
 
 
 def parse_message(text: str, extra_to: list[str] | None = None) -> Envelope:
@@ -67,6 +91,14 @@ def parse_message(text: str, extra_to: list[str] | None = None) -> Envelope:
     lifecycle = headers.get("STATE")
     _check_lifecycle(act, task, lifecycle)
     refs = [item.strip() for item in headers.get("REF", "").split(",") if item.strip()]
+    typing = None
+    if act == "type":
+        _check_type_recipients(recipients)
+        typing = parse_type_options(headers.get("TYPE"))
+        if not message_body(text).strip():
+            raise ProtocolError("ACT type needs a body: the text to type")
+    elif "TYPE" in headers:
+        raise ProtocolError("The TYPE header goes on ACT type")
 
     return Envelope(
         act=act,
@@ -77,7 +109,40 @@ def parse_message(text: str, extra_to: list[str] | None = None) -> Envelope:
         refs=refs,
         text=text,
         lifecycle=lifecycle,
+        typing=typing,
     )
+
+
+def parse_type_options(raw: str | None) -> TypeOptions:
+    submit, anytime, quiet = True, False, DEFAULT_TYPE_QUIET_SECONDS
+    for token in (raw or "").split():
+        if token in ("enter", "no-enter"):
+            submit = token == "enter"
+        elif token in ("idle", "anytime"):
+            anytime = token == "anytime"
+        elif token.startswith("quiet="):
+            try:
+                quiet = int(token[len("quiet="):])
+            except ValueError:
+                raise ProtocolError(f"TYPE {token!r}: quiet takes whole seconds") from None
+            if not 0 <= quiet <= MAX_TYPE_QUIET_SECONDS:
+                raise ProtocolError(f"TYPE quiet must be 0 to {MAX_TYPE_QUIET_SECONDS} seconds")
+        else:
+            raise ProtocolError(
+                f"Unknown TYPE token {token!r}; expected enter|no-enter, idle|anytime, quiet=SECONDS"
+            )
+    return TypeOptions(submit=submit, anytime=anytime, quiet=quiet)
+
+
+def message_body(text: str) -> str:
+    """Everything after the header block's blank line, byte for byte."""
+    _, separator, body = text.partition("\n\n")
+    return body if separator else ""
+
+
+def _check_type_recipients(to: Any) -> None:
+    if len(to) != 1 or not _MEMBER_ID.fullmatch(str(to[0]).strip()):
+        raise ProtocolError("ACT type goes to exactly one member id, not an alias")
 
 
 def reply_required(envelope_or_row: Envelope | dict[str, Any]) -> bool:
@@ -139,6 +204,8 @@ def validate_fields(
         raise ProtocolError(f"TASK {task!r} is not a task id matching {TASK_ID_RE}")
     if act == "assign" and task is None:
         raise ProtocolError("Act assign requires a task")
+    if act == "type":
+        _check_type_recipients(to)
     if not isinstance(need, str) or not need.strip():
         raise ProtocolError("NEED must be a non-empty string; use 'none' when no reply is required")
     _check_need(need)

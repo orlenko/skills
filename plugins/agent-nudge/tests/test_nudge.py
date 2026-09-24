@@ -183,6 +183,9 @@ class OrchestraFilesTest(unittest.TestCase):
         seat = seats[74923]
         self.assertEqual((seat.unread, seat.oldest_unread_at, seat.open_tasks), (2, 50.0, [("t_a", "started")]))
         self.assertEqual(sorted(seat.unread_times), [50.0, 100.0])
+        self.assertEqual(seat.quiet_until, 0.0)
+        (root / "runtime" / "mb_t.quiet.json").write_text(json.dumps({"until": 12345.5}))
+        self.assertEqual(orchestra.seats_by_pid()[74923].quiet_until, 12345.5)
 
 
 class FakeClock:
@@ -421,6 +424,17 @@ class NudgerTest(unittest.TestCase):
         self.assertEqual(self.sent, [])
         self.advance(1.5)
         self.assertIn("2 Agent Orchestra messages arrived while you were idle", self.sent[0])
+
+    def test_no_nudge_after_the_conductor_typed_into_the_session(self):
+        # The typed /qc must stay the session's latest user message.
+        daemon.set_mode("live")
+        self.nudger.tick()
+        self.seats = {10: orchestra.Seat("mb_t", "triangle", "player", unread=2,
+                                         unread_times=[self.clock.t + 30] * 2,
+                                         quiet_until=self.clock.t + 3600)}
+        rows = self.advance(11)
+        self.assertEqual(self.sent, [])
+        self.assertIn("the conductor typed here", rows[-1]["reason"])
 
     def test_mail_the_agent_already_left_is_not_news(self):
         daemon.set_mode("live")

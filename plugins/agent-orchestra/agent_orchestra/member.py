@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import __version__, codex_wake, core, jev, jev_shadow, monitor_lock
+from . import __version__, codex_wake, core, jev, jev_shadow, keys, monitor_lock
 from .core import (
     APIError,
     MAX_MESSAGE_BYTES,
@@ -33,7 +33,14 @@ from .core import (
     state_root,
 )
 from .lifecycle import attention as lifecycle_attention, thresholds
-from .protocol import attention_rank, parse_message, reply_required
+from .protocol import (
+    ProtocolError,
+    TypeOptions,
+    attention_rank,
+    message_body,
+    parse_message,
+    reply_required,
+)
 
 
 PRESENCE_STALE_SECONDS = 120
@@ -729,20 +736,9 @@ def send(member: dict[str, Any], text: str, to: list[str] | None = None) -> dict
     if len(text.encode("utf-8")) > MAX_MESSAGE_BYTES:
         raise OrchestraError(f"Message exceeds {MAX_MESSAGE_BYTES} bytes")
     member_id = str(member["member_id"])
-    message_id = new_message_id()
-    record = {
-        "id": message_id,
-        "text": envelope.text,
-        "to": list(envelope.to),
-        "act": envelope.act,
-        "re": envelope.re,
-        "task": envelope.task,
-        "need": envelope.need,
-        "refs": list(envelope.refs),
-        "lifecycle": envelope.lifecycle,
-        "queued_locally_at": now(),
-    }
-    atomic_write_json(bucket_dir(member_id, "outbox") / f"{message_id}.json", record)
+    message_id = _queue_outbox(member_id, envelope)
+    if envelope.lifecycle == "started":
+        clear_quiet(member_id, envelope.task)
     ensure_hub_if_local(member)
     try:
         ensure_monitor(member)
@@ -761,6 +757,24 @@ def send(member: dict[str, Any], text: str, to: list[str] | None = None) -> dict
         if warning:
             result["warning"] = warning
     return result
+
+
+def _queue_outbox(member_id: str, envelope: Any) -> str:
+    message_id = new_message_id()
+    record = {
+        "id": message_id,
+        "text": envelope.text,
+        "to": list(envelope.to),
+        "act": envelope.act,
+        "re": envelope.re,
+        "task": envelope.task,
+        "need": envelope.need,
+        "refs": list(envelope.refs),
+        "lifecycle": envelope.lifecycle,
+        "queued_locally_at": now(),
+    }
+    atomic_write_json(bucket_dir(member_id, "outbox") / f"{message_id}.json", record)
+    return message_id
 
 
 def _inbox_order(row: dict[str, Any]) -> tuple[int, float]:
@@ -1424,8 +1438,200 @@ def close(member: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+# ---- ACT type: the conductor types into this member's session --------------
+
+
+def _quiet_path(member_id: str) -> Path:
+    return runtime_dir() / f"{member_id}.quiet.json"
+
+
+def quiet_until(member_id: str) -> float | None:
+    """When the orchestra may speak in this member's session again, or None.
+
+    Set just before conductor text is typed. develop's /qc and /aprs relay the
+    session's latest user message as the authoritative request, so the typed
+    prompt has to stay latest until the work it starts is running: hook
+    context, a hook-wait wake, a Codex queue notice or an agent-nudge line
+    after it would replace it.
+    """
+    try:
+        until = float(read_json(_quiet_path(member_id)).get("until") or 0)
+    except (OrchestraError, TypeError, ValueError):
+        return None
+    return until if until > now() else None
+
+
+def clear_quiet(member_id: str, task: str | None = None) -> None:
+    """STATE started ends the quiet: the typed work is running.
+
+    A quiet tied to a task ends only on that task's STATE started.
+    """
+    path = _quiet_path(member_id)
+    try:
+        record = read_json(path)
+    except OrchestraError:
+        return
+    if task and record.get("task") and record.get("task") != task:
+        return
+    path.unlink(missing_ok=True)
+
+
+def _typed_log(member_id: str) -> Path:
+    return core.member_dir(member_id) / "typed.jsonl"
+
+
+def _typed_before(member_id: str, message_id: str) -> bool:
+    try:
+        with _typed_log(member_id).open(encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    if json.loads(line).get("id") == message_id:
+                        return True
+                except ValueError:
+                    continue
+    except OSError:
+        return False
+    return False
+
+
+def _log_typed(member_id: str, row: dict[str, Any]) -> None:
+    """Append-only audit of every ACT type this member received."""
+    path = _typed_log(member_id)
+    fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as stream:
+        stream.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _type_into_pane(
+    member: dict[str, Any], sender_id: str, body: str, options: TypeOptions, task: str | None,
+    message_id: str,
+) -> tuple[str, str, str | None]:
+    """(result, detail, pane id) for one ACT type."""
+    member_id = str(member["member_id"])
+    if not sender_id or sender_id != str(member.get("conductor_id") or ""):
+        # The hub checks this too; a stale or forged sender still stops here.
+        return "not-allowed", "only the current conductor types into a session", None
+    owner = _as_pid(member.get("owner_pid"))
+    if owner is None or not _pid_alive(owner):
+        return "no-pane", "no live agent session holds this seat", None
+    pane = keys.find_pane(owner)
+    if pane is None:
+        return "no-pane", f"agent pid {owner} is not inside a tmux pane", None
+    agent = str(member.get("provider") or "claude")
+    agent = agent if agent in keys.PROMPT_GLYPHS else "claude"
+    try:
+        if not options.anytime:
+            shown = keys.prompt(pane.id, agent)
+            if not shown.shown:
+                return "refused-busy", "no input box on screen", pane.id
+            if shown.working:
+                return "refused-busy", "a turn is running", pane.id
+            if shown.typed:
+                return "refused-busy", "the input box already holds text", pane.id
+        if options.quiet:
+            atomic_write_json(_quiet_path(member_id), {
+                "until": now() + options.quiet, "task": task, "message_id": message_id,
+                "set_at": now(),
+            })
+        submitted = keys.type_text(pane.id, agent, body, submit=options.submit)
+    except keys.KeysError as exc:
+        clear_quiet(member_id)
+        return "tmux-error", str(exc)[:300], pane.id
+    if not options.submit:
+        return "typed", "left in the input box, not submitted", pane.id
+    if not submitted:
+        return "not-submitted", "the text still sits in the input box", pane.id
+    return "typed", f"submitted in {pane.session}", pane.id
+
+
+def _handle_type(member: dict[str, Any], envelope: dict[str, Any]) -> str:
+    """Type an ACT type body into this member's pane and tell the sender how it went."""
+    member_id = str(member["member_id"])
+    message_id = str(envelope["id"])
+    if _typed_before(member_id, message_id):
+        return "duplicate"
+    sender = envelope.get("from") if isinstance(envelope.get("from"), dict) else {}
+    sender_id = str(sender.get("id") or "")
+    text = str(envelope.get("text") or "")
+    body = message_body(text)
+    task = envelope.get("task")
+    row = {"id": message_id, "from": sender_id, "from_name": sender.get("name"),
+           "text": body, "task": task, "received_at": now(), "result": "typing"}
+    # Logged before any key is sent: a redelivery after a crash mid-typing
+    # finds it and does not type twice.
+    _log_typed(member_id, row)
+    try:
+        options = parse_message(text).typing or TypeOptions()
+    except ProtocolError as exc:
+        result, detail, pane_id = "malformed", str(exc)[:300], None
+    else:
+        result, detail, pane_id = _type_into_pane(
+            member, sender_id, body, options, task, message_id
+        )
+    _log_typed(member_id, {**row, "result": result, "detail": detail, "pane": pane_id,
+                           "finished_at": now()})
+    if sender_id and sender_id != "sys":
+        reply = (
+            f"ACT tell\nTO {sender_id}\nRE {message_id}\nNEED none\n\n"
+            f"type {result}: {detail}\n"
+            f"member {member.get('name') or member_id}, pane {pane_id or 'none'}"
+        )
+        try:
+            _queue_outbox(member_id, parse_message(reply))
+        except (OrchestraError, OSError):
+            pass
+    return result
+
+
+def type_into(
+    member: dict[str, Any],
+    target: str,
+    text: str,
+    *,
+    options: TypeOptions,
+    task: str | None = None,
+    wait: float = 0.0,
+) -> dict[str, Any]:
+    """Conductor: have `target`'s monitor type `text` into its session's pane.
+
+    `target` is a member id or a roster name. With `wait`, poll this inbox for
+    the target's reply and finish it, so the answer is the command's output.
+    """
+    if not text.strip():
+        raise OrchestraError("Nothing to type")
+    target_id = target
+    if not re.fullmatch(core.MEMBER_ID_RE, target):
+        roster = members(member)["members"]
+        matches = [row for row in roster if row.get("name") == target
+                   and row.get("presence") not in ("left", "kicked")]
+        if len(matches) != 1:
+            raise OrchestraError(f"No single active member named {target!r}; pass a member id")
+        target_id = str(matches[0]["id"])
+    headers = ["ACT type", f"TO {target_id}", f"TYPE {options.header()}"]
+    if task:
+        headers.append(f"TASK {task}")
+    result = send(member, "\n".join(headers) + "\n\n" + text)
+    message_id = str(result.get("id") or "")
+    if wait <= 0 or result.get("state") in ("rejected", "closed", "queued-locally"):
+        return result
+    deadline = time.monotonic() + wait
+    member_id = str(member["member_id"])
+    while time.monotonic() < deadline:
+        for row in local_messages(member, claim=False):
+            if row.get("re") == message_id:
+                finish_messages(member, [str(row["id"])])
+                body = message_body(str(row.get("text") or "")).strip()
+                return {**result, "outcome": body.split(":", 1)[0].removeprefix("type ").strip(),
+                        "reply": body}
+        time.sleep(0.5)
+    return {**result, "outcome": "no-reply-yet",
+            "reply": f"No reply within {wait:g}s; it will arrive as mail RE {message_id}"}
+
+
 def _wake_codex(member: dict[str, Any]) -> None:
     if member.get("provider") != "codex" or member.get("closed_at"):
+        return
+    if quiet_until(str(member["member_id"])):
         return
     member_id = str(member["member_id"])
     codex_wake.wake(
@@ -1470,6 +1676,13 @@ def _monitor_loop(member_id: str) -> None:
                     _store_event(member, envelope)
                     api_request(member, "POST", f"/v1/messages/{message_id}/ack", {})
                     api_request(member, "POST", f"/v1/messages/{message_id}/handled", {})
+                    continue
+                if envelope.get("act") == "type":
+                    # Keystrokes for this session's pane, not mail for its inbox.
+                    _handle_type(member, envelope)
+                    api_request(member, "POST", f"/v1/messages/{message_id}/ack", {})
+                    api_request(member, "POST", f"/v1/messages/{message_id}/handled", {})
+                    flush_outbox(member)
                     continue
                 if _store_incoming(member, envelope):
                     new_count += 1

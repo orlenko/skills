@@ -241,6 +241,8 @@ class Nudger:
             return None
         seats = getattr(self, "seats", {})
         seat = next((seats[p] for p in pane.extra.get("agent_pids", [pane.agent_pid]) if p in seats), None)
+        if seat and seat.quiet_until > at:
+            return self._note(pane, rec, at, "skip", "the conductor typed here; orchestra quiet until it starts")
         # Only mail that landed after the screen went still is unheard. Mail
         # older than that the agent was shown and chose to leave, often FYI
         # copies, and nudging about it again would be noise.

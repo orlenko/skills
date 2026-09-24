@@ -5,6 +5,7 @@ conductor handover, a forged presence line, a page of oversized messages, and
 the child-reaping rule in `_pid_alive`.
 """
 
+import json
 import os
 import shutil
 import signal
@@ -25,6 +26,8 @@ os.sys.path.insert(0, str(PLUGIN_ROOT))
 from agent_orchestra import __version__, core  # noqa: E402
 from agent_orchestra import hub as hub_module  # noqa: E402
 from agent_orchestra import member as member_module  # noqa: E402
+from agent_orchestra import keys  # noqa: E402
+from agent_orchestra.protocol import TypeOptions  # noqa: E402
 from agent_orchestra.core import (  # noqa: E402
     OrchestraError,
     api_request,
@@ -304,6 +307,78 @@ class ResilienceTestCase(unittest.TestCase):
 
         member_module.send(player, "ACT status\nTO conductor\n\nStill on the parser.")
         self.assertFalse(member_module.status_owed(player)["owed"])
+
+    def _typing_topology(self, prompt: keys.Prompt, submitted: bool = True):
+        conductor, player = self._topology()
+        player_id = str(player["member_id"])
+        record = member_module.load_member(player_id)
+        record["owner_pid"] = os.getpid()
+        member_module.save_member(record)
+        typed: list[tuple[str, str, str, bool]] = []
+
+        def fake_type(pane_id, agent, text, *, submit):
+            typed.append((pane_id, agent, text, submit))
+            return submitted
+
+        for target, value in (
+            ("find_pane", mock.Mock(return_value=keys.Pane(id="%7", pid=1, session="aiq-ops"))),
+            ("prompt", mock.Mock(return_value=prompt)),
+            ("type_text", fake_type),
+        ):
+            patcher = mock.patch.object(keys, target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self._start_monitor(player_id)
+        self._start_monitor(str(conductor["member_id"]))
+        return conductor, player_id, typed
+
+    def test_the_conductor_types_into_an_idle_player_and_hears_back(self):
+        conductor, player_id, typed = self._typing_topology(
+            keys.Prompt(shown=True, typed="", working=False)
+        )
+        result = member_module.type_into(
+            conductor, player_id, "/qc 3696", options=TypeOptions(), wait=20
+        )
+        self.assertEqual(result["outcome"], "typed", result)
+        self.assertEqual(typed, [("%7", "claude", "/qc 3696", True)])
+        self.assertIsNotNone(member_module.quiet_until(player_id))
+        # Keystrokes, not mail: nothing waits in the player's inbox.
+        self.assertEqual(member_module.pending_count(member_module.load_member(player_id)), 0)
+        rows = [json.loads(line) for line in
+                member_module._typed_log(player_id).read_text().splitlines()]
+        self.assertEqual([row["result"] for row in rows], ["typing", "typed"])
+        self.assertEqual(rows[-1]["text"], "/qc 3696")
+        self.assertEqual(rows[-1]["pane"], "%7")
+        # The reply was finished by the command that waited for it.
+        self.assertEqual(member_module.pending_count(conductor), 0)
+
+    def test_a_busy_session_is_refused_and_left_alone(self):
+        conductor, player_id, typed = self._typing_topology(
+            keys.Prompt(shown=True, typed="", working=True)
+        )
+        result = member_module.type_into(
+            conductor, player_id, "/aprs 3711", options=TypeOptions(), wait=20
+        )
+        self.assertEqual(result["outcome"], "refused-busy", result)
+        self.assertEqual(typed, [])
+        self.assertIsNone(member_module.quiet_until(player_id))
+
+    def test_text_left_unsent_is_reported(self):
+        conductor, player_id, _ = self._typing_topology(
+            keys.Prompt(shown=True, typed="", working=False), submitted=False
+        )
+        result = member_module.type_into(
+            conductor, player_id, "/qc 1", options=TypeOptions(), wait=20
+        )
+        self.assertEqual(result["outcome"], "not-submitted", result)
+
+    def test_only_the_conductor_may_type(self):
+        conductor, player = self._topology()
+        result = member_module.type_into(
+            player, str(conductor["member_id"]), "rm -rf /", options=TypeOptions(), wait=0
+        )
+        self.assertEqual(result["state"], "rejected", result)
+        self.assertIn("conductor", json.dumps(result))
 
     def test_three_oversized_messages_all_drain_into_the_inbox(self):
         conductor, player = self._topology()

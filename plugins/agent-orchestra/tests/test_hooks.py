@@ -870,6 +870,44 @@ class HookWaitTest(HooksTestCase):
         self.assertIn("claim_token: m_" + "a" * 16, buffer.getvalue())
         self.assertEqual(list(runtime_dir().glob("*.wake.*.json")), [])
 
+    def quiet(self, member_id: str, seconds: float = 600) -> None:
+        atomic_write_json(runtime_dir() / f"{member_id}.quiet.json",
+                          {"until": time.time() + seconds, "task": None})
+
+    def test_typed_conductor_text_keeps_every_hook_silent(self) -> None:
+        # develop's /qc relays the session's latest user message; after typed
+        # text nothing from the orchestra may land in that session.
+        member_id = str(self.make_member()["member_id"])
+        self.add_message(member_id, "m_" + "a" * 16, act="ask", need="sha")
+        self.quiet(member_id)
+        self.assertEqual(hooks.hook_context(self.provider, self.payload(event="UserPromptSubmit")), {})
+        self.assertEqual(hooks.hook_stop(self.provider, self.payload()), {})
+        member_module.clear_quiet(member_id)
+        self.assertEqual(hooks.hook_stop(self.provider, self.payload())["decision"], "block")
+
+    def test_a_parked_session_wakes_only_after_the_quiet_ends(self) -> None:
+        member_id = str(self.make_member()["member_id"])
+        self.quiet(member_id)
+        result: dict[str, Any] = {}
+        buffer = io.StringIO()
+
+        def run() -> None:
+            result["code"] = hooks.hook_wait(self.provider, self.payload())
+
+        with redirect_stderr(buffer):
+            worker = threading.Thread(target=run, daemon=True)
+            worker.start()
+            deadline = time.monotonic() + 5
+            while not list(runtime_dir().glob("*.wake.*.json")) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.add_message(member_id, "m_" + "b" * 16, act="ask", need="sha")
+            time.sleep(0.8)
+            self.assertTrue(worker.is_alive(), "mail woke a session inside its quiet")
+            member_module.clear_quiet(member_id)
+            worker.join(timeout=10)
+        self.assertEqual(result.get("code"), 2)
+        self.assertIn("claim_token: m_" + "b" * 16, buffer.getvalue())
+
     def test_a_parked_session_takes_back_a_seat_whose_owner_died(self) -> None:
         """A producer run under a deadline can take a seat and then end.
 

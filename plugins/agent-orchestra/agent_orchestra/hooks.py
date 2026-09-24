@@ -30,6 +30,7 @@ from .member import (
     load_member,
     local_messages,
     pending_count,
+    quiet_until,
     recent_events,
     release_pid_lock,
     save_member,
@@ -294,7 +295,9 @@ def _newest_presence_event(member: dict[str, Any]) -> str | None:
 
 def hook_context(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
     member = hook_member(provider, payload, default_event="SessionStart")
-    if not member:
+    if not member or quiet_until(str(member["member_id"])):
+        # While typed conductor text is starting its work, even context on
+        # that turn could be relayed as part of the request.
         return {}
     lines = _mail_lines(member, provider)
     lines[1:1] = _attention_lines(member)
@@ -482,7 +485,7 @@ def hook_stop(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("stop_hook_active"):
         return {}
     member = hook_member(provider, payload)
-    if not member:
+    if not member or quiet_until(str(member["member_id"])):
         return {}
     reason = _hook_message_nudge(member, provider, " while you were working")
     if not reason:
@@ -596,7 +599,7 @@ def hook_wait(provider: str, payload: dict[str, Any]) -> int:
                 next_monitor_check = time.monotonic() + _WAIT_MONITOR_SECONDS
             # Events land in events/ and never in pending/, so a presence line
             # can never wake the session; only real member mail does.
-            if _pending_ids(member_id) - seen:
+            if _pending_ids(member_id) - seen and not quiet_until(member_id):
                 reason = _hook_message_nudge(member, provider, "")
                 if reason:
                     sys.stderr.write(f"{reason}\n")

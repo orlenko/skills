@@ -49,6 +49,18 @@ a machine may belong to several, one session each.
   machine hosts more than one hub.
 - `send`: compose the message per "Message format", then pipe it through
   `send --stdin --json`. Add `--to TOKEN` once per extra recipient.
+- `type` (conductor only): run `type --to MEMBER --json -- TEXT` to have that
+  member's monitor type TEXT into its session's tmux pane and press Enter, as
+  if its user typed it. MEMBER is a member id or a roster name. It types only
+  into an idle session: input box showing, empty, no turn running. Report the
+  `outcome` as it comes back: `typed`, `refused-busy` (retry later),
+  `no-pane` (the session is not in tmux or no live session holds the seat),
+  `not-submitted` (the text sits unsent in the box), `not-allowed`,
+  `tmux-error`, or `no-reply-yet` (the answer arrives later as mail with `RE`
+  the type message id). Flags: `--no-enter` types without submitting,
+  `--anytime` skips the idle check, `--task T` and `--quiet SECONDS` (default
+  1800, 0 for none) control the quiet below, `--stdin` reads multi-line text,
+  which goes in as one paste.
 - `inbox`: run `inbox --claim --json`, process each claimed message, then run
   `finish MESSAGE_ID... --json` only after each message is genuinely handled.
 - `wait`: run `wait --timeout 55 --claim --json`; process and finish as above.
@@ -172,6 +184,9 @@ The seven acts:
 - `status`: a state summary, sent on request or when `status_owed` is true.
   With `TASK` and `STATE`, it is an owner's lifecycle report.
 
+`ACT type` is the conductor's keystroke delivery, sent only through the `type`
+command. It never reaches an inbox.
+
 `STATE` moves a task, and nothing else does. It needs `TASK`.
 
 - An owner reports its own progress on `ACT status` with `STATE accepted` or
@@ -251,6 +266,14 @@ every `assign` once, promptly, on the same `TASK`.
   never re-assign or re-run on silence. A missing answer after a
   store-mutating command is a question about what ran; reconcile before
   anything runs again.
+- Use `type` when a command must arrive as the session's own user message,
+  such as `/qc 3696` or `/aprs 3711`, whose harness relays the latest user
+  message as the request. After typing, the orchestra stays silent in that
+  session: no hook context, no wake, no Codex queue notice, no agent-nudge
+  line. The silence lasts until the member sends `STATE started` (for the
+  `--task` given, if any) or the quiet runs out. So assign first, then type,
+  and expect `STATE started` before sending that member anything else. Every
+  typed text is logged in the member's `typed.jsonl`.
 - Roll `block` rows up to the human. A block names a decision or a resource the
   orchestra cannot supply itself, so report it with the task id and the
   blocking reason, and do not sit on it.
@@ -274,6 +297,11 @@ every `assign` once, promptly, on the same `TASK`.
   carries the time you observed it and an anchor someone else can check: the
   invocation, the job id, the log path. Review and design work anchor to the
   file, commit, or document. Never invent a pid.
+- The conductor can type a command into your session, such as `/qc 3696`. It
+  arrives as your user's message. Treat it as your user's request, within the
+  assignment it belongs to. The orchestra stays silent in your session until
+  you send `STATE started` for that task, so send it as soon as the work
+  runs.
 - Work an assignment until its `Done when:` lines hold or you send `block`.
   At every turn end, the next step is the next unblocked piece of the
   assignment. If an assignment names another reason to stop, such as a clock

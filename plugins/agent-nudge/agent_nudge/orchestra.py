@@ -26,6 +26,9 @@ class Seat:
     oldest_unread_at: float | None = None
     unread_times: list[float] = field(default_factory=list)
     open_tasks: list[tuple[str, str]] = field(default_factory=list)
+    # Set by agent-orchestra 0.2.9+ right before the conductor types into this
+    # session. Nothing may reach the session until then, a nudge included.
+    quiet_until: float = 0.0
 
 
 def _root() -> Path:
@@ -65,6 +68,10 @@ def seats_by_pid() -> dict[int, Seat]:
             if isinstance(stamp, (int, float)):
                 seat.oldest_unread_at = min(seat.oldest_unread_at or stamp, stamp)
                 seat.unread_times.append(float(stamp))
+        try:
+            seat.quiet_until = float(_read(root / "runtime" / f"{member_id}.quiet.json").get("until") or 0)
+        except (TypeError, ValueError):
+            seat.quiet_until = 0.0
         snapshot = _read(root / "runtime" / f"{member_id}.tasks.json")
         for task in snapshot.get("tasks") or []:
             if not isinstance(task, dict):

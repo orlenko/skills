@@ -204,7 +204,9 @@ class ProtocolTests(HomeTestCase):
             validate_fields("tell", ["all"], None, None, "none", "git:23cf639")
 
     def test_constants(self):
-        self.assertEqual(ACTS, ("ask", "tell", "done", "block", "dissent", "assign", "status"))
+        self.assertEqual(
+            ACTS, ("ask", "tell", "done", "block", "dissent", "assign", "status", "type")
+        )
         self.assertEqual(ALIASES, ("conductor", "parent", "children", "siblings", "all"))
         self.assertTrue(issubclass(ProtocolError, OrchestraError))
 

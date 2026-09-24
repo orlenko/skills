@@ -12,6 +12,7 @@ from typing import Any
 
 from . import __version__, codex_wake
 from .core import OrchestraError, normalize_provider
+from .protocol import DEFAULT_TYPE_QUIET_SECONDS, TypeOptions
 
 
 def _provider_default() -> str:
@@ -108,6 +109,23 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("text", nargs="*")
     send.add_argument("--to", action="append", default=[], metavar="TOKEN")
     send.add_argument("--stdin", action="store_true")
+
+    typing = commands.add_parser(
+        "type", help="Conductor: type text into a member's session as if its user typed it"
+    )
+    _common(typing)
+    typing.add_argument("text", nargs="*")
+    typing.add_argument("--to", required=True, metavar="MEMBER", help="Member id or name")
+    typing.add_argument("--stdin", action="store_true", help="Read the text from stdin")
+    typing.add_argument("--no-enter", action="store_true", help="Type without submitting")
+    typing.add_argument("--anytime", action="store_true",
+                        help="Type even when the session is busy or its input box holds text")
+    typing.add_argument("--quiet", type=int, default=DEFAULT_TYPE_QUIET_SECONDS, metavar="SECONDS",
+                        help="Keep the orchestra silent in that session this long, or until it "
+                             "reports STATE started (default %(default)s; 0 for none)")
+    typing.add_argument("--task", help="Tie the quiet to this task's STATE started")
+    typing.add_argument("--wait", type=float, default=45, metavar="SECONDS",
+                        help="Wait this long for the result (default %(default)s; 0 to not wait)")
 
     inbox = commands.add_parser("inbox", help="List or claim locally delivered messages")
     _common(inbox)
@@ -437,6 +455,15 @@ def run(args: argparse.Namespace) -> int:
                 f"This membership is closed ({reason}); the message was not sent "
                 "and this session is no longer in the orchestra."
             )
+        return 0
+    if args.command == "type":
+        text = sys.stdin.read() if args.stdin else " ".join(args.text)
+        result = member_api.type_into(
+            member, args.to, text.rstrip("\n"),
+            options=TypeOptions(submit=not args.no_enter, anytime=args.anytime, quiet=args.quiet),
+            task=args.task, wait=args.wait,
+        )
+        _print(result, args.as_json)
         return 0
     if args.command == "inbox":
         rows = member_api.local_messages(member, claim=args.claim)

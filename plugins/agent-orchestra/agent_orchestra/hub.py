@@ -648,6 +648,9 @@ class HubStore:
                 if existing["sender"] != member["id"] or existing["body_sha256"] != digest:
                     raise APIError(409, "Message id is already in use")
                 return self._message_status(message_id)
+            if act == "type" and member["id"] != self._conductor_id():
+                # Typed text lands in the session as its user's own prompt.
+                raise APIError(403, "Only the conductor types into a member's session")
             recipients = self._resolve(member, list(to))
             if lifecycle is not None:
                 self._check_lifecycle(member["id"], str(task), str(lifecycle), recipients)
