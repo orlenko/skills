@@ -24,6 +24,7 @@ _AMBIGUOUS_NONE = re.compile(r"none\b")
 _STATE_AS_ACT = {"blocked": "block", "block": "block", "done": "done"}
 DEFAULT_TYPE_QUIET_SECONDS = 1800
 MAX_TYPE_QUIET_SECONDS = 4 * 3600
+_KEY_NAME = re.compile(r"[A-Za-z0-9+-]{1,16}")
 
 
 class ProtocolError(OrchestraError):
@@ -47,20 +48,24 @@ class Envelope:
 class TypeOptions:
     """How the target's monitor types an ACT type body into the member's pane.
 
-    `TYPE` header tokens: `enter` or `no-enter`, `idle` or `anytime`, and
+    `TYPE` header tokens: `enter` or `no-enter`, `idle` or `anytime`,
     `quiet=SECONDS`: how long, after typing, the orchestra stays silent in that
-    session unless the member reports STATE started first.
+    session unless the member reports STATE started first, and `key=NAME`
+    once per named key to press after the text (then no automatic Enter).
     """
 
     submit: bool = True
     anytime: bool = False
     quiet: int = DEFAULT_TYPE_QUIET_SECONDS
+    # Named keys pressed after the text, instead of the automatic Enter.
+    keys: tuple[str, ...] = ()
 
     def header(self) -> str:
         return " ".join((
             "enter" if self.submit else "no-enter",
             "anytime" if self.anytime else "idle",
             f"quiet={self.quiet}",
+            *(f"key={name}" for name in self.keys),
         ))
 
 
@@ -95,8 +100,8 @@ def parse_message(text: str, extra_to: list[str] | None = None) -> Envelope:
     if act == "type":
         _check_type_recipients(recipients)
         typing = parse_type_options(headers.get("TYPE"))
-        if not message_body(text).strip():
-            raise ProtocolError("ACT type needs a body: the text to type")
+        if not message_body(text).strip() and not typing.keys:
+            raise ProtocolError("ACT type needs a body, the text to type, or a key=NAME")
     elif "TYPE" in headers:
         raise ProtocolError("The TYPE header goes on ACT type")
 
@@ -115,8 +120,14 @@ def parse_message(text: str, extra_to: list[str] | None = None) -> Envelope:
 
 def parse_type_options(raw: str | None) -> TypeOptions:
     submit, anytime, quiet = True, False, DEFAULT_TYPE_QUIET_SECONDS
+    names: list[str] = []
     for token in (raw or "").split():
-        if token in ("enter", "no-enter"):
+        if token.startswith("key="):
+            name = token[len("key="):]
+            if not _KEY_NAME.fullmatch(name):
+                raise ProtocolError(f"TYPE {token!r}: a key is a tmux key name such as Enter or C-c")
+            names.append(name)
+        elif token in ("enter", "no-enter"):
             submit = token == "enter"
         elif token in ("idle", "anytime"):
             anytime = token == "anytime"
@@ -129,9 +140,10 @@ def parse_type_options(raw: str | None) -> TypeOptions:
                 raise ProtocolError(f"TYPE quiet must be 0 to {MAX_TYPE_QUIET_SECONDS} seconds")
         else:
             raise ProtocolError(
-                f"Unknown TYPE token {token!r}; expected enter|no-enter, idle|anytime, quiet=SECONDS"
+                f"Unknown TYPE token {token!r}; expected enter|no-enter, idle|anytime, "
+                "quiet=SECONDS, key=NAME"
             )
-    return TypeOptions(submit=submit, anytime=anytime, quiet=quiet)
+    return TypeOptions(submit=submit, anytime=anytime, quiet=quiet, keys=tuple(names))
 
 
 def message_body(text: str) -> str:

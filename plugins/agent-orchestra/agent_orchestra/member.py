@@ -1526,17 +1526,25 @@ def _type_into_pane(
                 return "refused-busy", "no input box on screen", pane.id
             if shown.working:
                 return "refused-busy", "a turn is running", pane.id
-            if shown.typed:
+            # Keys alone (an Enter to submit what the box holds) may meet text.
+            if shown.typed and body:
                 return "refused-busy", "the input box already holds text", pane.id
         if options.quiet:
             atomic_write_json(_quiet_path(member_id), {
                 "until": now() + options.quiet, "task": task, "message_id": message_id,
                 "set_at": now(),
             })
-        submitted = keys.type_text(pane.id, agent, body, submit=options.submit)
+        submitted = True
+        if body:
+            submitted = keys.type_text(
+                pane.id, agent, body, submit=options.submit and not options.keys
+            )
+        keys.send_keys(pane.id, options.keys)
     except keys.KeysError as exc:
         clear_quiet(member_id)
         return "tmux-error", str(exc)[:300], pane.id
+    if options.keys:
+        return "typed", f"pressed {' '.join(options.keys)} in {pane.session}", pane.id
     if not options.submit:
         return "typed", "left in the input box, not submitted", pane.id
     if not submitted:
@@ -1563,12 +1571,14 @@ def _handle_type(member: dict[str, Any], envelope: dict[str, Any]) -> str:
     try:
         options = parse_message(text).typing or TypeOptions()
     except ProtocolError as exc:
+        options = None
         result, detail, pane_id = "malformed", str(exc)[:300], None
     else:
         result, detail, pane_id = _type_into_pane(
             member, sender_id, body, options, task, message_id
         )
     _log_typed(member_id, {**row, "result": result, "detail": detail, "pane": pane_id,
+                           "keys": list(options.keys) if options else [],
                            "finished_at": now()})
     if sender_id and sender_id != "sys":
         reply = (
@@ -1597,8 +1607,8 @@ def type_into(
     `target` is a member id or a roster name. With `wait`, poll this inbox for
     the target's reply and finish it, so the answer is the command's output.
     """
-    if not text.strip():
-        raise OrchestraError("Nothing to type")
+    if not text.strip() and not options.keys:
+        raise OrchestraError("Nothing to type: give text, --key NAME, or both")
     target_id = target
     if not re.fullmatch(core.MEMBER_ID_RE, target):
         roster = members(member)["members"]

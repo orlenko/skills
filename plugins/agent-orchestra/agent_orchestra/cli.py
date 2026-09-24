@@ -124,6 +124,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Keep the orchestra silent in that session this long, or until it "
                              "reports STATE started (default %(default)s; 0 for none)")
     typing.add_argument("--task", help="Tie the quiet to this task's STATE started")
+    typing.add_argument("--key", action="append", default=[], metavar="NAME",
+                        help="Press this tmux key after the text, instead of Enter; repeatable. "
+                             "Alone, `--key Enter` submits what the input box already holds")
     typing.add_argument("--wait", type=float, default=45, metavar="SECONDS",
                         help="Wait this long for the result (default %(default)s; 0 to not wait)")
 
@@ -460,7 +463,8 @@ def run(args: argparse.Namespace) -> int:
         text = sys.stdin.read() if args.stdin else " ".join(args.text)
         result = member_api.type_into(
             member, args.to, text.rstrip("\n"),
-            options=TypeOptions(submit=not args.no_enter, anytime=args.anytime, quiet=args.quiet),
+            options=TypeOptions(submit=not args.no_enter, anytime=args.anytime, quiet=args.quiet,
+                                keys=tuple(args.key)),
             task=args.task, wait=args.wait,
         )
         _print(result, args.as_json)

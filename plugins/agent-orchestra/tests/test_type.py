@@ -45,6 +45,13 @@ class TypeProtocolTests(unittest.TestCase):
             with self.subTest(to=to), self.assertRaisesRegex(ProtocolError, "exactly one member"):
                 parse_message(f"ACT type\nTO {to}\n\n/qc 1")
 
+    def test_keys_alone_need_no_body(self):
+        envelope = parse_message("ACT type\nTO mb_abcd1234\nTYPE key=Enter\n\n")
+        self.assertEqual(envelope.typing.keys, ("Enter",))
+        options = TypeOptions(keys=("C-c", "Enter"))
+        again = parse_message(f"ACT type\nTO mb_abcd1234\nTYPE {options.header()}\n\nx")
+        self.assertEqual(again.typing.keys, ("C-c", "Enter"))
+
     def test_malformed_type_messages(self):
         cases = {
             "ACT type\nTO mb_abcd1234\n\n": "needs a body",
@@ -52,6 +59,7 @@ class TypeProtocolTests(unittest.TestCase):
             "ACT type\nTO mb_abcd1234\nTYPE quiet=soon\n\nx": "whole seconds",
             "ACT type\nTO mb_abcd1234\nTYPE quiet=999999\n\nx": "quiet must be",
             "ACT tell\nTO all\nTYPE enter\n\nx": "goes on ACT type",
+            "ACT type\nTO mb_abcd1234\nTYPE key=Enter;rm\n\nx": "tmux key name",
         }
         for text, error in cases.items():
             with self.subTest(text=text), self.assertRaisesRegex(ProtocolError, error):
@@ -82,6 +90,30 @@ class ReadPromptTests(unittest.TestCase):
 
     def test_no_prompt_glyph_means_no_input_box(self):
         self.assertFalse(keys.read_prompt("$ vim notes.txt", "claude").shown)
+
+    def test_a_claude_screen_in_a_seat_joined_by_codex(self):
+        # 2026-09-24, pane %97: Trumpet, a Claude session in a Codex-joined
+        # seat. Looking only for Codex's glyph read "no input box", and the dim
+        # text is Claude's own suggestion, not anything typed.
+        line = "\x1b[39m❯\xa0\x1b[2m/qc 3691 3656 3662\x1b[0m"
+        prompt = keys.read_prompt(claude_screen(line), "codex")
+        self.assertTrue(prompt.shown)
+        self.assertEqual(prompt.typed, "")
+        self.assertTrue(prompt.idle)
+
+    def test_a_menu_cursor_is_not_an_input_box(self):
+        # Claude's trust dialog, as drawn on 2026-09-24. Enter here exits.
+        screen = "\n".join([
+            " Accessing workspace:", " /private/tmp/project", " Security guide",
+            " ❯ No, exit", "   Yes, I trust this folder", " Enter to confirm · Esc to cancel"])
+        self.assertFalse(keys.read_prompt(screen, "claude").shown)
+
+    def test_past_prompts_in_the_transcript_are_not_the_box(self):
+        screen = "\n".join(["❯ Reply with exactly: PLAIN-OK", "⏺ PLAIN-OK", "",
+                            "──── Trumpet ─", "❯ ", "─" * 40, "  ⏸ manual mode on"])
+        prompt = keys.read_prompt(screen, "claude")
+        self.assertTrue(prompt.idle)
+        self.assertEqual(prompt.typed, "")
 
     def test_codex_draws_its_own_glyph(self):
         self.assertTrue(keys.read_prompt("output\n› \n  footer", "codex").idle)
@@ -210,6 +242,21 @@ class MonitorCheckTests(unittest.TestCase):
         self.assertIsNotNone(member_module.quiet_until("mb_player0001"))
         member_module.clear_quiet("mb_player0001", "T-qc")
         self.assertIsNone(member_module.quiet_until("mb_player0001"))
+
+    def test_enter_alone_submits_what_the_box_holds(self):
+        keys.prompt.return_value = keys.Prompt(shown=True, typed="/qc 1", working=False)
+        envelope = self.envelope("mb_conduct001")
+        envelope["text"] = "ACT type\nTO mb_player0001\nTYPE key=Enter\n\n"
+        with mock.patch.object(keys, "send_keys") as send_keys:
+            self.assertEqual(member_module._handle_type(self.member, envelope), "typed")
+        self.type_text.assert_not_called()
+        send_keys.assert_called_once_with("%1", ("Enter",))
+
+    def test_text_is_refused_when_the_box_already_holds_text(self):
+        keys.prompt.return_value = keys.Prompt(shown=True, typed="half", working=False)
+        self.assertEqual(member_module._handle_type(self.member, self.envelope("mb_conduct001")),
+                         "refused-busy")
+        self.type_text.assert_not_called()
 
     def test_a_codex_seat_gets_no_queue_wake_while_quiet(self):
         codex = {**self.member, "provider": "codex"}

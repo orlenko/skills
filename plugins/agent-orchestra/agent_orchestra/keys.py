@@ -36,6 +36,9 @@ _OTHER_ESC = re.compile(r"\x1b\][^\x07]*\x07|\x1b[@-Z\\-_]")
 _WORKING = re.compile(r"esc to interrupt|ctrl\+c to interrupt|press esc to stop", re.I)
 # Claude's live spinner: a glyph and one word ending in an ellipsis ("✳ Nucleating…").
 _SPINNER = re.compile(r"^\s*\S\s+[A-Z][\w-]*…")
+# The rule Claude draws above its input box, sometimes with the session name
+# in it ("──── Trumpet ─").
+_RULE = re.compile(r"^[\s─━═╌┄-]+(\S.*\S\s*[─━═]+\s*)?$")
 
 
 class KeysError(Exception):
@@ -120,20 +123,33 @@ def _plain_and_dim(line: str) -> tuple[str, list[bool]]:
     return "".join(text), dim_mask
 
 
-def read_prompt(raw: str, agent: str) -> Prompt:
+def read_prompt(raw: str, agent: str = "") -> Prompt:
     """Whether the input box shows, what is typed in it, and whether a turn runs.
 
     Suggestions and placeholders are drawn dim, so `❯ check messages` can be an
-    empty box; only text without the dim attribute counts as typed.
+    empty box; only text without the dim attribute counts as typed. Either
+    agent's glyph counts: a seat records the provider that joined it, and on
+    2026-09-24 a Claude session held a seat joined by Codex, so reading only
+    Codex's `›` found no input box on a Claude screen. `agent` is kept only to
+    say which glyph to prefer on a line that starts with both.
     """
-    glyph = PROMPT_GLYPHS.get(agent, "❯")
+    glyphs = tuple(dict.fromkeys((PROMPT_GLYPHS.get(agent, "❯"), *PROMPT_GLYPHS.values())))
     parsed = [_plain_and_dim(line) for line in raw.rstrip("\n").split("\n")]
-    prompt_at = None
+    prompt_at = glyph = None
     for index in range(len(parsed) - 1, -1, -1):
-        if parsed[index][0].lstrip(" │┃").startswith(glyph):
+        head = parsed[index][0].lstrip(" │┃")
+        glyph = next((item for item in glyphs if head.startswith(item)), None)
+        # Claude also draws `❯` as a menu cursor ("❯ No, exit" in the trust
+        # dialog) and before every past prompt in the transcript. Only the
+        # line under a rule is the input box, and Enter on a menu picks it.
+        if glyph == PROMPT_GLYPHS["claude"] and not (
+            index > 0 and parsed[index - 1][0].strip() and _RULE.match(parsed[index - 1][0])
+        ):
+            glyph = None
+        if glyph:
             prompt_at = index
             break
-    if prompt_at is None:
+    if prompt_at is None or glyph is None:
         return Prompt(shown=False, typed="", working=False)
     text, dim = parsed[prompt_at]
     start = text.index(glyph) + len(glyph)
@@ -143,13 +159,20 @@ def read_prompt(raw: str, agent: str) -> Prompt:
     tail = "\n".join(line for line in above[-40:] if line.strip())
     footer = "\n".join(line for line, _ in parsed[prompt_at + 1:])
     working = bool(_WORKING.search(tail[-600:] + "\n" + footer)) or any(
-        _SPINNER.match(line) for line in above[-4:]
+        _SPINNER.match(line) for line in above[-6:]
     )
     return Prompt(shown=True, typed=typed, working=working)
 
 
 def prompt(pane_id: str, agent: str) -> Prompt:
     return read_prompt(_call(["tmux", "capture-pane", "-p", "-e", "-t", pane_id]), agent)
+
+
+def send_keys(pane_id: str, names: tuple[str, ...]) -> None:
+    """Press named keys (tmux key names: Enter, Escape, C-c, Up, Tab)."""
+    for name in names:
+        _call(["tmux", "send-keys", "-t", pane_id, name])
+        sleep(0.1)
 
 
 def type_text(pane_id: str, agent: str, text: str, *, submit: bool) -> bool:
