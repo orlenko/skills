@@ -19,6 +19,15 @@ def _provider_default() -> str:
     return os.environ.get("AGENT_ORCHESTRA_PROVIDER", "cli")
 
 
+def _utc_epoch(value: str) -> float:
+    for pattern in ("%Y-%m-%d", "%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(value, pattern).replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            continue
+    raise OrchestraError(f"--before {value!r}: use 2026-09-23 or 2026-09-23T12:00 (UTC)")
+
+
 def _common(parser: argparse.ArgumentParser, *, member: bool = True) -> None:
     parser.add_argument("--provider", default=_provider_default())
     parser.add_argument("--cwd", default=os.getcwd())
@@ -129,6 +138,21 @@ def build_parser() -> argparse.ArgumentParser:
                              "Alone, `--key Enter` submits what the input box already holds")
     typing.add_argument("--wait", type=float, default=45, metavar="SECONDS",
                         help="Wait this long for the result (default %(default)s; 0 to not wait)")
+
+    close_tasks = commands.add_parser(
+        "close-tasks",
+        help="Conductor: cancel open tasks at the hub without mailing their owners",
+    )
+    _common(close_tasks)
+    close_tasks.add_argument("--task", action="append", default=[], metavar="TASK")
+    close_tasks.add_argument("--before", metavar="DATE",
+                             help="Tasks created before this UTC date or time (2026-09-23 or "
+                                  "2026-09-23T12:00)")
+    close_tasks.add_argument("--owner", action="append", default=[], metavar="MEMBER_ID",
+                             help="Cancel only these owners' shares")
+    close_tasks.add_argument("--reason", required=True)
+    close_tasks.add_argument("--dry-run", action="store_true",
+                             help="List what would close and change nothing")
 
     adopt = commands.add_parser(
         "adopt", help="Move a seat to the agent running this command (Claude <-> Codex)"
@@ -500,6 +524,12 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command == "members":
         _print(member_api.members(member), args.as_json)
+        return 0
+    if args.command == "close-tasks":
+        _print(member_api.close_tasks(
+            member, reason=args.reason, tasks=args.task, owners=args.owner,
+            before=_utc_epoch(args.before) if args.before else None, dry_run=args.dry_run,
+        ), args.as_json)
         return 0
     if args.command == "tasks":
         _print(

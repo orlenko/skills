@@ -494,6 +494,78 @@ class HubStore:
             rows = self.db.execute("SELECT * FROM tasks ORDER BY created_at ASC").fetchall()
             return {"tasks": [self._task_view(row) for row in rows]}
 
+    def close_tasks(self, member: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        """Conductor: cancel open tasks without delivering a message to anyone.
+
+        161 stale tasks, most from before 0.2.0, needed closing on 2026-09-24,
+        and one STATE cancelled each would have landed 161 messages in working
+        sessions, one of them mid-APRS. Each close is stored as an ordinary
+        STATE cancelled message, whose body carries the reason, with its
+        deliveries recorded as already handled, so the task view replays it
+        like any other cancel while no inbox ever receives it. It also reaches
+        owners who have left, which a sent cancel cannot.
+        """
+        reason = str(payload.get("reason") or "").strip()
+        if not reason:
+            raise APIError(400, "A bulk close needs a reason")
+        names = [str(item) for item in payload.get("tasks") or []]
+        owners_wanted = {str(item) for item in payload.get("owners") or []}
+        before = payload.get("before")
+        if before is None and not names:
+            raise APIError(400, "Name the tasks or give a created-before cut-off")
+        try:
+            cutoff = None if before is None else float(before)
+        except (TypeError, ValueError) as exc:
+            raise APIError(400, "before must be an epoch time") from exc
+        dry_run = bool(payload.get("dry_run"))
+        with self.changed:
+            self._live(member.get("id"))
+            if member["id"] != self._conductor_id():
+                raise APIError(403, "Only the conductor closes tasks in bulk")
+            rows = self.db.execute("SELECT * FROM tasks ORDER BY created_at ASC").fetchall()
+            known = {row["task"] for row in rows}
+            missing = [name for name in names if name not in known]
+            if missing:
+                raise APIError(400, f"Unknown task(s): {', '.join(missing[:10])}")
+            moment = now()
+            closed: list[dict[str, Any]] = []
+            for row in rows:
+                if names and row["task"] not in names:
+                    continue
+                if cutoff is not None and float(row["created_at"]) >= cutoff:
+                    continue
+                view = self._task_view(row)
+                owners = [
+                    str(owner["id"]) for owner in view["owners"]
+                    if owner.get("state") not in TERMINAL
+                    and (not owners_wanted or owner["id"] in owners_wanted)
+                ]
+                if not owners:
+                    continue
+                closed.append({"task": row["task"], "owners": owners, "was": view["state"]})
+                if dry_run:
+                    continue
+                message_id = new_message_id()
+                body = (
+                    f"ACT tell\nTO {','.join(owners)}\nTASK {row['task']}\nSTATE cancelled\n\n"
+                    f"{reason}\n\nClosed by the conductor's bulk close; never delivered as mail."
+                )
+                self.db.execute(
+                    "INSERT INTO messages (id, sender, act, re, task, need, refs, sent_at, body,"
+                    " body_sha256, lifecycle) VALUES (?, ?, 'tell', NULL, ?, 'none', '[]', ?, ?, ?,"
+                    " 'cancelled')",
+                    (message_id, member["id"], row["task"], moment, body, secret_hash(body)),
+                )
+                self.db.executemany(
+                    "INSERT INTO deliveries (message_id, recipient, state, queued_at, delivered_at,"
+                    " handled_at) VALUES (?, ?, 'handled', ?, ?, ?)",
+                    [(message_id, owner, moment, moment, moment) for owner in owners],
+                )
+            if not dry_run:
+                self.db.commit()
+                self.changed.notify_all()
+            return {"closed": closed, "count": len(closed), "dry_run": dry_run}
+
     def _task_view(self, row: Any) -> dict[str, Any]:
         """One task with each owner's lifecycle replayed from its messages.
 
@@ -1221,6 +1293,10 @@ class OrchestraHandler(BaseHTTPRequestHandler):
                 return
             if self.command == "GET" and parsed.path == "/v1/tasks":
                 self._respond(200, store.tasks())
+                return
+            if self.command == "POST" and parsed.path == "/v1/tasks/close":
+                self._require_member(principal)
+                self._respond(200, store.close_tasks(principal, self._read_body()))
                 return
             if self.command == "POST" and parsed.path == "/v1/invite":
                 self._respond(200, store.invite(principal, self._read_body()))

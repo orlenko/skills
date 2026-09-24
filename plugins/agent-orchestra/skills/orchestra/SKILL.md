@@ -284,6 +284,12 @@ every `assign` once, promptly, on the same `TASK`.
   blocking reason, and do not sit on it.
 - Keep a hold specific to its target. "Do not merge PRs" holds PR merges. It
   does not hold an independently authorized pass.
+- To clear many stale tasks at once, run `close-tasks --before DATE --reason
+  TEXT --json` (or `--task T` per task, `--owner M` to limit the owners). Run
+  it with `--dry-run` first and read the list. It cancels at the hub without
+  mailing anyone, so it is safe while owners are working, and it also closes
+  tasks whose owners have left. Each close is stored as a STATE cancelled
+  message carrying the reason.
 - Close work that will never finish with `STATE cancelled`. Reopen with
   `STATE reopened` only when the work has to run again. A task from before
   0.2.0 reads `unknown` until its owner or `STATE cancelled` settles it.

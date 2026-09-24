@@ -308,6 +308,51 @@ class ResilienceTestCase(unittest.TestCase):
         member_module.send(player, "ACT status\nTO conductor\n\nStill on the parser.")
         self.assertFalse(member_module.status_owed(player)["owed"])
 
+    def _assign(self, conductor, player_id: str, task: str) -> None:
+        member_module.send(conductor, f"ACT assign\nTO {player_id}\nTASK {task}\n\nDone when: x")
+
+    def _task_states(self, conductor) -> dict[str, str]:
+        return {row["task"]: row["state"] for row in member_module.tasks(conductor)["tasks"]}
+
+    def test_the_conductor_closes_old_tasks_without_mailing_anyone(self):
+        conductor, player = self._topology()
+        player_id = str(player["member_id"])
+        self._assign(conductor, player_id, "t_old-one")
+        self._assign(conductor, player_id, "t_old-two")
+        time.sleep(0.05)
+        cutoff = now()
+        time.sleep(0.05)
+        self._assign(conductor, player_id, "t_new")
+        queued = len(api_request(player, "GET", "/v1/messages/pending")["messages"])
+
+        preview = member_module.close_tasks(conductor, reason="stale", before=cutoff, dry_run=True)
+        self.assertEqual(sorted(row["task"] for row in preview["closed"]), ["t_old-one", "t_old-two"])
+        self.assertNotEqual(self._task_states(conductor)["t_old-one"], "cancelled")
+
+        result = member_module.close_tasks(conductor, reason="stale pre-0.2.0 cleanup", before=cutoff)
+        self.assertEqual(result["count"], 2)
+        states = self._task_states(conductor)
+        self.assertEqual((states["t_old-one"], states["t_old-two"]), ("cancelled", "cancelled"))
+        self.assertNotEqual(states["t_new"], "cancelled")
+        # Silent: the owner's queue holds the three assigns and nothing more.
+        self.assertEqual(len(api_request(player, "GET", "/v1/messages/pending")["messages"]), queued)
+        # Closing again finds nothing open.
+        self.assertEqual(member_module.close_tasks(conductor, reason="again", before=cutoff)["count"], 0)
+
+    def test_only_the_conductor_closes_in_bulk(self):
+        conductor, player = self._topology()
+        self._assign(conductor, str(player["member_id"]), "t_mine")
+        with self.assertRaisesRegex(OrchestraError, "Only the conductor"):
+            member_module.close_tasks(player, reason="no", tasks=["t_mine"])
+
+    def test_a_task_whose_owner_left_can_still_be_closed(self):
+        conductor, player = self._topology()
+        self._assign(conductor, str(player["member_id"]), "t_orphan")
+        member_module.leave(player)
+        result = member_module.close_tasks(conductor, reason="owner left", tasks=["t_orphan"])
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(self._task_states(conductor)["t_orphan"], "cancelled")
+
     def _typing_topology(self, prompt: keys.Prompt, submitted: bool = True):
         conductor, player = self._topology()
         player_id = str(player["member_id"])

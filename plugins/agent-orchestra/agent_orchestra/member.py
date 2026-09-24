@@ -1713,6 +1713,23 @@ def _handle_type(member: dict[str, Any], envelope: dict[str, Any]) -> str:
     return result
 
 
+def close_tasks(
+    member: dict[str, Any],
+    *,
+    reason: str,
+    tasks: list[str] | None = None,
+    before: float | None = None,
+    owners: list[str] | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Conductor: cancel open tasks at the hub without mailing their owners."""
+    ensure_hub_if_local(member)
+    return api_request(member, "POST", "/v1/tasks/close", {
+        "reason": reason, "tasks": tasks or [], "before": before, "owners": owners or [],
+        "dry_run": dry_run,
+    }, timeout=60)
+
+
 def type_into(
     member: dict[str, Any],
     target: str,
