@@ -13,10 +13,12 @@ machine that is frequently off. `hub start` never makes the caller a member.
 ```
 plugins/agent-orchestra/
   .claude-plugin/plugin.json        version 0.1.0, hooks -> ./hooks/claude-hooks.json
-  .codex-plugin/plugin.json         version 0.1.0+codex.<stamp>
-  bin/agent-orchestra               launcher, same shape as plugins/agent-pair/bin/agent-pair
+  .codex-plugin/plugin.json         version 0.1.0+codex.<stamp>, hooks -> ./hooks/codex-hooks.json
+  bin/agent-orchestra               sh launcher: first python3 on PATH that is not a version-manager shim
+  bin/agent-orchestra.py            Python entry, same shape as plugins/agent-pair/bin/agent-pair.py
   hooks/claude-hooks.json           Claude: SessionStart, UserPromptSubmit, Stop (hook-stop + hook-wait asyncRewake)
-  hooks/hooks.json                  Codex: SessionStart, UserPromptSubmit, Stop
+  hooks/codex-hooks.json            Codex: SessionStart, UserPromptSubmit, Stop. Not hooks/hooks.json:
+                                    Claude loads that path by default, beside its manifest's file
   agent_orchestra/__init__.py       __version__ = "0.1.0"
   agent_orchestra/__main__.py       from .cli import main
   agent_orchestra/core.py           paths, ids, invites, pinned TLS request
@@ -789,7 +791,7 @@ code 1 with `agent-orchestra: <message>` on `OrchestraError`.
 
 ## Hooks manifests
 
-Copy `plugins/agent-pair/hooks/claude-hooks.json` and `hooks/hooks.json`
+Copy `plugins/agent-pair/hooks/claude-hooks.json` and `hooks/codex-hooks.json`
 with the binary renamed to `bin/agent-orchestra`; keep `asyncRewake: true`
 and the 86400 timeout on `hook-wait`.
 
@@ -800,7 +802,7 @@ Pair's shape with name `agent-orchestra`, display name `Agent Orchestra`,
 description "Durable many-agent messaging with a hub, a conductor, and
 players across machines.", version `0.1.0`, keywords `agents, orchestra,
 coordination, codex, claude`, skills `./skills/`, and for Claude `hooks:
-./hooks/claude-hooks.json`. Add the marketplace entry in
+./hooks/claude-hooks.json` (for Codex `hooks: ./hooks/codex-hooks.json`). Add the marketplace entry in
 `.claude-plugin/marketplace.json` at the same version. `openai.yaml` copies
 Agent Pair's with the orchestra names.
 

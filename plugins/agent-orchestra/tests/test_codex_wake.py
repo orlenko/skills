@@ -144,6 +144,77 @@ class CodexWakeTests(unittest.TestCase):
         self.wake()
         self.assertEqual(self.calls(), [])
 
+    def test_a_thread_codex_cannot_find_backs_off_doubling(self):
+        # 2026-09-24: a Claude session id bound as a Codex thread failed at
+        # thread/queue/list, before any attempt was recorded, and the monitor
+        # started `codex app-server` twice a pass for two weeks.
+        self.mail()
+        with mock.patch.object(codex_wake, "_QueueClient") as factory:
+            client = factory.return_value.__enter__.return_value
+            client.notices.side_effect = RuntimeError("no rollout found for thread id")
+            self.wake()
+            self.now.return_value = 1059
+            self.wake()
+            self.assertEqual(factory.call_count, 1)
+            self.now.return_value = 1060
+            self.wake()
+            self.assertEqual(factory.call_count, 2)
+            self.now.return_value = 1179
+            self.wake()
+            self.assertEqual(factory.call_count, 2)
+            self.now.return_value = 1180
+            self.wake()
+            self.assertEqual(factory.call_count, 3)
+        self.assertEqual(codex_wake.capability(self.mailbox)["state"], "error")
+
+    def test_backoff_caps_and_clears_on_success(self):
+        self.mail()
+        receipt_path = core.runtime_dir() / f"{self.mailbox}.codex-wake.json"
+        receipt = json.loads(receipt_path.read_text()) if receipt_path.exists() else {}
+        receipt.update(target=codex_wake.target(self.mailbox), failures=20, failed_at=1000,
+                       last_error="old")
+        receipt_path.write_text(json.dumps(receipt))
+        self.now.return_value = 1000 + codex_wake.FAILURE_BACKOFF_MAX_SECONDS - 1
+        self.wake()
+        self.assertEqual(self.calls(), [])
+        self.now.return_value = 1000 + codex_wake.FAILURE_BACKOFF_MAX_SECONDS
+        self.wake()
+        self.assertEqual(len(self.calls()), 1)
+        receipt = json.loads(receipt_path.read_text())
+        self.assertNotIn("failures", receipt)
+        self.assertIsNone(receipt["last_error"])
+
+    def test_rebinding_ends_the_backoff(self):
+        self.mail()
+        with mock.patch.object(codex_wake, "_QueueClient") as factory:
+            factory.return_value.__enter__.return_value.notices.side_effect = RuntimeError("gone")
+            self.wake()
+        codex_wake.register(self.mailbox, session_id=str(uuid.uuid4()), prefix="AGENT_ORCHESTRA")
+        self.wake()
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_observed_skips_the_queue_while_backing_off(self):
+        self.mail()
+        self.wake()
+        with mock.patch.object(codex_wake, "_QueueClient") as factory:
+            factory.return_value.__enter__.return_value.notices.side_effect = RuntimeError("gone")
+            codex_wake.observed(self.mailbox, ["m_aaaaaaaa"], label="Agent Orchestra")
+            self.assertEqual(factory.call_count, 1)
+            codex_wake.observed(self.mailbox, ["m_aaaaaaaa"], label="Agent Orchestra")
+            self.assertEqual(factory.call_count, 1)
+
+    def test_observed_from_a_hook_does_not_wait_for_the_lock(self):
+        self.mail()
+        self.wake()
+        binding = codex_wake.target(self.mailbox)
+        with codex_wake._session_lock(binding) as held, \
+                mock.patch.object(codex_wake.time, "sleep") as sleep, \
+                mock.patch.object(codex_wake, "_QueueClient") as factory:
+            self.assertTrue(held)
+            codex_wake.observed(self.mailbox, ["m_aaaaaaaa"], label="Agent Orchestra", wait=False)
+        sleep.assert_not_called()
+        factory.assert_not_called()
+
     def test_no_mail_means_no_queue(self):
         self.wake()
         self.assertEqual(self.calls(), [])

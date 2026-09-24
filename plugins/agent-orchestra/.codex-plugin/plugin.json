@@ -1,6 +1,6 @@
 {
   "name": "agent-orchestra",
-  "version": "0.2.7+codex.20260918233000",
+  "version": "0.2.8+codex.20260924181802",
   "description": "Durable many-agent messaging with a hub, a conductor, and players across machines.",
   "author": {
     "name": "Vlad Orlenko",
@@ -17,6 +17,7 @@
     "claude"
   ],
   "skills": "./skills/",
+  "hooks": "./hooks/codex-hooks.json",
   "interface": {
     "displayName": "Agent Orchestra",
     "shortDescription": "Coordinate many coding agents through a durable hub.",

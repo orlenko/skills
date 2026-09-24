@@ -43,6 +43,7 @@ MONITOR_LIMIT = 50
 _MONITOR_STALE_SECONDS = 60
 _HANDLED_RETRY_SECONDS = 60
 _HANDLED_RETRIES_PER_PASS = 10
+_SENT_CLOCK_SKEW_SECONDS = 300
 # A local finish the hub answers with one of these will never be recorded there.
 _UNSYNCABLE_STATUSES = frozenset({400, 403, 404, 410})
 # A send the hub answers with one of these is wrong forever; retrying is noise.
@@ -1161,9 +1162,15 @@ def status_owed(member: dict[str, Any]) -> dict[str, Any]:
         "reconnected_at": float(row.get("sent_at") or row.get("received_at") or 0) or None,
     }
     for path in bucket_dir(member_id, "sent").glob("*.json"):
+        # A send after absent_since was written after it too. Every prompt's
+        # hook reaches here, and parsing all 1,354 records a player had sent
+        # took 3.7 s; a stat skips the old ones. absent_since is the hub's
+        # clock, so the cut-off leaves room for skew.
         try:
+            if path.stat().st_mtime < absent_since - _SENT_CLOCK_SKEW_SECONDS:
+                continue
             sent = read_json(path)
-        except OrchestraError:
+        except (OSError, OrchestraError):
             continue
         if str(sent.get("state")) == "rejected":
             continue

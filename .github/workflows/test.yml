@@ -27,11 +27,11 @@ jobs:
           python -m json.tool .claude-plugin/marketplace.json >/dev/null
           python -m json.tool plugins/agent-pair/.codex-plugin/plugin.json >/dev/null
           python -m json.tool plugins/agent-pair/.claude-plugin/plugin.json >/dev/null
-          python -m json.tool plugins/agent-pair/hooks/hooks.json >/dev/null
+          python -m json.tool plugins/agent-pair/hooks/codex-hooks.json >/dev/null
           python -m json.tool plugins/agent-pair/hooks/claude-hooks.json >/dev/null
           python -m json.tool plugins/agent-orchestra/.codex-plugin/plugin.json >/dev/null
           python -m json.tool plugins/agent-orchestra/.claude-plugin/plugin.json >/dev/null
-          python -m json.tool plugins/agent-orchestra/hooks/hooks.json >/dev/null
+          python -m json.tool plugins/agent-orchestra/hooks/codex-hooks.json >/dev/null
           python -m json.tool plugins/agent-orchestra/hooks/claude-hooks.json >/dev/null
           python -m json.tool plugins/agent-nudge/.codex-plugin/plugin.json >/dev/null
           python -m json.tool plugins/agent-nudge/.claude-plugin/plugin.json >/dev/null

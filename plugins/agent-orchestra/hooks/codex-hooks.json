@@ -1,0 +1,40 @@
+{
+  "description": "Bind Codex threads for native queue wake-up and surface agent-orchestra inbox context.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agent-orchestra hook-context --provider codex",
+            "timeout": 15,
+            "additionalContextLimit": 500
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agent-orchestra hook-context --provider codex",
+            "timeout": 15,
+            "additionalContextLimit": 500
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agent-orchestra hook-stop --provider codex",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

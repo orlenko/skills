@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 from typing import Any
 
@@ -266,6 +267,40 @@ class ResilienceTestCase(unittest.TestCase):
         self.assertTrue(real["owed"])
         self.assertEqual(real["conductor_id"], conductor_id)
         self.assertEqual(real["absent_since"], 1.0)
+
+        member_module.send(player, "ACT status\nTO conductor\n\nStill on the parser.")
+        self.assertFalse(member_module.status_owed(player)["owed"])
+
+    def test_status_owed_does_not_parse_sends_older_than_the_absence(self):
+        # Every prompt's hook asks this. A player with 1,354 sent records
+        # parsed all of them each time: 3.7 s against a 5 s hook timeout.
+        conductor, player = self._topology()
+        conductor_id = str(conductor["member_id"])
+        player_id = str(player["member_id"])
+        absent_since = now() - 3600
+        self._write_event(
+            player_id,
+            f"presence {conductor_id} Conductor connected absent_since={absent_since}",
+            sent_at=now(),
+        )
+        sent = bucket_dir(player_id, "sent")
+        old = absent_since - 2 * member_module._SENT_CLOCK_SKEW_SECONDS
+        for index in range(20):
+            path = sent / f"m_old{index:013d}.json"
+            atomic_write_json(path, {"id": path.stem, "recipients": [conductor_id],
+                                     "state": "delivered", "sent_at": old})
+            os.utime(path, (old, old))
+
+        parsed: list[str] = []
+        original = member_module.read_json
+
+        def counting(path):
+            parsed.append(str(path))
+            return original(path)
+
+        with mock.patch.object(member_module, "read_json", counting):
+            self.assertTrue(member_module.status_owed(player)["owed"])
+        self.assertFalse([path for path in parsed if "/sent/" in path])
 
         member_module.send(player, "ACT status\nTO conductor\n\nStill on the parser.")
         self.assertFalse(member_module.status_owed(player)["owed"])

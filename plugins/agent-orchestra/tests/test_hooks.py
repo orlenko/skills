@@ -1031,7 +1031,7 @@ class LifecycleHookTest(HooksTestCase):
 
     def test_wake_capability_matches_the_installed_hooks(self) -> None:
         plugin = Path(hooks.__file__).resolve().parent.parent / "hooks"
-        codex_hooks = (plugin / "hooks.json").read_text(encoding="utf-8")
+        codex_hooks = (plugin / "codex-hooks.json").read_text(encoding="utf-8")
         claude_hooks = (plugin / "claude-hooks.json").read_text(encoding="utf-8")
         self.assertNotIn("hook-wait", codex_hooks)
         self.assertIn("hook-wait", claude_hooks)

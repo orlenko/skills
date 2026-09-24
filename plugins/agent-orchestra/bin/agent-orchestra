@@ -1,12 +1,25 @@
-#!/usr/bin/env python3
-from pathlib import Path
-import sys
-
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from agent_orchestra.cli import main
-
-
-if __name__ == "__main__":
-    main()
+#!/bin/sh
+# Hooks start this on every prompt and every stop, against a hook timeout.
+# A version-manager shim (pyenv, asdf) first on PATH spent 0.4-3 s choosing an
+# interpreter on a loaded machine, so take the first real python3 instead.
+# macOS /usr/bin/python3 is 3.9, older than this code supports, and without the
+# developer tools it opens an install dialog. AGENT_ORCHESTRA_PYTHON overrides the choice.
+case $0 in */*) bin=${0%/*} ;; *) bin=. ;; esac
+python=${AGENT_ORCHESTRA_PYTHON:-}
+if [ -z "$python" ]; then
+  set -f
+  IFS=:
+  for dir in $PATH; do
+    case $dir in '' | */shims | */shims/) continue ;; esac
+    if [ "$dir" = /usr/bin ] && [ -d /System/Library/CoreServices ]; then
+      continue
+    fi
+    if [ -x "$dir/python3" ] && [ ! -d "$dir/python3" ]; then
+      python=$dir/python3
+      break
+    fi
+  done
+  unset IFS
+  set +f
+fi
+exec "${python:-python3}" "$bin/agent-orchestra.py" "$@"

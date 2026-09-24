@@ -70,6 +70,34 @@ def capability(mailbox_id: str) -> dict[str, Any]:
 
 
 WAKE_INTERVAL_SECONDS = 60
+FAILURE_BACKOFF_MAX_SECONDS = 1800
+
+
+def _backing_off(receipt: dict[str, Any]) -> bool:
+    """True while the retry delay after a failed queue call is still running.
+
+    A thread Codex cannot find fails the same way every time. A failure used to
+    record neither an attempt nor a notice, so every monitor pass started
+    `codex app-server` again: two processes every 26 s from 2026-09-08 to 09-24,
+    for a Claude session id bound as a Codex thread. The delay doubles per
+    failure up to half an hour; binding another thread resets it (`_receipt`).
+    """
+    failures = int(receipt.get("failures") or 0)
+    if failures <= 0:
+        return False
+    delay = min(WAKE_INTERVAL_SECONDS * 2 ** (failures - 1), FAILURE_BACKOFF_MAX_SECONDS)
+    return time.time() < float(receipt.get("failed_at") or 0) + delay
+
+
+def _record_failure(receipt: dict[str, Any], exc: BaseException) -> None:
+    receipt["last_error"] = str(exc)[:500]
+    receipt["failures"] = int(receipt.get("failures") or 0) + 1
+    receipt["failed_at"] = time.time()
+
+
+def _clear_failure(receipt: dict[str, Any]) -> None:
+    receipt.pop("failures", None)
+    receipt.pop("failed_at", None)
 
 
 def _session_path(binding: dict[str, Any]) -> Path:
@@ -233,12 +261,17 @@ def _needs_cleanup(receipt: dict[str, Any]) -> bool:
                 (receipt.get("queued_at") and not receipt.get("queue_checked")))
 
 
-def observed(mailbox_id: str, message_ids: list[str], *, label: str) -> None:
-    """Retire wake notices BEFORE an active turn claims/finishes their mail."""
+def observed(mailbox_id: str, message_ids: list[str], *, label: str, wait: bool = True) -> None:
+    """Retire wake notices BEFORE an active turn claims/finishes their mail.
+
+    A hook passes wait=False: waiting 3 s for the lock on top of a 3 s queue
+    call measured 5.4 s, past the hook timeout. A skipped cleanup is retried by
+    the monitor's next wake pass.
+    """
     binding = target(mailbox_id)
     if not binding.get("executable"):
         return
-    with _session_lock(binding, wait=True) as acquired:
+    with _session_lock(binding, wait=wait) as acquired:
         if not acquired:
             return
         path, receipt = _receipt(mailbox_id, binding)
@@ -248,6 +281,9 @@ def observed(mailbox_id: str, message_ids: list[str], *, label: str) -> None:
         if message_ids:
             session["observed_at"] = time.time()
             atomic_write_json(session_path, session)
+        if _backing_off(receipt):
+            atomic_write_json(path, receipt)
+            return
         try:
             if _needs_cleanup(receipt):
                 with _QueueClient(binding) as client:
@@ -259,7 +295,9 @@ def observed(mailbox_id: str, message_ids: list[str], *, label: str) -> None:
                 session.pop("queued_mailbox", None)
                 atomic_write_json(session_path, session)
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
-            receipt["last_error"] = str(exc)[:500]
+            _record_failure(receipt, exc)
+        else:
+            _clear_failure(receipt)
         atomic_write_json(path, receipt)
 
 
@@ -273,6 +311,8 @@ def wake(mailbox_id: str, *, buckets: list[Path], executable: Path,
         if not acquired or target(mailbox_id) != binding:
             return
         path, receipt = _receipt(mailbox_id, binding)
+        if _backing_off(receipt):
+            return
         ids = _ids(buckets)
         notified = set(receipt.get("notified", [])) & ids
         session_path = _session_path(binding)
@@ -350,5 +390,7 @@ def wake(mailbox_id: str, *, buckets: list[Path], executable: Path,
                     receipt.update(queued_id=None, queue_checked=True,
                                    notified=sorted(notified))
         except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
-            receipt["last_error"] = str(exc)[:500]
+            _record_failure(receipt, exc)
+        else:
+            _clear_failure(receipt)
         atomic_write_json(path, receipt)

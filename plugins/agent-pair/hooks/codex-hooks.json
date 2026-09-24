@@ -1,13 +1,13 @@
 {
-  "description": "Bind Codex threads for native queue wake-up and surface agent-orchestra inbox context.",
+  "description": "Bind Codex threads for native queue wake-up and surface agent-pair inbox context.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agent-orchestra hook-context --provider codex",
-            "timeout": 5,
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agent-pair hook-context --provider codex",
+            "timeout": 15,
             "additionalContextLimit": 500
           }
         ]
@@ -18,8 +18,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agent-orchestra hook-context --provider codex",
-            "timeout": 5,
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agent-pair hook-context --provider codex",
+            "timeout": 15,
             "additionalContextLimit": 500
           }
         ]
@@ -30,8 +30,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agent-orchestra hook-stop --provider codex",
-            "timeout": 5
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agent-pair hook-stop --provider codex",
+            "timeout": 15
           }
         ]
       }

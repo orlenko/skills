@@ -1,6 +1,6 @@
 {
   "name": "agent-pair",
-  "version": "0.4.3+codex.20260916215609",
+  "version": "0.4.4+codex.20260924181802",
   "description": "Direct, durable two-agent messaging across one machine or a reachable LAN.",
   "author": {
     "name": "Vlad Orlenko",
@@ -17,6 +17,7 @@
     "claude"
   ],
   "skills": "./skills/",
+  "hooks": "./hooks/codex-hooks.json",
   "interface": {
     "displayName": "Agent Pair",
     "shortDescription": "Connect two coding agents directly.",

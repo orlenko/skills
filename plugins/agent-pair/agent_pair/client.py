@@ -1056,7 +1056,7 @@ def _hook_message_nudge(
     rows = local_messages(endpoint, claim=False)
     if provider == "codex":
         codex_wake.observed(str(endpoint["endpoint_id"]), [str(row["id"]) for row in rows],
-                            label="Agent Pair")
+                            label="Agent Pair", wait=False)
     if not rows:
         return None
 
