@@ -1,6 +1,6 @@
 {
   "name": "agent-nudge",
-  "version": "0.1.9+codex.20260924185426",
+  "version": "0.1.10+codex.20260924200902",
   "description": "A daemon that finds idle Claude and Codex sessions in tmux and asks them, once, whether their goal is done.",
   "author": {
     "name": "Vlad Orlenko",

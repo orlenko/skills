@@ -239,6 +239,8 @@ class Nudger:
             return self._note(pane, rec, at, "skip", "no input box: dialog open or agent exited")
         if scr.working_marker:
             return None
+        if scr.background_work:
+            return self._note(pane, rec, at, "skip", "a background agent or workflow is still running")
         seats = getattr(self, "seats", {})
         seat = next((seats[p] for p in pane.extra.get("agent_pids", [pane.agent_pid]) if p in seats), None)
         if seat and seat.quiet_until > at:

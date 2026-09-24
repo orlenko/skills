@@ -25,7 +25,20 @@ def claude_screen(body: str, typed: str = "", ghost: str = "", footer: str = "  
 IDLE_BODY = "⏺ Opened the PR and pushed.\n\n✻ Brewed for 1m 33s · done 11:30 AM"
 
 
+WAITING_BODY = "⏺ Agent launched.\n✻ Waiting for 1 background agent to finish"
+
+
 class ScreenTest(unittest.TestCase):
+    def test_a_turn_waiting_on_a_background_agent_is_busy(self):
+        # Claude 2.1.282 on 2026-09-24, while a background agent ran.
+        scr = screen.parse(claude_screen(WAITING_BODY), "claude")
+        self.assertTrue(scr.background_work)
+        self.assertFalse(scr.working_marker)
+
+    def test_the_wait_line_stops_counting_once_the_work_reports_back(self):
+        body = WAITING_BODY + "\n⏺ Agent \"Sleep\" finished · 2m 5s\n⏺ Second agent completed: DONE."
+        self.assertFalse(screen.parse(claude_screen(body), "claude").background_work)
+
     def test_ghost_suggestion_is_not_typed(self):
         scr = screen.parse(claude_screen(IDLE_BODY, ghost="check messages"), "claude")
         self.assertTrue(scr.has_prompt)
@@ -444,6 +457,16 @@ class NudgerTest(unittest.TestCase):
         [row] = self.advance(11)
         self.assertIn("no new mail", row["reason"])
         self.assertEqual(self.sent, [])
+
+    def test_no_nudge_while_a_background_agent_runs(self):
+        # An APRS pass runs as a background Workflow for 20 to 40 minutes
+        # behind an empty, still prompt.
+        daemon.set_mode("live")
+        self.screen = claude_screen(WAITING_BODY)
+        self.nudger.tick()
+        rows = self.advance(45)
+        self.assertEqual(self.sent, [])
+        self.assertIn("background agent or workflow", rows[-1]["reason"])
 
     def test_player_with_nothing_open_is_left_alone(self):
         daemon.set_mode("live")

@@ -5,6 +5,12 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+if len(sys.argv) > 1 and sys.argv[1] in ("hook-context", "hook-stop", "hook-wait"):
+    from agent_orchestra import fasthook
+
+    if fasthook.nothing_to_do(sys.argv):
+        sys.exit(0)
+
 from agent_orchestra.cli import main
 
 

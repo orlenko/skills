@@ -735,11 +735,34 @@ class HookContextTest(HooksTestCase):
             "additionalContext"
         ]
         self.assertIn("status owed to the conductor: yes", context)
-        self.assertIn(
-            f"presence {CONDUCTOR['id']} maestro connected absent_since={self.clock - 100}",
-            context,
-        )
+        stamp = time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(self.clock - 100))
+        self.assertIn(f"presence {CONDUCTOR['id']} maestro connected absent_since={stamp}", context)
         self.assertNotIn("stale since=", context)
+
+    def test_the_same_context_is_not_repeated_on_every_prompt(self) -> None:
+        member_id = str(self.make_member()["member_id"])
+        self.add_message(member_id, "m_" + "a" * 16)
+        prompt = self.payload(event="UserPromptSubmit")
+        self.assertTrue(hooks.hook_context(self.provider, prompt))
+        self.assertEqual(hooks.hook_context(self.provider, prompt), {})
+        # A new session start always hears it.
+        self.assertTrue(hooks.hook_context(self.provider, self.payload(event="SessionStart")))
+        # New mail changes it.
+        self.add_message(member_id, "m_" + "b" * 16, act="ask", need="sha")
+        self.assertTrue(hooks.hook_context(self.provider, prompt))
+        # And half an hour brings it back.
+        self.assertEqual(hooks.hook_context(self.provider, prompt), {})
+        with mock.patch.object(hooks, "now", return_value=time.time() + hooks._CONTEXT_REPEAT_SECONDS + 1):
+            self.assertTrue(hooks.hook_context(self.provider, prompt))
+
+    def test_an_old_presence_line_stays_out_when_nothing_is_owed(self) -> None:
+        member_id = str(self.make_member()["member_id"])
+        self.add_message(member_id, "m_" + "a" * 16)
+        self.add_event(member_id, f"presence {CONDUCTOR['id']} maestro stale since=1", offset=-7200)
+        context = hooks.hook_context(self.provider, self.payload())["hookSpecificOutput"][
+            "additionalContext"
+        ]
+        self.assertNotIn("presence", context)
 
 
 class DisabledTest(HooksTestCase):

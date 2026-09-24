@@ -286,7 +286,7 @@ def claim_ownership(member: dict[str, Any]) -> dict[str, Any]:
     if current is not None and _pid_alive(current):
         return member
     pid = core.agent_session_pid()
-    if pid is None or pid == current:
+    if pid is None or pid == current or _other_agent(member, pid):
         return member
     member_id = str(member["member_id"])
     lock_path = runtime_dir() / f"{member_id}.owner.lock"
@@ -311,6 +311,54 @@ def claim_ownership(member: dict[str, Any]) -> dict[str, Any]:
         return member
     finally:
         release_pid_lock(lock_path)
+
+
+def _other_agent(member: dict[str, Any], pid: int) -> bool:
+    """True when `pid` is a different agent than the one this seat was joined by.
+
+    A Claude session that ran a command with `--provider codex` took Codex
+    seats twice by 2026-09-24. Its Claude hooks then never saw the seat, the
+    Codex wake queued notices for a thread that did not exist, and `type` read
+    the wrong screen. Moving a seat to another agent is `adopt`, on purpose.
+    """
+    provider = str(member.get("provider") or "")
+    if provider not in ("claude", "codex"):
+        return False
+    kind = core.agent_kind(pid)
+    return kind is not None and kind != provider
+
+
+def adopt(member_id: str, *, provider: str, cwd: str) -> dict[str, Any]:
+    """Move a seat to the agent running this command, in this directory.
+
+    For a session that replaced the agent a seat was joined by: a Claude session
+    taking over a Codex seat, or the reverse. The hub's roster keeps the provider
+    the seat joined with; locally the seat, its hooks, and its wake follow the
+    new agent.
+    """
+    provider = normalize_provider(provider)
+    lock_path = runtime_dir() / f"{member_id}.owner.lock"
+    if not acquire_pid_lock(lock_path):
+        raise OrchestraError("Another command is changing this seat; try again")
+    try:
+        member = load_member(member_id)
+        if member.get("closed_at"):
+            raise OrchestraError(f"Membership is closed ({member.get('closed_reason') or 'closed'})")
+        before = {"provider": member.get("provider"), "cwd": member.get("cwd")}
+        member["provider"] = provider
+        member["cwd"] = str(Path(cwd).expanduser().resolve())
+        member["instance_key"] = instance_key(provider, cwd)
+        member["owner_pid"] = None
+        member["adopted"] = {**before, "at": now()}
+        save_member(member)
+    finally:
+        release_pid_lock(lock_path)
+    if provider != "codex":
+        for suffix in (".codex-session.json", ".codex-wake.json"):
+            (runtime_dir() / f"{member_id}{suffix}").unlink(missing_ok=True)
+    member = claim_ownership(member)
+    return {"member_id": member_id, "provider": provider, "cwd": member["cwd"],
+            "owner_pid": member.get("owner_pid"), "was": before}
 
 
 def select_member(*, provider: str, cwd: str, member_id: str | None = None) -> dict[str, Any]:
@@ -839,8 +887,48 @@ def _sync_handled(member: dict[str, Any], done: dict[str, Any]) -> dict[str, Any
         done["sync_state"] = "synced"
         done["sync_error"] = None
         done["synced_at"] = now()
-    atomic_write_json(bucket_dir(member_id, "done") / f"{message_id}.json", done)
+    _write_done(member_id, done)
     return done
+
+
+# A done record the hub has not recorded yet carries a `<id>.unsynced` marker
+# beside it, so the monitor lists the markers instead of parsing every record.
+# It used to parse all of done/ on every pass: 2,482 files for the conductor,
+# 0.3-0.5 s of CPU and seconds of wall time per pass on a loaded machine.
+_UNSYNCED = ".unsynced"
+_MAIL_RETENTION_SECONDS = 14 * 86400
+_PRUNE_EVERY_SECONDS = 3600
+_PRUNE_BATCH = 2000
+
+
+def _write_done(member_id: str, done: dict[str, Any]) -> None:
+    folder = bucket_dir(member_id, "done")
+    marker = folder / f"{done['id']}{_UNSYNCED}"
+    pending = _needs_sync(done)
+    if pending:
+        # Marker first: a crash between the two writes leaves one extra read.
+        marker.touch()
+    atomic_write_json(folder / f"{done['id']}.json", done)
+    if not pending:
+        marker.unlink(missing_ok=True)
+
+
+def _index_path(member_id: str) -> Path:
+    return runtime_dir() / f"{member_id}.unsynced-index.json"
+
+
+def _ensure_unsynced_index(member_id: str, folder: Path) -> None:
+    """Once per member, mark the unsynced records an older version left unmarked."""
+    stamp = _index_path(member_id)
+    if stamp.exists():
+        return
+    for path in folder.glob("*.json"):
+        try:
+            if _needs_sync(read_json(path)):
+                (folder / f"{path.stem}{_UNSYNCED}").touch()
+        except OrchestraError:
+            continue
+    atomic_write_json(stamp, {"built_at": now()})
 
 
 def _finish_result(done: dict[str, Any], prefix: str | None = None) -> dict[str, Any]:
@@ -868,15 +956,47 @@ def _sync_note(sync_state: str, error: str | None) -> str | None:
 
 
 def unsynced_handled(member_id: str) -> list[dict[str, Any]]:
+    folder = bucket_dir(member_id, "done")
+    _ensure_unsynced_index(member_id, folder)
     rows: list[dict[str, Any]] = []
-    for path in sorted(bucket_dir(member_id, "done").glob("*.json")):
+    for marker in sorted(folder.glob(f"*{_UNSYNCED}")):
         try:
-            done = read_json(path)
+            done = read_json(folder / f"{marker.name[:-len(_UNSYNCED)]}.json")
         except OrchestraError:
+            marker.unlink(missing_ok=True)
             continue
         if _needs_sync(done):
             rows.append(done)
+        else:
+            marker.unlink(missing_ok=True)
     return rows
+
+
+def prune_mail(member_id: str, *, older_than: float = _MAIL_RETENTION_SECONDS) -> int:
+    """Delete handled and sent mail older than the retention window.
+
+    Nothing pruned them before, so the conductor held 2,482 done and 1,354 sent
+    records after three weeks. A done record still owed to the hub keeps its
+    marker and is never deleted; neither is anything still in the inbox.
+    """
+    folder = bucket_dir(member_id, "done")
+    if not _index_path(member_id).exists():
+        return 0
+    cutoff = now() - older_than
+    removed = 0
+    for bucket, keep in ((folder, lambda path: (folder / f"{path.stem}{_UNSYNCED}").exists()),
+                         (bucket_dir(member_id, "sent"), lambda path: False)):
+        for path in bucket.glob("*.json"):
+            if removed >= _PRUNE_BATCH:
+                return removed
+            try:
+                if path.stat().st_mtime >= cutoff or keep(path):
+                    continue
+                path.unlink()
+                removed += 1
+            except OSError:
+                continue
+    return removed
 
 
 def flush_handled(member: dict[str, Any]) -> list[dict[str, Any]]:
@@ -926,7 +1046,7 @@ def finish_messages(member: dict[str, Any], message_ids: list[str]) -> list[dict
             "sync_attempts": 0,
             "last_sync_attempt_at": 0,
         }
-        atomic_write_json(done_path, done)
+        _write_done(member_id, done)
         source.unlink(missing_ok=True)
         results.append(_finish_result(_sync_handled(member, done)))
     if any(item.get("sync") == "synced" for item in results):
@@ -1663,12 +1783,16 @@ def _monitor_loop(member_id: str) -> None:
     started_at = now()
     atomic_write_json(state_path, _monitor_record(os.getpid(), started_at))
     delay = 0.25
+    next_prune = 0.0
     while not member.get("closed_at"):
         try:
             _wake_codex(member)
             ensure_hub_if_local(member)
             flush_handled(member)
             flush_outbox(member)
+            if time.monotonic() >= next_prune:
+                next_prune = time.monotonic() + _PRUNE_EVERY_SECONDS
+                prune_mail(member_id)
             result = api_request(
                 member,
                 "GET",
@@ -1739,7 +1863,20 @@ def _monitor_loop(member_id: str) -> None:
             return
 
 
+_LOGGED_ERROR: dict[str, float] = {}
+_ERROR_LOG_REPEAT_SECONDS = 600
+
+
 def _record_monitor_error(path: Path, started_at: float, error: Exception) -> None:
+    # monitor.log is this process's stderr. It stayed empty for every monitor:
+    # an error only overwrote last_error, so no history said what failed or
+    # since when. A repeat of the same error is logged every ten minutes.
+    text = f"{type(error).__name__}: {str(error)[:500]}"
+    if now() - _LOGGED_ERROR.get(text, 0.0) >= _ERROR_LOG_REPEAT_SECONDS:
+        _LOGGED_ERROR.clear()
+        _LOGGED_ERROR[text] = now()
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        print(f"{stamp} monitor error: {text}", file=sys.stderr, flush=True)
     atomic_write_json(
         path,
         _monitor_record(

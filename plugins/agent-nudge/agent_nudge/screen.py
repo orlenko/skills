@@ -26,6 +26,16 @@ _WORKING = re.compile(r"esc to interrupt|ctrl\+c to interrupt|press esc to stop"
 # Claude's live spinner: a glyph and one word ending in an ellipsis ("✳ Nucleating…").
 # The finished line reads "✻ Cogitated for 13s · done 5:42 PM", with no ellipsis.
 _SPINNER = re.compile(r"^\s*\S\s+[A-Z][\w-]*…")
+# A turn that ended by handing work to a background agent or Workflow reads
+# "✻ Waiting for 1 background agent to finish" until the work reports back
+# (Claude 2.1.282). The prompt below it is empty and still: an APRS pass
+# looks exactly like a stuck session for 20 to 40 minutes. Workflow wording
+# is not yet observed; "workflow" is matched on the same pattern.
+_BACKGROUND_WORK = re.compile(
+    r"\bwaiting for \d+ (?:background )?(?:agents?|tasks?|workflows?)\b"
+    r"|\b\d+ (?:background agents?|workflows?) (?:running|still running)\b",
+    re.I,
+)
 
 
 # A reply that stops at an obstacle: "blocked on", "waiting for X", "until #73
@@ -97,6 +107,7 @@ class Screen:
     footer: str
     watchers: int
     working_marker: bool
+    background_work: bool = False
 
 
 def _plain_and_dim(line: str) -> tuple[str, list[bool]]:
@@ -158,4 +169,9 @@ def parse(raw: str, agent: str, tail_lines: int = 40) -> Screen:
         watchers=max(_count_watchers(footer), _count_watchers(" ".join(body_lines[-3:]))),
         working_marker=bool(_WORKING.search(tail[-600:] + "\n" + footer))
         or any(_SPINNER.match(line) for line in body_lines[-4:]),
+        # Only the last lines: once the work reports back, its output lands
+        # below and the old "Waiting for" line scrolls up.
+        background_work=any(_BACKGROUND_WORK.search(line)
+                            for line in [l for l in body_lines if l.strip()][-2:])
+        or bool(_BACKGROUND_WORK.search(footer)),
     )

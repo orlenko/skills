@@ -1,7 +1,7 @@
 {
   "name": "undrudge-apply",
   "displayName": "Undrudge Workflows",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Triage the global Undrudge backlog or clear one repository-local recommendation.",
   "author": {
     "name": "Vlad Orlenko",

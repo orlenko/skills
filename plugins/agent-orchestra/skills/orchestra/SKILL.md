@@ -61,6 +61,11 @@ a machine may belong to several, one session each.
   `--anytime` skips the idle check, `--task T` and `--quiet SECONDS` (default
   1800, 0 for none) control the quiet below, `--stdin` reads multi-line text,
   which goes in as one paste.
+- `adopt`: a seat stays with the agent that joined it (Claude or Codex), and
+  another agent's commands cannot take it over. When a session of the other
+  agent really replaces the one that joined, run `adopt --member-id M
+  --provider claude|codex --json` from that session. It moves the seat to this
+  agent and directory, so its hooks, wake, and `type` follow the new agent.
 - `inbox`: run `inbox --claim --json`, process each claimed message, then run
   `finish MESSAGE_ID... --json` only after each message is genuinely handled.
 - `wait`: run `wait --timeout 55 --claim --json`; process and finish as above.

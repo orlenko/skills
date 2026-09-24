@@ -130,6 +130,11 @@ def state_root() -> Path:
     return (base / "agent-orchestra").resolve()
 
 
+# Directories this process has already made private. Every path helper calls
+# ensure_private_dir, and a parked hook-wait chmod-ed about 35 times a second.
+_PRIVATE_DIRS: set[str] = set()
+
+
 def ensure_private_dir(path: Path) -> Path:
     try:
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -139,8 +144,12 @@ def ensure_private_dir(path: Path) -> Path:
         # so a sandbox that lets a hook write the state directory but not stat
         # it turned an existing directory into a traceback in every turn.
         pass
+    key = str(path)
+    if key in _PRIVATE_DIRS:
+        return path
     try:
         path.chmod(0o700)
+        _PRIVATE_DIRS.add(key)
     except OSError:
         pass
     return path
@@ -546,6 +555,21 @@ def _under_deadline(pid: int) -> bool:
         if _command_name(_ps_field("args=", current) or "") in AGENT_DEADLINE_COMMANDS:
             return True
     return False
+
+
+def agent_kind(pid: int) -> str | None:
+    """`claude` or `codex` for an agent process, from its first two arguments.
+
+    npm's Codex runs as `node .../bin/codex.js`, so the script name counts.
+    """
+    args = _ps_field("args=", pid) or ""
+    for word in args.split()[:2]:
+        name = Path(word).name.lower()
+        for suffix in (".js", ".cjs", ".mjs"):
+            name = name.removesuffix(suffix)
+        if name in ("claude", "codex"):
+            return name
+    return None
 
 
 def agent_session_pid(pid: int | None = None) -> int | None:

@@ -1630,7 +1630,16 @@ def ensure_hub(orchestra_id: str) -> int:
     if pid:
         return pid
     hub_pid = _spawn_module(["serve", "--orchestra-id", orchestra_id], _hub_log(orchestra_id))
-    _wait_for_ready(directory, hub_pid)
+    try:
+        _wait_for_ready(directory, hub_pid)
+    except OrchestraError:
+        # Every monitor on this machine restarts a missing hub on its next
+        # pass, so another process can win the port first. On 2026-09-24 this
+        # reported "did not start" twice while a hub was up and answering.
+        winner = _running_pid(orchestra_id, config)
+        if winner:
+            return winner
+        raise
     return hub_pid
 
 

@@ -130,6 +130,11 @@ def build_parser() -> argparse.ArgumentParser:
     typing.add_argument("--wait", type=float, default=45, metavar="SECONDS",
                         help="Wait this long for the result (default %(default)s; 0 to not wait)")
 
+    adopt = commands.add_parser(
+        "adopt", help="Move a seat to the agent running this command (Claude <-> Codex)"
+    )
+    _common(adopt)
+
     inbox = commands.add_parser("inbox", help="List or claim locally delivered messages")
     _common(inbox)
     inbox.add_argument("--claim", action="store_true")
@@ -434,6 +439,12 @@ def run(args: argparse.Namespace) -> int:
             start_background_monitor=not args.no_monitor,
         )
         _print(result, args.as_json)
+        return 0
+
+    if args.command == "adopt":
+        if not args.member_id:
+            raise OrchestraError("adopt needs --member-id: the seat to move to this session")
+        _print(member_api.adopt(args.member_id, provider=args.provider, cwd=args.cwd), args.as_json)
         return 0
 
     member = member_api.select_member(
