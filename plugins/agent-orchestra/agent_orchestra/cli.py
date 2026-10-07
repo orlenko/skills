@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="command",
         required=True,
         metavar="{hub,join,invite,send,inbox,wait,finish,status,members,tasks,"
-        "events,message,conductor,kick,leave,close,monitor}",
+        "events,message,conductor,kick,leave,close,monitor,podium}",
     )
 
     hub = commands.add_parser("hub", help="Run and administer the hub on the always-on machine")
@@ -241,6 +241,18 @@ def build_parser() -> argparse.ArgumentParser:
     monitor = commands.add_parser("monitor", help="Ensure the inbox monitor is running")
     _common(monitor)
     monitor.add_argument("--restart", action="store_true", help="Reload the monitor after an upgrade")
+
+    podium = commands.add_parser("podium", help="Publish and serve the conductor's work-queue page")
+    podium_commands = podium.add_subparsers(dest="podium_command", required=True)
+    for name, text in (("check", "Validate a work plan without publishing it"),
+                       ("publish", "Validate a work plan and write work-status.json atomically")):
+        sub = podium_commands.add_parser(name, help=text)
+        sub.add_argument("plan", type=Path, help="The conductor's work-plan JSON")
+        sub.add_argument("--dir", type=Path, help="Data directory (default: state dir /podium)")
+        sub.add_argument("--json", action="store_true", dest="as_json")
+    podium_serve = podium_commands.add_parser("serve", help="Serve the page on 127.0.0.1 in the foreground")
+    podium_serve.add_argument("--dir", type=Path, help="Data directory (default: state dir /podium)")
+    podium_serve.add_argument("--port", type=int, default=None)
 
     internal_serve = commands.add_parser("serve")
     internal_serve.add_argument("--orchestra-id", required=True)
@@ -466,6 +478,20 @@ def run(args: argparse.Namespace) -> int:
             return 0
     if args.command == "hub":
         return _run_hub(args)
+    if args.command == "podium":
+        from . import podium
+
+        directory = (args.dir or podium.default_dir()).expanduser()
+        if args.podium_command == "serve":
+            podium.serve(directory, podium.DEFAULT_PORT if args.port is None else args.port)
+            return 0
+        result = podium.publish(args.plan, directory, check=args.podium_command == "check")
+        if args.as_json:
+            _print(result, True)
+        else:
+            verb = "Validated" if result["published"] is None else f"Published to {result['published']}:"
+            print(f"{verb} {result['items']} explicit work items across {result['members']} members")
+        return 0
 
     from . import member as member_api
 

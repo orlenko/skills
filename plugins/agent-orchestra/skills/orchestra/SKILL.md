@@ -1,6 +1,6 @@
 ---
 name: orchestra
-description: "Connect this coding-agent session to an Agent Orchestra: a durable hub on an always-on machine, one conductor, and any number of players and their children, on one machine or across a LAN or Tailscale. Use when the user wants to start a hub, accept an or1 invite, mint an invite, send or check orchestra mail, see members or tasks, or leave."
+description: "Connect this coding-agent session to an Agent Orchestra: a durable hub on an always-on machine, one conductor, and any number of players and their children, on one machine or across a LAN or Tailscale. Use when the user wants to start a hub, accept an or1 invite, mint an invite, send or check orchestra mail, see members or tasks, publish or serve the Podium work-queue page, or leave."
 ---
 
 # Agent Orchestra
@@ -85,6 +85,13 @@ a machine may belong to several, one session each.
   `--json` and summarize.
 - `leave`: run `leave --json`. `close`: run `close --json`, and only when the
   user asked to end the orchestra for every member.
+- `podium` (for the conductor): the Podium is a loopback page showing one ordered
+  work queue per member. Run `podium check PLAN --json` to validate a work
+  plan, `podium publish PLAN --json` to validate it and write
+  `work-status.json`, and `podium serve` (foreground, `127.0.0.1` only, port
+  4300) to show it. All three take `--dir DIR`. The default is `podium/` in the
+  agent-orchestra state directory. A rejected plan leaves the published
+  report untouched. See "Podium work plans" in the conductor playbook.
 
 Report these CLI states exactly as they come back:
 
@@ -310,6 +317,21 @@ every `assign` once, promptly, on the same `TASK`.
   event in `events --json`, and broadcast `ask` with `NEED status` only to the
   members whose tasks show no message since that time. Do not poll members who
   already reported.
+- Podium work plans. The plan is yours to write; nothing infers it. Each
+  member needs `id`, `name`, `role`, `task`, `reported_at` (epoch seconds of
+  the report the entry rests on, not of publishing), and a `queue` list, empty
+  if it has none. Each queue item needs `item`, `activity` (implementation,
+  QC, review, deployment), `status` (`in_progress`, `queued`, `blocked`,
+  `waiting`, `completed`, `accepted`, `review`), `stage`, and `eta`. Write
+  `Unknown` for an ETA the owner did not give. A `blocked` item names its
+  `blocker`; others may carry `next`. `url` and member `links` must be http
+  or https. Put what is actually running in `deployments` (`name`, `summary`,
+  optional `code`, `manifest`, `verified_at`, `next`), kept apart from PR
+  progress. Standing decisions go in `notes` (`title`, `body`). Never fill a
+  queue from PR links, presence, or heartbeats: a connected session is not
+  evidence that work is running. Never put transcripts or secrets in the plan;
+  the page shows it verbatim. A `state.json` from your own collector, placed
+  in the same directory, adds its sections to the page.
 
 ## Player playbook
 

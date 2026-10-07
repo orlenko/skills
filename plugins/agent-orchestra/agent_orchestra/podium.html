@@ -1,0 +1,419 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The Podium</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E%E2%9A%99%EF%B8%8F%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme:light dark;
+    --bg:oklch(97% .006 255); --panel:oklch(99% .003 255);
+    --line:oklch(84% .012 255); --ink:oklch(24% .025 255);
+    --panel-2:oklch(94% .008 255); --dim:oklch(43% .025 255); --faint:oklch(46% .025 255);
+    --ok:oklch(40% .10 150); --warn:oklch(43% .09 75);
+    --bad:oklch(45% .17 25); --idle:oklch(43% .15 255); --hot:oklch(43% .14 300);
+  }
+  @media (prefers-color-scheme:dark) {
+    :root {
+      --bg:oklch(18% .009 255); --panel:oklch(22% .012 255);
+      --line:oklch(34% .018 255); --ink:oklch(93% .008 255);
+      --panel-2:oklch(20% .010 255); --dim:oklch(75% .015 255); --faint:oklch(72% .015 255);
+      --ok:oklch(76% .14 150); --warn:oklch(80% .12 80);
+      --bad:oklch(76% .14 25); --idle:oklch(78% .11 255); --hot:oklch(80% .10 300);
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5
+         -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif; padding:0 0 48px; }
+  header { display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+           padding:14px 20px; border-bottom:1px solid var(--line);
+           position:sticky; top:0; background:var(--bg); z-index:5; }
+  h1 { margin:0; font-size:17px; letter-spacing:.14em; text-transform:uppercase; }
+  h1 small { color:var(--faint); letter-spacing:0; text-transform:none;
+             font-weight:400; font-size:11px; margin-left:10px; }
+  .live { display:inline-flex; align-items:center; gap:7px; color:var(--dim); font-size:11px; }
+  .age { margin-left:auto; color:var(--dim); font-size:11px; }
+  main { padding:18px 20px; display:grid; gap:18px;
+         grid-template-columns:repeat(auto-fit,minmax(min(340px,100%),1fr)); }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+            padding:12px 14px; min-width:0; }
+  section.wide { grid-column:1/-1; }
+  .overview-section { padding:16px; background:var(--panel-2); }
+  .overview { display:grid; grid-template-columns:repeat(5,minmax(110px,1fr)); gap:10px; }
+  .metric { border:1px solid var(--line); border-radius:6px; padding:11px 12px;
+            background:var(--panel); min-width:0; }
+  .metric strong { display:block; font-size:22px; line-height:1.1; margin-bottom:4px; }
+  .metric span { color:var(--dim); font-size:10px; letter-spacing:.08em; text-transform:uppercase; }
+  .snapshot-note { margin:12px 0 0; color:var(--dim); max-width:100ch; }
+  h2 { margin:0 0 10px; font-size:11px; letter-spacing:.12em; text-transform:uppercase;
+       color:var(--dim); display:flex; gap:8px; align-items:center; }
+  h2 .n { background:var(--line); color:var(--ink); border-radius:9px;
+          padding:0 7px; font-size:10px; letter-spacing:0; }
+  .row { display:flex; gap:10px; align-items:baseline; padding:5px 0;
+         border-top:1px solid var(--line); min-width:0; }
+  .row:first-of-type { border-top:0; }
+  .dot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; align-self:center; }
+  .dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)}
+  .dot.bad{background:var(--bad)} .dot.idle{background:var(--idle)}
+  .dot.hot{background:var(--hot)}
+  .seat { font-weight:600; min-width:84px; }
+  .meta { color:var(--faint); font-size:11px; margin-left:auto; white-space:nowrap; }
+  .grow { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+          white-space:nowrap; }
+  a { color:inherit; text-decoration:none; }
+  a:hover .num { text-decoration:underline; }
+  .num { color:var(--idle); font-weight:600; }
+  .tag { font-size:10px; padding:1px 6px; border-radius:9px; border:1px solid var(--line);
+         color:var(--dim); white-space:nowrap; }
+  .tag.ok{color:var(--ok);border-color:var(--ok)} .tag.bad{color:var(--bad);border-color:var(--bad)}
+  .tag.warn{color:var(--warn);border-color:var(--warn)} .tag.hot{color:var(--hot);border-color:var(--hot)}
+  .ready { background:var(--panel-2); }
+  table { width:100%; border-collapse:collapse; }
+  th { text-align:left; font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+       color:var(--faint); font-weight:500; padding:0 8px 6px 0; }
+  td { padding:4px 8px 4px 0; border-top:1px solid var(--line); white-space:nowrap; }
+  td.t { white-space:normal; width:100%; }
+  .scroll { overflow-x:auto; }
+  .dimmed { color:var(--faint); }
+  .empty { color:var(--faint); padding:6px 0; font-style:italic; }
+  .err { color:var(--bad); padding:6px 0; }
+  .work-intro { margin:0 0 14px; color:var(--dim); max-width:75ch; }
+  .work-row { display:grid; grid-template-columns:140px minmax(0,1fr);
+              gap:20px; padding:16px 0; border-top:1px solid var(--line); }
+  .work-person { display:flex; align-items:flex-start; flex-direction:column; gap:5px; }
+  .work-person strong { font-size:15px; }
+  .work-person small, .work-time { color:var(--dim); font-size:11px; }
+  .work-row h3 { margin:0 0 5px; font-size:13px; }
+  .work-row p { margin:0 0 7px; max-width:75ch; }
+  .work-row .next { color:var(--dim); }
+  .work-links { display:flex; gap:12px; flex-wrap:wrap; }
+  .work-links a { color:var(--idle); text-decoration:underline; }
+  .work-row .tag { white-space:normal; }
+  .work-queue { table-layout:fixed; min-width:620px; margin:10px 0; }
+  .work-queue th { font-size:11px; padding:8px 12px 8px 0; }
+  .work-queue th:nth-child(1) { width:25%; }
+  .work-queue th:nth-child(2) { width:13%; }
+  .work-queue th:nth-child(3) { width:22%; }
+  .work-queue th:nth-child(4) { width:30%; }
+  .work-queue th:nth-child(5) { width:10%; }
+  .work-queue td { white-space:normal; vertical-align:top; padding:10px 12px 10px 0; overflow-wrap:anywhere; }
+  .work-queue a { color:var(--idle); text-decoration:underline; }
+  .queue-stage { display:block; margin-top:4px; color:var(--dim); }
+  .work-evidence { margin-top:8px; font-size:12px; color:var(--dim); }
+  .work-evidence p { margin-top:8px; }
+  .work-evidence code { overflow-wrap:anywhere; }
+  .deployment { padding:12px 0; border-top:1px solid var(--line); }
+  .deployment h3 { margin:0 0 6px; font-size:16px; }
+  .deployment p { margin:4px 0; max-width:75ch; }
+  .work-row.is-holding { opacity:.78; }
+  .work-notes { border-top:1px solid var(--line); margin-top:5px; padding-top:12px; }
+  .work-notes ul { margin:8px 0 0; padding-left:20px; color:var(--dim); }
+  .work-notes li { padding:3px 0; max-width:100ch; }
+  summary { cursor:pointer; color:var(--dim); }
+  a:focus-visible, summary:focus-visible, .scroll:focus-visible { outline:2px solid var(--idle); outline-offset:3px; }
+  @media (max-width:760px) {
+    .overview { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .work-row { grid-template-columns:minmax(0,1fr); gap:10px; }
+    .work-person { flex-direction:row; align-items:center; flex-wrap:wrap; }
+  }
+  /* A five-column queue cannot fit a phone. Each item becomes a labelled block. */
+  @media (max-width:640px) {
+    main { padding:12px; gap:12px; }
+    header { padding:10px 12px; }
+    .age { margin-left:0; flex-basis:100%; }
+    .work-queue, .work-queue tbody, .work-queue tr, .work-queue td { display:block; width:auto; min-width:0; }
+    .work-queue thead { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+    .work-queue tr { border-top:1px solid var(--line); padding:8px 0; }
+    .work-queue td { border:0; padding:2px 0; }
+    .work-queue td:first-child { font-weight:600; }
+    .work-queue td[data-label]:not(:first-child)::before { content:attr(data-label) ": "; color:var(--faint); }
+    .work-queue .queue-stage { display:inline; margin:0 0 0 6px; }
+  }
+</style>
+<header>
+  <h1>The Podium<small>conductor’s view of the Agent Orchestra</small></h1>
+  <span class="live"><span class="dot" id="live-dot"></span><span id="live-label">loading</span></span>
+  <span class="age" id="age">loading…</span>
+</header>
+<main id="app"></main>
+<script>
+const $ = (h) => { const d=document.createElement('div'); d.innerHTML=h; return d.firstElementChild; };
+const esc = (s) => String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function dur(s) {
+  if (s == null) return '–';
+  s = Math.round(s);
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.round(s/60) + 'm';
+  if (s < 86400) return (s/3600).toFixed(1) + 'h';
+  return (s/86400).toFixed(1) + 'd';
+}
+
+function overview(st, report) {
+  const s = document.createElement('section');
+  s.className = 'wide overview-section';
+  if (!st) {
+    // No collector feed: count only what the conductor published.
+    const items = (report?.members || []).flatMap(m => m.queue || []);
+    const n = (k) => items.filter(q => q.status === k).length;
+    s.innerHTML = `<h2>Current snapshot</h2>
+      <div class="overview">
+        <div class="metric"><strong>${(report?.members || []).length}</strong><span>members</span></div>
+        <div class="metric"><strong>${items.length}</strong><span>work items</span></div>
+        <div class="metric"><strong>${n('in_progress')}</strong><span>in progress</span></div>
+        <div class="metric"><strong>${n('waiting')}</strong><span>waiting</span></div>
+        <div class="metric"><strong>${n('blocked')}</strong><span>stuck</span></div>
+      </div><p class="snapshot-note">${esc(report?.summary || 'No work report published yet.')}</p>`;
+    return s;
+  }
+  const prs = st.github?.prs || [];
+  const seats = st.orchestra?.seats || [];
+  const active = st.tasks?.open || [];
+  const needs = prs.filter(p => p.stale_clearance || p.ci.state==='fail' || p.mergeable==='CONFLICTING');
+  const connected = seats.filter(m => m.presence==='connected').length;
+  const nonDraft = prs.filter(p => !p.draft).length;
+  const readyCount = prs.filter(p => p.ready).length;
+  const note = report?.summary || `${active.length} recent assignment${active.length===1?'':'s'} in the Orchestra ledger.`;
+  s.innerHTML = `<h2>Current snapshot</h2>
+    <div class="overview">
+      <div class="metric"><strong>${connected}/${seats.length}</strong><span>connected</span></div>
+      <div class="metric"><strong>${active.length}</strong><span>active tasks</span></div>
+      <div class="metric"><strong>${prs.length}</strong><span>open PRs</span></div>
+      <div class="metric"><strong>${nonDraft}</strong><span>non-draft</span></div>
+      <div class="metric"><strong>${readyCount || needs.length}</strong><span>${readyCount?'merge ready':'need a look'}</span></div>
+    </div><p class="snapshot-note">${esc(note)}</p>`;
+  return s;
+}
+
+function work(w, o) {
+  const s = document.createElement('section');
+  s.className = 'wide';
+  s.id = 'work-status';
+  s.innerHTML = '<h2>Work queues</h2>';
+  if (!w || w.error || !Array.isArray(w.members)) {
+    s.append($(`<p class="err">Work report unavailable: ${esc(w?.error || 'no report')}</p>`));
+    return s;
+  }
+  s.append($(`<p class="work-intro">${esc(w.summary)}</p>`));
+  s.append($('<p class="work-time">Ordered within each player. ETAs are owner estimates; Unknown means no reliable estimate. Transport connection does not prove work is running.</p>'));
+  // What is actually running, kept apart from source and PR progress.
+  // `heap` is the single-deployment block of the first Podium.
+  for (const d of w.deployments || (w.heap ? [w.heap] : [])) {
+    const facts = [d.code && `Code <code>${esc(d.code)}</code>`, d.manifest && `manifest <code>${esc(d.manifest)}</code>`,
+                   d.verified_at && `verified ${esc(d.verified_at)}`].filter(Boolean).join(' · ');
+    s.append($(`<div class="deployment"><h3>${esc(d.name || 'Deployment')}</h3><p>${esc(d.summary)}</p>
+      ${facts ? `<p class="work-time">${facts}</p>` : ''}${d.next ? `<p>${esc(d.next)}</p>` : ''}</div>`));
+  }
+  const states = {
+    working:['Working','hot'], completed:['Pass complete','ok'],
+    patch_ready:['Patch ready','ok'],
+    waiting:['Waiting','warn'], blocked:['Blocked','bad'],
+    accepted:['Accepted','warn'],
+    awaiting_update:['Update requested','warn'], unblock_sent:['Unblock sent','warn'],
+    available:['Available',''], holding:['Holding','']
+  };
+  for (const m of w.members) {
+    const [label, tone] = states[m.status] || ['Unconfirmed','warn'];
+    const peer = (o?.seats || []).find(p => p.id === m.id);
+    const age = m.reported_at ? Math.max(0, Date.now()/1000 - m.reported_at) : null;
+    const newer = !peer?.is_conductor && peer?.last_report_at != null && m.reported_at &&
+      peer.last_report_at > m.reported_at;
+    const links = (m.links || []).filter(l => {
+      try { return ['https:', 'http:'].includes(new URL(l.url).protocol); }
+      catch { return false; }
+    }).map(l => `<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.label)}</a>`).join('');
+    const queueStates = {in_progress:['In progress','hot'], queued:['Queued',''],
+      blocked:['Stuck','bad'], waiting:['Waiting','warn'], completed:['Complete','ok'],
+      accepted:['Accepted','warn'], review:['Needs review','warn']};
+    const rows = (m.queue || []).map(q => {
+      const [state, color] = queueStates[q.status] || ['Unconfirmed','warn'];
+      let url = null;
+      try { const u = new URL(q.url); if (['https:','http:'].includes(u.protocol)) url = u.href; } catch {}
+      const title = url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(q.item)}</a>` : esc(q.item);
+      return `<tr><td data-label="Work item">${title}</td><td data-label="Activity">${esc(q.activity)}</td>
+        <td data-label="Status"><span class="tag ${color}">${state}</span><span class="queue-stage">${esc(q.stage)}</span></td>
+        <td data-label="${q.blocker ? 'Blocker' : 'Next'}">${esc(q.blocker || q.next || 'No blocker reported')}</td>
+        <td data-label="ETA">${esc(q.eta || 'Unknown')}</td></tr>`;
+    }).join('');
+    const queue = rows ? `<div class="scroll" tabindex="0" role="region" aria-label="${esc(m.name)} queue"><table class="work-queue" aria-label="${esc(m.name)} work queue">
+      <thead><tr><th scope="col">Work item</th><th scope="col">Activity</th><th scope="col">Status / stage</th><th scope="col">Blocker / next action</th><th scope="col">ETA</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : '<p class="empty">No structured queue published. See the last report below.</p>';
+    s.append($(`<article class="work-row ${m.status==='holding'?'is-holding':''}" aria-label="${esc(m.name)} work status">
+      <div class="work-person"><strong>${esc(m.name)}</strong><small>${esc(m.role)}</small>
+        <span class="tag ${tone}">${esc(label)}</span></div>
+      <div><h3>${esc(m.task)}</h3>${queue}
+        <div class="work-time" title="${m.reported_at ? esc(new Date(m.reported_at*1000).toLocaleString()) : ''}">Report ${dur(age)} ago${age > 7200 ? ' · needs confirmation' : ''}</div>
+        ${newer ? '<div class="work-time">New message received since this summary. Queue may need updating.</div>' : ''}
+        <details class="work-evidence" data-detail="${esc(m.id)}"><summary>Technical receipts and last report</summary>
+          <p>${esc(m.result)}</p><p><strong>Next:</strong> ${esc(m.next)}</p>
+          ${links ? `<p>Context references, not assignments:</p><div class="work-links">${links}</div>` : ''}
+        </details></div>
+    </article>`));
+  }
+  if (w.notes?.length) {
+    s.append($(`<details class="work-notes" data-detail="history"><summary>History and standing decisions</summary>
+      <ul>${w.notes.map(n => `<li><strong>${esc(n.title)}:</strong> ${esc(n.body)}</li>`).join('')}</ul></details>`));
+  }
+  return s;
+}
+
+function seats(o) {
+  const s = document.createElement('section');
+  s.innerHTML = `<h2>Connections <span class="n">${o.seats.length}</span></h2>`;
+  if (o.error) { s.append($(`<div class="err">${esc(o.error)}</div>`)); return s; }
+  for (const m of o.seats) {
+    s.append($(`<div class="row">
+      <span class="dot ${m.health==='ok'?'ok':m.health==='down'?'bad':'warn'}"></span>
+      <span class="seat">${esc(m.name)}</span>
+      <span class="grow" style="color:var(--faint)">${esc(m.why || m.hub_name)}</span>
+      <span class="meta" title="last message that reached the conductor's inbox — not liveness">${m.spoke_age!=null?'msg→me '+dur(m.spoke_age):'seen '+dur(m.last_seen_age)}</span></div>`));
+  }
+  const ib = Object.entries(o.inbox||{}).filter(([,v])=>v>0);
+  s.append($(`<div class="row" style="margin-top:6px">
+    <span class="dot ${ib.length?'hot':'ok'}"></span><span class="seat">inbox</span>
+    <span class="grow" style="color:var(--faint)">${ib.length?ib.map(([k,v])=>k+'×'+v).join('  '):'empty'}</span></div>`));
+  return s;
+}
+
+function tasks(t) {
+  const s = document.createElement('section');
+  s.innerHTML = `<h2>Recent task ledger <span class="n">${t.open.length}</span></h2>
+    <p class="work-time">Unfinished assignments touched in the last ${t.window_hours||24}h. ${t.ignored_older||0} older ledger entries are hidden.</p>`;
+  if (t.error) { s.append($(`<div class="err">${esc(t.error)}</div>`)); return s; }
+  if (!t.open.length) { s.append($(`<div class="empty">nothing open</div>`)); return s; }
+  for (const x of t.open.slice(0,12)) {
+    const cold = x.age_s > 7200;
+    s.append($(`<div class="row">
+      <span class="dot ${cold?'warn':'idle'}"></span>
+      <span class="grow" title="${esc(x.task)}">${esc(x.task.replace(/^t_/,''))}</span>
+      <span class="tag">${esc(x.holders.join(', '))}</span>
+      <span class="meta">${esc(x.last_act)} ${dur(x.age_s)}</span></div>`));
+  }
+  return s;
+}
+
+function ready(g) {
+  const list = (g.prs||[]).filter(p=>p.ready);
+  const s = document.createElement('section');
+  s.innerHTML = `<h2>Ready for you <span class="n">${list.length}</span></h2>`;
+  if (!list.length) { s.append($(`<div class="empty">nothing cleared and green</div>`)); return s; }
+  for (const p of list) {
+    s.append($(`<a class="row ready" href="${esc(p.url)}" target="_blank">
+      <span class="dot ok"></span><span class="num">#${p.number}</span>
+      <span class="grow" title="${esc(p.title)}">${esc(p.title)}</span>
+      ${p.draft?'<span class="tag">draft</span>':''}
+      <span class="meta">${esc(p.head)}</span></a>`));
+  }
+  return s;
+}
+
+function attention(st) {
+  const g = st.github, out = [];
+  for (const p of g.prs||[]) {
+    if (p.stale_clearance) out.push([p,'bad','clearance is stale — head moved past it']);
+    else if (p.ci.state==='fail') out.push([p,'bad',`CI ${p.ci.fail} failing`]);
+    else if (p.mergeable==='CONFLICTING') out.push([p,'warn','conflicting']);
+  }
+  for (const m of st.orchestra.seats||[]) {
+    if (m.health!=='ok') out.push([null,m.health==='down'?'bad':'warn',
+      `${m.name} ${m.health} — ${m.why || 'quiet '+dur(m.last_seen_age)}`]);
+  }
+  const s = document.createElement('section');
+  s.innerHTML = `<h2>Needs a look <span class="n">${out.length}</span></h2>`;
+  if (!out.length) { s.append($(`<div class="empty">all clear</div>`)); return s; }
+  for (const [p,lvl,why] of out.slice(0,14)) {
+    s.append($(p
+      ? `<a class="row" href="${esc(p.url)}" target="_blank"><span class="dot ${lvl}"></span>
+         <span class="num">#${p.number}</span>
+         <span class="grow" title="${esc(p.title)}">${esc(p.title)}</span>
+         <span class="tag ${lvl}">${esc(why)}</span></a>`
+      : `<div class="row"><span class="dot ${lvl}"></span>
+         <span class="grow">${esc(why)}</span></div>`));
+  }
+  return s;
+}
+
+function board(g) {
+  const s = document.createElement('section');
+  s.className = 'wide';
+  s.innerHTML = `<h2>Open PRs <span class="n">${(g.prs||[]).length}</span></h2>`;
+  if (g.error) { s.append($(`<div class="err">${esc(g.error)}</div>`)); return s; }
+
+  const rows = (g.prs||[]).slice(0,40).map(p => {
+    const ci = {pass:'ok',fail:'bad',pending:'warn',none:''}[p.ci.state]||'';
+    const mg = p.mergeable==='MERGEABLE'?'ok':p.mergeable==='CONFLICTING'?'bad':'warn';
+    const ap = {approved:'ok',changes:'bad',reviewed:'warn',
+                none:'',unchecked:'',unknown:'warn'}[p.aprs.state]||'';
+    const state = p.ready ? '<span class="tag ok">ready</span>'
+                : p.stale_clearance ? '<span class="tag bad">stale</span>'
+                : p.draft ? '<span class="tag">draft</span>' : '';
+    return `<tr>
+      <td class="dimmed">${esc(p.repo_short || '')}</td>
+      <td><a href="${esc(p.url)}" target="_blank" class="num">#${p.number}</a></td>
+      <td class="t">${esc(p.title)}</td>
+      <td><span class="tag ${ci}">${esc(p.ci.state)}${p.ci.total?' '+p.ci.pass+'/'+p.ci.total:''}</span></td>
+      <td><span class="tag ${mg}">${esc((p.mergeable||'?').toLowerCase())}</span></td>
+      <td><span class="tag ${ap}">${esc(p.aprs.state)}</span></td>
+      <td class="dimmed">${p.aprs.majors??'–'}</td>
+      <td>${state}</td>
+      <td class="dimmed">${dur(p.updated_age_s)}</td></tr>`;
+  }).join('');
+
+  // One string, parsed in table context — a <tr> assigned into a <div> is dropped.
+  const wrap = document.createElement('div');
+  wrap.className = 'scroll';
+  wrap.tabIndex = 0;
+  wrap.setAttribute('role', 'region');
+  wrap.setAttribute('aria-label', 'Open PRs');
+  wrap.innerHTML = `<table>
+    <thead><tr><th>repo</th><th>PR</th><th>title</th><th>ci</th><th>merge</th>
+      <th>aprs</th><th>maj</th><th>state</th><th>moved</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+  s.append(wrap);
+  return s;
+}
+
+const getJSON = (name) => fetch(name + '?t=' + Date.now()).then(r => {
+  if (r.status === 404) return null;
+  if (!r.ok) throw Error('HTTP ' + r.status);
+  return r.json();
+});
+
+async function tick() {
+  // state.json comes from an optional collector; without it the page shows
+  // the published work report alone.
+  const [st, report] = await Promise.all([
+    getJSON('state.json').catch(e => ({error: e.message})),
+    getJSON('work-status.json').catch(e => ({error: e.message}))
+  ]);
+  const feed = st && !st.error ? st : null;
+  const app = document.getElementById('app');
+  const expanded = new Set([...app.querySelectorAll('details[open][data-detail]')].map(d => d.dataset.detail));
+  const parts = [overview(feed, report), work(report || {error: 'nothing published yet'}, feed?.orchestra)];
+  if (feed) parts.push(seats(feed.orchestra), ready(feed.github), tasks(feed.tasks), attention(feed), board(feed.github));
+  app.replaceChildren(...parts);
+  for (const d of app.querySelectorAll('details[data-detail]')) d.open = expanded.has(d.dataset.detail);
+  const dot = document.getElementById('live-dot'), label = document.getElementById('live-label');
+  const ageLine = document.getElementById('age');
+  if (st?.error) {
+    dot.className = 'dot bad'; label.textContent = 'stale';
+    ageLine.textContent = 'state.json unreadable: ' + st.error;
+  } else if (feed) {
+    const age = (Date.now()/1000) - feed.generated_at;
+    const healthy = age <= 300 && !feed.orchestra?.error && !feed.github?.error;
+    dot.className = `dot ${healthy?'ok':age<=900?'warn':'bad'}`;
+    label.textContent = healthy ? 'live' : 'stale';
+    ageLine.textContent = `polled ${dur(age)} ago · ${feed.collect_seconds}s · ${feed.generated_iso}` +
+      (age > 300 ? '  ⚠ collector may be down' : '');
+  } else {
+    // No collector: the only clock is the last publish, which says nothing about liveness.
+    const published = Date.parse(report?.updated_at);
+    dot.className = 'dot idle'; label.textContent = 'published report';
+    ageLine.textContent = Number.isFinite(published)
+      ? `published ${dur(Date.now()/1000 - published/1000)} ago · ${report.updated_at}` : 'no report published';
+  }
+}
+const run = () => tick().catch(e => {
+  document.getElementById('age').textContent = 'Podium could not render: ' + e.message;
+});
+run(); setInterval(run, 15000);
+</script>
