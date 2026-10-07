@@ -85,13 +85,22 @@ a machine may belong to several, one session each.
   `--json` and summarize.
 - `leave`: run `leave --json`. `close`: run `close --json`, and only when the
   user asked to end the orchestra for every member.
-- `podium` (for the conductor): the Podium is a loopback page showing one ordered
-  work queue per member. Run `podium check PLAN --json` to validate a work
-  plan, `podium publish PLAN --json` to validate it and write
-  `work-status.json`, and `podium serve` (foreground, `127.0.0.1` only, port
-  4300) to show it. All three take `--dir DIR`. The default is `podium/` in the
-  agent-orchestra state directory. A rejected plan leaves the published
-  report untouched. See "Podium work plans" in the conductor playbook.
+- `podium` (for the conductor): the Podium is a loopback page with the
+  conductor's work queues, the roster, open tasks, and late or blocked owners.
+  - `podium start --json` serves it in the background for this membership and
+    prints its `url`. Give the user that URL; it opens only in a browser on
+    this machine (from elsewhere: `ssh -L PORT:127.0.0.1:PORT host`). A second
+    start reports the running server. `--port N` (default 4300) and
+    `--dir DIR` choose where; `--restart` replaces it, which an upgrade needs
+    when `podium status` shows `stale_version`.
+  - `podium status --json` and `podium stop --json` manage it.
+  - `podium check PLAN --json` validates a work plan; `podium publish PLAN
+    --json` validates it and writes `work-status.json`. Both take `--dir`;
+    the default is `podium/` in the agent-orchestra state directory. A
+    rejected plan leaves the published report untouched.
+  - Report the roster and tasks as stale when the page says so. They come from
+    this member's monitor, so a dead monitor freezes them. See "Podium work
+    plans" in the conductor playbook.
 
 Report these CLI states exactly as they come back:
 
@@ -317,6 +326,11 @@ every `assign` once, promptly, on the same `TASK`.
   event in `events --json`, and broadcast `ask` with `NEED status` only to the
   members whose tasks show no message since that time. Do not poll members who
   already reported.
+- Podium. Once you hold the conductor seat, run `podium start` and give the
+  user the URL. The roster, open tasks, and attention fill in by themselves
+  from your monitor's snapshots; the page never dials the hub, so it cannot
+  keep a dead member looking connected. Republish the plan after each round
+  of reports that changes a queue. Players run nothing.
 - Podium work plans. The plan is yours to write; nothing infers it. Each
   member needs `id`, `name`, `role`, `task`, `reported_at` (epoch seconds of
   the report the entry rests on, not of publishing), and a `queue` list, empty

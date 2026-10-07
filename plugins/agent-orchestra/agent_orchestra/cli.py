@@ -253,6 +253,17 @@ def build_parser() -> argparse.ArgumentParser:
     podium_serve = podium_commands.add_parser("serve", help="Serve the page on 127.0.0.1 in the foreground")
     podium_serve.add_argument("--dir", type=Path, help="Data directory (default: state dir /podium)")
     podium_serve.add_argument("--port", type=int, default=None)
+    podium_serve.add_argument("--member-id", help="Show this membership's roster and tasks (read from its monitor)")
+    podium_start = podium_commands.add_parser(
+        "start", help="Serve the page in the background for this membership and print its URL"
+    )
+    _common(podium_start)
+    podium_start.add_argument("--dir", type=Path, help="Data directory (default: state dir /podium)")
+    podium_start.add_argument("--port", type=int, default=None)
+    podium_start.add_argument("--restart", action="store_true", help="Replace a running server, e.g. after an upgrade")
+    for name, text in (("stop", "Stop this membership's background Podium"),
+                       ("status", "Show whether this membership's Podium is running, and where")):
+        _common(podium_commands.add_parser(name, help=text))
 
     internal_serve = commands.add_parser("serve")
     internal_serve.add_argument("--orchestra-id", required=True)
@@ -481,9 +492,24 @@ def run(args: argparse.Namespace) -> int:
     if args.command == "podium":
         from . import podium
 
+        if args.podium_command in {"start", "stop", "status"}:
+            from . import member as member_api
+
+            member = member_api.select_member(provider=args.provider, cwd=args.cwd, member_id=args.member_id)
+            member_id = str(member["member_id"])
+            if args.podium_command == "start":
+                directory = (args.dir or podium.default_dir()).expanduser().resolve()
+                port = podium.DEFAULT_PORT if args.port is None else args.port
+                _print(podium.start(member, directory, port, restart=args.restart), args.as_json)
+            elif args.podium_command == "stop":
+                _print(podium.stop(member_id), args.as_json)
+            else:
+                _print(podium.status(member_id), args.as_json)
+            return 0
         directory = (args.dir or podium.default_dir()).expanduser()
         if args.podium_command == "serve":
-            podium.serve(directory, podium.DEFAULT_PORT if args.port is None else args.port)
+            port = podium.DEFAULT_PORT if args.port is None else args.port
+            podium.serve(directory, port, args.member_id)
             return 0
         result = podium.publish(args.plan, directory, check=args.podium_command == "check")
         if args.as_json:

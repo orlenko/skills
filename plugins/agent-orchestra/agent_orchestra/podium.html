@@ -38,7 +38,7 @@
             padding:12px 14px; min-width:0; }
   section.wide { grid-column:1/-1; }
   .overview-section { padding:16px; background:var(--panel-2); }
-  .overview { display:grid; grid-template-columns:repeat(5,minmax(110px,1fr)); gap:10px; }
+  .overview { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:10px; }
   .metric { border:1px solid var(--line); border-radius:6px; padding:11px 12px;
             background:var(--panel); min-width:0; }
   .metric strong { display:block; font-size:22px; line-height:1.1; margin-bottom:4px; }
@@ -148,43 +148,114 @@ function dur(s) {
   return (s/86400).toFixed(1) + 'd';
 }
 
-function overview(st, report) {
+function overview(st, report, hub) {
   const s = document.createElement('section');
   s.className = 'wide overview-section';
-  if (!st) {
-    // No collector feed: count only what the conductor published.
-    const items = (report?.members || []).flatMap(m => m.queue || []);
-    const n = (k) => items.filter(q => q.status === k).length;
-    s.innerHTML = `<h2>Current snapshot</h2>
-      <div class="overview">
-        <div class="metric"><strong>${(report?.members || []).length}</strong><span>members</span></div>
-        <div class="metric"><strong>${items.length}</strong><span>work items</span></div>
-        <div class="metric"><strong>${n('in_progress')}</strong><span>in progress</span></div>
-        <div class="metric"><strong>${n('waiting')}</strong><span>waiting</span></div>
-        <div class="metric"><strong>${n('blocked')}</strong><span>stuck</span></div>
-      </div><p class="snapshot-note">${esc(report?.summary || 'No work report published yet.')}</p>`;
-    return s;
+  const metrics = [];
+  const roster = (hub?.roster?.members || []).filter(m => !['left','kicked'].includes(m.presence));
+  if (hub?.roster) metrics.push([`${roster.filter(m => m.presence==='connected').length}/${roster.length}`, 'connected']);
+  if (hub?.tasks) metrics.push([hub.tasks.open.length, 'open tasks'], [hub.tasks.attention.length, 'need a look']);
+  if (!hub && st) {
+    const seats = st.orchestra?.seats || [];
+    metrics.push([`${seats.filter(m => m.presence==='connected').length}/${seats.length}`, 'connected'],
+                 [(st.tasks?.open || []).length, 'active tasks']);
   }
-  const prs = st.github?.prs || [];
-  const seats = st.orchestra?.seats || [];
-  const active = st.tasks?.open || [];
-  const needs = prs.filter(p => p.stale_clearance || p.ci.state==='fail' || p.mergeable==='CONFLICTING');
-  const connected = seats.filter(m => m.presence==='connected').length;
-  const nonDraft = prs.filter(p => !p.draft).length;
-  const readyCount = prs.filter(p => p.ready).length;
-  const note = report?.summary || `${active.length} recent assignment${active.length===1?'':'s'} in the Orchestra ledger.`;
+  const items = (report?.members || []).flatMap(m => m.queue || []);
+  metrics.push([items.length, 'work items'], [items.filter(q => q.status==='blocked').length, 'stuck']);
+  if (st) {
+    const prs = st.github?.prs || [];
+    metrics.push([prs.length, 'open PRs'], [prs.filter(p => p.ready).length, 'merge ready']);
+  }
   s.innerHTML = `<h2>Current snapshot</h2>
-    <div class="overview">
-      <div class="metric"><strong>${connected}/${seats.length}</strong><span>connected</span></div>
-      <div class="metric"><strong>${active.length}</strong><span>active tasks</span></div>
-      <div class="metric"><strong>${prs.length}</strong><span>open PRs</span></div>
-      <div class="metric"><strong>${nonDraft}</strong><span>non-draft</span></div>
-      <div class="metric"><strong>${readyCount || needs.length}</strong><span>${readyCount?'merge ready':'need a look'}</span></div>
-    </div><p class="snapshot-note">${esc(note)}</p>`;
+    <div class="overview">${metrics.map(([n, label]) =>
+      `<div class="metric"><strong>${esc(n)}</strong><span>${esc(label)}</span></div>`).join('')}</div>
+    <p class="snapshot-note">${esc(report?.summary || 'No work report published yet.')}</p>`;
   return s;
 }
 
-function work(w, o) {
+const PRESENCE = {connected:['connected','ok'], stale:['stale','warn'], left:['left',''], kicked:['kicked',''], unknown:['unknown','warn']};
+const TASK_STATE = {pending:['no answer yet','warn'], accepted:['accepted',''], started:['started','hot'],
+  blocked:['blocked','bad'], done:['done','ok'], cancelled:['cancelled',''], unknown:['unknown','warn']};
+const ATTENTION = {blocked:['blocked','bad'], 'no-response':['no response','warn'], stale:['no report','warn']};
+
+function names(hub) {
+  const map = new Map((hub?.roster?.members || []).map(m => [m.id, m.name || m.id]));
+  return (id) => map.get(id) || id;
+}
+
+function hubMembers(hub) {
+  const s = document.createElement('section');
+  const rows = hub.roster?.members || [];
+  s.innerHTML = `<h2>Members <span class="n">${rows.length}</span></h2>
+    <p class="work-time">Presence is the transport only. A connected member is not proof that work is running.</p>`;
+  if (!hub.roster) {
+    s.append($('<p class="empty">No roster snapshot yet. The conductor\'s monitor writes one on every pass; restart it after upgrading with <code>monitor --restart</code>.</p>'));
+    return s;
+  }
+  for (const m of rows) {
+    const [label, tone] = PRESENCE[m.presence] || PRESENCE.unknown;
+    const notes = [m.is_conductor ? 'conductor' : m.role, m.provider,
+      m.seat && m.seat !== 'held' ? `seat ${m.seat}` : '',
+      m.unhandled ? `${m.unhandled} unhandled, oldest ${dur(m.oldest_unhandled_age)}` : '',
+      m.hold_until ? `mail held${m.hold_task ? ' for ' + m.hold_task : ''}` : ''].filter(Boolean).join(' · ');
+    s.append($(`<div class="row"><span class="dot ${tone || 'idle'}"></span>
+      <span class="seat">${esc(m.name)}</span><span class="grow" style="color:var(--faint)" title="${esc(notes)}">${esc(notes)}</span>
+      <span class="meta">${esc(label)}${m.last_seen_age != null ? ' ' + dur(m.last_seen_age) : ''}</span></div>`));
+  }
+  return s;
+}
+
+function hubTaskRow(t, name) {
+  const [label, tone] = TASK_STATE[t.state] || TASK_STATE.unknown;
+  const owners = t.owners.map(o => `${name(o.id)}: ${(TASK_STATE[o.state] || TASK_STATE.unknown)[0]}` +
+    (o.delivery && o.delivery !== 'handled' ? ` (${o.delivery})` : '')).join(', ');
+  return `<div class="row"><span class="dot ${tone || 'idle'}"></span>
+    <span class="grow" title="${esc(t.task)}">${esc(String(t.task || '').replace(/^t_/, ''))}</span>
+    <span class="tag ${tone}">${esc(label)}</span>
+    <span class="meta" title="${esc(owners)}">${esc(t.owners.map(o => name(o.id)).join(', '))} · ${dur(t.last_activity_age)}</span></div>`;
+}
+
+function hubTasks(hub) {
+  const s = document.createElement('section');
+  const t = hub.tasks;
+  if (!t) {
+    s.innerHTML = '<h2>Open tasks</h2><p class="empty">No task snapshot yet from the conductor\'s monitor.</p>';
+    return s;
+  }
+  const name = names(hub);
+  const recent = t.open.filter(x => x.recent), older = t.open.filter(x => !x.recent);
+  s.innerHTML = `<h2>Open tasks <span class="n">${t.open.length}</span></h2>
+    <p class="work-time">From the hub's task lifecycle: only an owner's own typed reports move a task. ${t.closed_count} finished or cancelled tasks are not shown.</p>`;
+  if (t.lifecycle === 'unavailable') s.append($('<p class="err">This hub predates task lifecycle; states and lateness are not available.</p>'));
+  if (!t.open.length) s.append($('<p class="empty">nothing open</p>'));
+  for (const x of recent) s.append($(hubTaskRow(x, name)));
+  if (older.length) {
+    s.append($(`<details data-detail="older-tasks"><summary>${older.length} open task${older.length===1?'':'s'} quiet for over a day</summary>
+      <div>${older.map(x => hubTaskRow(x, name)).join('')}</div></details>`));
+  }
+  return s;
+}
+
+function hubAttention(hub) {
+  const s = document.createElement('section');
+  const items = hub.tasks?.attention || [];
+  const name = names(hub);
+  s.innerHTML = `<h2>Needs a look <span class="n">${items.length}</span></h2>
+    <p class="work-time">Late or blocked task owners. A late owner gets a status request on the same task, never a re-run.</p>`;
+  if (!hub.tasks) { s.append($('<p class="empty">No task snapshot yet.</p>')); return s; }
+  if (!items.length) { s.append($('<div class="empty">all clear</div>')); return s; }
+  for (const a of items.slice(0, 20)) {
+    const [label, tone] = ATTENTION[a.kind] || ['attention','warn'];
+    s.append($(`<div class="row"><span class="dot ${tone}"></span>
+      <span class="seat">${esc(name(a.owner))}</span>
+      <span class="grow" title="${esc(a.task)}">${esc(String(a.task || '').replace(/^t_/, ''))}</span>
+      <span class="tag ${tone}">${esc(label)} ${dur(a.age_seconds)}</span></div>`));
+  }
+  if (items.length > 20) s.append($(`<p class="work-time">${items.length - 20} more not shown; run <code>tasks --json</code>.</p>`));
+  return s;
+}
+
+function work(w, o, hub) {
   const s = document.createElement('section');
   s.className = 'wide';
   s.id = 'work-status';
@@ -215,8 +286,12 @@ function work(w, o) {
     const [label, tone] = states[m.status] || ['Unconfirmed','warn'];
     const peer = (o?.seats || []).find(p => p.id === m.id);
     const age = m.reported_at ? Math.max(0, Date.now()/1000 - m.reported_at) : null;
-    const newer = !peer?.is_conductor && peer?.last_report_at != null && m.reported_at &&
-      peer.last_report_at > m.reported_at;
+    // With the hub view, the newest typed report this member sent on an open task.
+    const hubReport = hub?.tasks ? Math.max(0, ...hub.tasks.open.flatMap(t => t.owners)
+      .filter(x => x.id === m.id).map(x => x.last_report_at || 0)) : null;
+    const lastReport = hub?.tasks ? hubReport : peer?.last_report_at;
+    const isConductor = hub?.roster ? hub.roster.conductor_id === m.id : peer?.is_conductor;
+    const newer = !isConductor && lastReport != null && m.reported_at && lastReport > m.reported_at;
     const links = (m.links || []).filter(l => {
       try { return ['https:', 'http:'].includes(new URL(l.url).protocol); }
       catch { return false; }
@@ -306,19 +381,19 @@ function ready(g) {
   return s;
 }
 
-function attention(st) {
+function attention(st, hub) {
   const g = st.github, out = [];
   for (const p of g.prs||[]) {
     if (p.stale_clearance) out.push([p,'bad','clearance is stale — head moved past it']);
     else if (p.ci.state==='fail') out.push([p,'bad',`CI ${p.ci.fail} failing`]);
     else if (p.mergeable==='CONFLICTING') out.push([p,'warn','conflicting']);
   }
-  for (const m of st.orchestra.seats||[]) {
+  for (const m of hub ? [] : st.orchestra?.seats || []) {
     if (m.health!=='ok') out.push([null,m.health==='down'?'bad':'warn',
       `${m.name} ${m.health} — ${m.why || 'quiet '+dur(m.last_seen_age)}`]);
   }
   const s = document.createElement('section');
-  s.innerHTML = `<h2>Needs a look <span class="n">${out.length}</span></h2>`;
+  s.innerHTML = `<h2>${hub ? 'PRs needing a look' : 'Needs a look'} <span class="n">${out.length}</span></h2>`;
   if (!out.length) { s.append($(`<div class="empty">all clear</div>`)); return s; }
   for (const [p,lvl,why] of out.slice(0,14)) {
     s.append($(p
@@ -379,38 +454,54 @@ const getJSON = (name) => fetch(name + '?t=' + Date.now()).then(r => {
 });
 
 async function tick() {
-  // state.json comes from an optional collector; without it the page shows
-  // the published work report alone.
-  const [st, report] = await Promise.all([
+  // Every feed but the published report is optional: orchestra.json needs a
+  // server started for a membership, state.json an external collector.
+  const [st, report, hubFeed] = await Promise.all([
     getJSON('state.json').catch(e => ({error: e.message})),
-    getJSON('work-status.json').catch(e => ({error: e.message}))
+    getJSON('work-status.json').catch(e => ({error: e.message})),
+    getJSON('orchestra.json').catch(e => ({error: e.message}))
   ]);
   const feed = st && !st.error ? st : null;
+  const hub = hubFeed && !hubFeed.error ? hubFeed : null;
   const app = document.getElementById('app');
   const expanded = new Set([...app.querySelectorAll('details[open][data-detail]')].map(d => d.dataset.detail));
-  const parts = [overview(feed, report), work(report || {error: 'nothing published yet'}, feed?.orchestra)];
-  if (feed) parts.push(seats(feed.orchestra), ready(feed.github), tasks(feed.tasks), attention(feed), board(feed.github));
+  const parts = [overview(feed, report, hub), work(report || {error: 'nothing published yet'}, feed?.orchestra, hub)];
+  if (hub) parts.push(hubAttention(hub), hubMembers(hub), hubTasks(hub));
+  if (feed) {
+    if (!hub) parts.push(seats(feed.orchestra));
+    parts.push(ready(feed.github));
+    if (!hub) parts.push(tasks(feed.tasks));
+    parts.push(attention(feed, hub), board(feed.github));
+  }
   app.replaceChildren(...parts);
   for (const d of app.querySelectorAll('details[data-detail]')) d.open = expanded.has(d.dataset.detail);
   const dot = document.getElementById('live-dot'), label = document.getElementById('live-label');
-  const ageLine = document.getElementById('age');
+  const lines = [];
+  let tone = 'idle', text = 'published report';
+  if (hub) {
+    // The monitor refreshes both snapshots about every 25 seconds.
+    const age = Math.max(hub.roster?.age ?? Infinity, hub.tasks?.age ?? Infinity);
+    tone = hub.closed ? 'bad' : age <= 90 && hub.monitor_alive ? 'ok' : age <= 300 ? 'warn' : 'bad';
+    text = hub.closed ? 'membership closed' : tone === 'ok' ? 'live' : 'stale';
+    lines.push(Number.isFinite(age) ? `hub view ${dur(age)} old` : 'no hub snapshot yet');
+    if (!hub.monitor_alive && !hub.closed) lines.push('⚠ conductor monitor not running');
+  } else if (hubFeed?.error) {
+    lines.push('orchestra.json unreadable: ' + hubFeed.error);
+  }
   if (st?.error) {
-    dot.className = 'dot bad'; label.textContent = 'stale';
-    ageLine.textContent = 'state.json unreadable: ' + st.error;
+    tone = 'bad'; text = 'stale';
+    lines.push('state.json unreadable: ' + st.error);
   } else if (feed) {
     const age = (Date.now()/1000) - feed.generated_at;
     const healthy = age <= 300 && !feed.orchestra?.error && !feed.github?.error;
-    dot.className = `dot ${healthy?'ok':age<=900?'warn':'bad'}`;
-    label.textContent = healthy ? 'live' : 'stale';
-    ageLine.textContent = `polled ${dur(age)} ago · ${feed.collect_seconds}s · ${feed.generated_iso}` +
-      (age > 300 ? '  ⚠ collector may be down' : '');
-  } else {
-    // No collector: the only clock is the last publish, which says nothing about liveness.
-    const published = Date.parse(report?.updated_at);
-    dot.className = 'dot idle'; label.textContent = 'published report';
-    ageLine.textContent = Number.isFinite(published)
-      ? `published ${dur(Date.now()/1000 - published/1000)} ago · ${report.updated_at}` : 'no report published';
+    if (!hub) { tone = healthy ? 'ok' : age <= 900 ? 'warn' : 'bad'; text = healthy ? 'live' : 'stale'; }
+    lines.push(`collector polled ${dur(age)} ago` + (age > 300 ? ' ⚠ collector may be down' : ''));
   }
+  // The publish clock says when the conductor last wrote the plan, nothing about liveness.
+  const published = Date.parse(report?.updated_at);
+  lines.push(Number.isFinite(published) ? `plan published ${dur(Date.now()/1000 - published/1000)} ago` : 'no plan published');
+  dot.className = `dot ${tone}`; label.textContent = text;
+  document.getElementById('age').textContent = lines.join(' · ');
 }
 const run = () => tick().catch(e => {
   document.getElementById('age').textContent = 'Podium could not render: ' + e.message;

@@ -1181,6 +1181,37 @@ def _save_task_snapshot(member: dict[str, Any], rows: list[dict[str, Any]]) -> N
     )
 
 
+def _roster_snapshot_path(member_id: str) -> Path:
+    return runtime_dir() / f"{member_id}.members.json"
+
+
+def _save_roster_snapshot(member: dict[str, Any], roster: dict[str, Any]) -> None:
+    """The Podium reads the roster from here. A reader that dialed the hub with
+    this member's token would keep the member `connected` after its monitor
+    died, because every authenticated request refreshes presence."""
+    atomic_write_json(
+        _roster_snapshot_path(str(member["member_id"])),
+        {
+            "fetched_at": now(),
+            "conductor_id": roster.get("conductor_id"),
+            "members": [row for row in (roster.get("members") or []) if isinstance(row, dict)],
+        },
+    )
+
+
+def hub_snapshot(member: dict[str, Any]) -> dict[str, Any]:
+    """The roster and tasks from this member's monitor's last pass, read
+    without touching the hub. Either part is None until a pass has landed."""
+    member_id = str(member["member_id"])
+    parts: dict[str, Any] = {}
+    for key, path in (("roster", _roster_snapshot_path(member_id)), ("tasks", _task_snapshot_path(member_id))):
+        try:
+            parts[key] = read_json(path)
+        except OrchestraError:
+            parts[key] = None
+    return parts
+
+
 def snapshot_attention(member: dict[str, Any]) -> dict[str, Any] | None:
     """Attention from the monitor's last task read, for hooks that stay offline.
 
@@ -1887,6 +1918,7 @@ def _monitor_loop(member_id: str) -> None:
             api_request(member, "POST", "/v1/heartbeat", {"seat": seat}, timeout=5)
             roster = api_request(member, "GET", "/v1/members", timeout=10)
             _apply_self_row(member, _self_row(roster, member_id), roster.get("conductor_id", _MISSING))
+            _save_roster_snapshot(member, roster)
             if new_count:
                 _notify(member, new_count)
             try:
