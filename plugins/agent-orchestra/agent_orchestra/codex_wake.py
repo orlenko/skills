@@ -33,6 +33,36 @@ def target(mailbox_id: str) -> dict[str, Any]:
     return _read(runtime_dir() / f"{mailbox_id}.codex-session.json")
 
 
+_AIQ_SHIM_MARKER = b"AIQ_SHIM"
+
+
+def _is_aiq_shim(path: str) -> bool:
+    try:
+        with open(path, "rb") as stream:
+            return _AIQ_SHIM_MARKER in stream.read(512)
+    except OSError:
+        return False
+
+
+def _real_codex(executable: str | None) -> str | None:
+    """The Codex binary itself, never an aiq shim.
+
+    The shim finds the real codex only on PATH entries after its own shims
+    directory. A Codex session puts its own directories, /opt/homebrew/bin
+    among them, ahead of the shims, and a monitor started from that session
+    inherits that order: aiq found no codex, retried every 30 s, and every
+    queue call timed out at its 3 s deadline (2026-10-05 to 10-07). The
+    account home goes to Codex as CODEX_HOME, so the shim adds nothing here.
+    """
+    if executable and not _is_aiq_shim(executable):
+        return executable
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = os.path.join(directory or ".", "codex")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK) and not _is_aiq_shim(candidate):
+            return candidate
+    return executable
+
+
 def register(mailbox_id: str, *, session_id: str = "", prefix: str) -> None:
     """Call only after establishing this session's ownership of the mailbox."""
     if os.environ.get(f"{prefix}_NO_WAIT", "").lower() not in {"", "0", "false", "no"}:
@@ -42,7 +72,7 @@ def register(mailbox_id: str, *, session_id: str = "", prefix: str) -> None:
         thread = str(uuid.UUID(thread))
     except (ValueError, AttributeError):
         return
-    executable = os.environ.get(f"{prefix}_CODEX_BIN") or shutil.which("codex")
+    executable = os.environ.get(f"{prefix}_CODEX_BIN") or _real_codex(shutil.which("codex"))
     record = {
         "thread_id": thread,
         "codex_home": str(Path(os.environ.get("CODEX_HOME") or "~/.codex").expanduser().resolve()),
@@ -139,7 +169,8 @@ class _QueueClient:
         env.update(CODEX_HOME=binding["codex_home"], AIQ_BYPASS="1")
         self.thread = binding["thread_id"]
         self.process = subprocess.Popen(
-            [binding["executable"], "app-server", "--stdio"], env=env,
+            # A binding recorded before _real_codex may still name the shim.
+            [_real_codex(binding["executable"]), "app-server", "--stdio"], env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         )
         self.selector = selectors.DefaultSelector()

@@ -1,6 +1,6 @@
 {
   "name": "agent-pair",
-  "version": "0.4.5+codex.20260924200902",
+  "version": "0.4.6+codex.20261007212819",
   "description": "Direct, durable two-agent messaging across one machine or a reachable LAN.",
   "author": {
     "name": "Vlad Orlenko",

@@ -445,6 +445,40 @@ class CodexWakeTests(unittest.TestCase):
         codex_wake.observed(self.mailbox, ["m_aaaaaaaa"], label="Agent Pair")
         self.assertEqual(self.queued(), [human])
 
+    def _aiq_layout(self):
+        """PATH as a Codex session leaves it: an aiq shim first, real codex later."""
+        shims, real = self.root / "aiq-shims", self.root / "brew-bin"
+        shims.mkdir()
+        real.mkdir()
+        shim = shims / "codex"
+        shim.write_text("#!/bin/sh\n# AIQ_SHIM: routes codex to a pooled account.\nsleep 30\n")
+        shim.chmod(0o700)
+        (real / "codex").symlink_to(self.fake)
+        return shim, real / "codex", os.pathsep.join([str(shims), str(real)])
+
+    def test_registration_records_the_real_codex_not_the_aiq_shim(self):
+        shim, real, path = self._aiq_layout()
+        with mock.patch.dict(os.environ, {"PATH": path}):
+            os.environ.pop("AGENT_PAIR_CODEX_BIN")
+            codex_wake.register(self.mailbox, prefix="AGENT_PAIR")
+        self.assertEqual(codex_wake.target(self.mailbox)["executable"], str(real))
+
+    def test_an_explicit_codex_bin_is_kept_verbatim(self):
+        shim, _real, path = self._aiq_layout()
+        with mock.patch.dict(os.environ, {"PATH": path, "AGENT_PAIR_CODEX_BIN": str(shim)}):
+            codex_wake.register(self.mailbox, prefix="AGENT_PAIR")
+        self.assertEqual(codex_wake.target(self.mailbox)["executable"], str(shim))
+
+    def test_a_binding_that_names_the_shim_still_queues_through_real_codex(self):
+        shim, _real, path = self._aiq_layout()
+        binding = dict(codex_wake.target(self.mailbox), executable=str(shim))
+        core.atomic_write_json(core.runtime_dir() / f"{self.mailbox}.codex-session.json", binding)
+        self.mail()
+        with mock.patch.dict(os.environ, {"PATH": path}):
+            self.wake()
+        self.assertEqual(len(self.calls()), 1)
+        self.assertIsNone(codex_wake.capability(self.mailbox)["last_error"])
+
     def test_binary_path_change_does_not_reset_deduplication(self):
         self.mail()
         self.wake()
