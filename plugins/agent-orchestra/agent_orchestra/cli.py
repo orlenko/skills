@@ -288,13 +288,16 @@ def build_parser() -> argparse.ArgumentParser:
     for name, text in (("check", "Validate a work plan without publishing it"),
                        ("publish", "Validate a work plan and write work-status.json atomically")):
         sub = podium_commands.add_parser(name, help=text)
-        sub.add_argument("plan", type=Path, help="The conductor's work-plan JSON")
+        sub.add_argument("plan", type=Path, nargs="?",
+                         help="The conductor's work-plan JSON (default: the plan the running "
+                              "Podium watches)")
         sub.add_argument("--dir", type=Path, help="Data directory (default: state dir /podium)")
         sub.add_argument("--json", action="store_true", dest="as_json")
     podium_serve = podium_commands.add_parser("serve", help="Serve the page on 127.0.0.1 in the foreground")
     podium_serve.add_argument("--dir", type=Path, help="Data directory (default: state dir /podium)")
     podium_serve.add_argument("--port", type=int, default=None)
     podium_serve.add_argument("--member-id", help="Show this membership's roster and tasks (read from its monitor)")
+    podium_serve.add_argument("--plan", type=Path, help="Republish this work plan whenever it changes")
     podium_start = podium_commands.add_parser(
         "start", help="Serve the page in the background for this membership and print its URL"
     )
@@ -302,6 +305,8 @@ def build_parser() -> argparse.ArgumentParser:
     podium_start.add_argument("--dir", type=Path, help="Data directory (default: state dir /podium)")
     podium_start.add_argument("--port", type=int, default=None)
     podium_start.add_argument("--restart", action="store_true", help="Replace a running server, e.g. after an upgrade")
+    podium_start.add_argument("--plan", type=Path,
+                              help="Republish this work plan whenever it changes; no publish calls")
     for name, text in (("stop", "Stop this membership's background Podium"),
                        ("status", "Show whether this membership's Podium is running, and where")):
         _common(podium_commands.add_parser(name, help=text))
@@ -709,7 +714,11 @@ def run(args: argparse.Namespace) -> int:
             if args.podium_command == "start":
                 directory = (args.dir or podium.default_dir()).expanduser().resolve()
                 port = podium.DEFAULT_PORT if args.port is None else args.port
-                _print(podium.start(member, directory, port, restart=args.restart), args.as_json)
+                plan = args.plan.expanduser().resolve() if args.plan else None
+                if plan is not None:
+                    podium.publish(plan, directory, check=True)
+                _print(podium.start(member, directory, port, restart=args.restart, plan=plan),
+                       args.as_json)
             elif args.podium_command == "stop":
                 _print(podium.stop(member_id), args.as_json)
             else:
@@ -718,9 +727,14 @@ def run(args: argparse.Namespace) -> int:
         directory = (args.dir or podium.default_dir()).expanduser()
         if args.podium_command == "serve":
             port = podium.DEFAULT_PORT if args.port is None else args.port
-            podium.serve(directory, port, args.member_id)
+            plan = args.plan.expanduser().resolve() if args.plan else None
+            podium.serve(directory, port, args.member_id, plan)
             return 0
-        result = podium.publish(args.plan, directory, check=args.podium_command == "check")
+        plan = args.plan
+        if plan is None:
+            plan, watched_dir = podium.watched_plan()
+            directory = (args.dir or watched_dir).expanduser()
+        result = podium.publish(plan, directory, check=args.podium_command == "check")
         if args.as_json:
             _print(result, True)
         else:

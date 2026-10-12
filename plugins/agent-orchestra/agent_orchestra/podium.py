@@ -24,6 +24,7 @@ import math
 import os
 import signal
 import socket
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,9 @@ ORCHESTRA_FILE = "orchestra.json"
 TERMINAL_TASK_STATES = frozenset({"done", "cancelled"})
 # Open tasks quiet this long are folded away on the page, not dropped.
 RECENT_TASK_SECONDS = 24 * 3600
+# Where a server watching a plan records its last publish. Never served.
+PLAN_STATE_FILE = "plan-state.json"
+_PLAN_LOCK = threading.Lock()
 
 
 def default_dir() -> Path:
@@ -143,6 +147,43 @@ def publish(source: Path, directory: Path, *, check: bool = False) -> dict[str, 
     return result
 
 
+def refresh_from_plan(plan: Path, directory: Path) -> dict[str, Any] | None:
+    """Publish `plan` when it changed since the last look; None when it did not.
+
+    One conductor ran the same `podium publish` 149 times in a day after
+    editing the plan by hand. A server started with `--plan` does it on the
+    page's own poll instead. A rejected plan leaves the live report alone, as
+    `publish` does, and the error waits in plan-state.json for `podium status`.
+    """
+    state_path = Path(directory) / PLAN_STATE_FILE
+    with _PLAN_LOCK:
+        try:
+            stamp = Path(plan).stat().st_mtime_ns
+        except OSError as exc:
+            stamp, error = None, f"cannot read {plan}: {exc}"
+        else:
+            error = None
+        try:
+            state = read_json(state_path)
+        except OrchestraError:
+            state = {}
+        if stamp is not None and state.get("plan") == str(plan) and state.get("mtime_ns") == stamp:
+            return None
+        if stamp is not None:
+            try:
+                publish(plan, directory)
+            except OrchestraError as exc:
+                error = str(exc)
+        if stamp is None and state.get("error") == error:
+            return None
+        state = {"plan": str(plan), "mtime_ns": stamp, "checked_at": now(), "error": error}
+        if error is None:
+            state["published_at"] = state["checked_at"]
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        atomic_write_json(state_path, state)
+        return state
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     """Serves the bundled page and two named data files, never caching.
 
@@ -153,6 +194,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     directory: Path
     member_id: str | None = None
+    plan: Path | None = None
 
     def do_GET(self) -> None:  # noqa: N802 - http.server API
         self._respond(body=True)
@@ -166,6 +208,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if name == "index.html":
                 payload, kind = PAGE.read_bytes(), "text/html; charset=utf-8"
             elif name in SERVED:
+                if name == STATUS_FILE and self.plan is not None:
+                    refresh_from_plan(self.plan, self.directory)
                 payload, kind = (self.directory / name).read_bytes(), SERVED[name]
             elif name == ORCHESTRA_FILE and self.member_id:
                 view = orchestra_view(self.member_id)
@@ -190,18 +234,27 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 
 def server(
-    directory: Path, port: int = DEFAULT_PORT, member_id: str | None = None
+    directory: Path, port: int = DEFAULT_PORT, member_id: str | None = None,
+    plan: Path | None = None,
 ) -> http.server.ThreadingHTTPServer:
     """Loopback only: the page shows task names, PR titles and member ids."""
-    handler = type("PodiumHandler", (_Handler,), {"directory": Path(directory), "member_id": member_id})
+    handler = type("PodiumHandler", (_Handler,), {
+        "directory": Path(directory), "member_id": member_id,
+        "plan": Path(plan) if plan else None,
+    })
     try:
         return http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
     except OSError as exc:
         raise OrchestraError(f"cannot listen on 127.0.0.1:{port}: {exc}") from exc
 
 
-def serve(directory: Path, port: int = DEFAULT_PORT, member_id: str | None = None) -> None:
-    with server(directory, port, member_id) as httpd:
+def serve(
+    directory: Path, port: int = DEFAULT_PORT, member_id: str | None = None,
+    plan: Path | None = None,
+) -> None:
+    if plan is not None:
+        refresh_from_plan(plan, directory)
+    with server(directory, port, member_id, plan) as httpd:
         print(f"Podium serving {directory} on http://127.0.0.1:{httpd.server_address[1]}/", flush=True)
         httpd.serve_forever()
 
@@ -316,12 +369,38 @@ def status(member_id: str) -> dict[str, Any]:
         return {"running": False, "member_id": member_id}
     pid, port = int(record.get("pid") or 0), int(record.get("port") or 0)
     running = _pid_alive(pid) and _listening(port)
+    plan_state: dict[str, Any] | None = None
+    if record.get("plan") and record.get("dir"):
+        try:
+            plan_state = read_json(Path(record["dir"]) / PLAN_STATE_FILE)
+        except OrchestraError:
+            plan_state = None
     return {
         **record,
+        "plan_state": plan_state,
         "running": running,
         # A server started before an upgrade keeps serving the old page.
         "stale_version": running and record.get("version") != __version__,
     }
+
+
+def watched_plan() -> tuple[Path, Path]:
+    """The plan and data directory of the one running Podium that watches a plan."""
+    found: list[tuple[Path, Path]] = []
+    for path in runtime_dir().glob("*.podium.json"):
+        try:
+            record = read_json(path)
+        except OrchestraError:
+            continue
+        current = status(str(record.get("member_id") or ""))
+        if current.get("running") and record.get("plan") and record.get("dir"):
+            found.append((Path(record["plan"]), Path(record["dir"])))
+    if len(found) != 1:
+        raise OrchestraError(
+            "Name the plan: podium publish PLAN"
+            if not found else "Several Podiums watch a plan; name the plan: podium publish PLAN"
+        )
+    return found[0]
 
 
 def stop(member_id: str) -> dict[str, Any]:
@@ -339,7 +418,10 @@ def stop(member_id: str) -> dict[str, Any]:
     return {"member_id": member_id, "stopped": bool(pid), "pid": pid or None}
 
 
-def start(member: dict[str, Any], directory: Path, port: int = DEFAULT_PORT, *, restart: bool = False) -> dict[str, Any]:
+def start(
+    member: dict[str, Any], directory: Path, port: int = DEFAULT_PORT, *, restart: bool = False,
+    plan: Path | None = None,
+) -> dict[str, Any]:
     """One background server per membership; a second start reports the first."""
     from . import member as member_api
 
@@ -352,9 +434,10 @@ def start(member: dict[str, Any], directory: Path, port: int = DEFAULT_PORT, *, 
     if _listening(port):
         raise OrchestraError(f"127.0.0.1:{port} is already in use. Pass --port to choose another port.")
     log = runtime_dir() / f"{member_id}.podium.log"
-    pid = member_api._spawn_module(
-        ["podium", "serve", "--member-id", member_id, "--dir", str(directory), "--port", str(port)], log
-    )
+    command = ["podium", "serve", "--member-id", member_id, "--dir", str(directory), "--port", str(port)]
+    if plan is not None:
+        command += ["--plan", str(plan)]
+    pid = member_api._spawn_module(command, log)
     deadline = time.monotonic() + 5
     while not _listening(port):
         if not _pid_alive(pid) or time.monotonic() >= deadline:
@@ -371,6 +454,7 @@ def start(member: dict[str, Any], directory: Path, port: int = DEFAULT_PORT, *, 
         "port": port,
         "url": f"http://127.0.0.1:{port}/",
         "dir": str(directory),
+        "plan": str(plan) if plan is not None else None,
         "started_at": now(),
         "version": __version__,
         "log": str(log),

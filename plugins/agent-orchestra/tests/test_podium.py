@@ -159,6 +159,71 @@ class PublishTest(unittest.TestCase):
             podium.publish(self.root / "missing.json", self.out)
 
 
+class WatchedPlanTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.plan = self.root / "work-plan.json"
+        self.plan.write_text(json.dumps(PLAN))
+        self.out = self.root / "data"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def touch(self, plan: dict) -> None:
+        before = self.plan.stat().st_mtime_ns
+        self.plan.write_text(json.dumps(plan))
+        os.utime(self.plan, ns=(before + 1_000_000, before + 1_000_000))
+
+    def test_an_edited_plan_republishes_and_an_unchanged_one_does_not(self) -> None:
+        first = podium.refresh_from_plan(self.plan, self.out)
+        self.assertIsNone(first["error"])
+        self.assertIn("published_at", first)
+        self.assertIsNone(podium.refresh_from_plan(self.plan, self.out))
+
+        edited = copy.deepcopy(PLAN)
+        edited["summary"] = "Chores first."
+        self.touch(edited)
+        self.assertIsNotNone(podium.refresh_from_plan(self.plan, self.out))
+        report = json.loads((self.out / podium.STATUS_FILE).read_text())
+        self.assertEqual(report["summary"], "Chores first.")
+
+    def test_a_rejected_edit_keeps_the_live_report_and_records_why(self) -> None:
+        podium.refresh_from_plan(self.plan, self.out)
+        live = (self.out / podium.STATUS_FILE).read_text()
+        broken = copy.deepcopy(PLAN)
+        broken["members"][1]["queue"][1]["blocker"] = ""
+        self.touch(broken)
+
+        state = podium.refresh_from_plan(self.plan, self.out)
+
+        self.assertIn("blocked item requires a reason", state["error"])
+        self.assertNotIn("published_at", state)
+        self.assertEqual((self.out / podium.STATUS_FILE).read_text(), live)
+        saved = json.loads((self.out / podium.PLAN_STATE_FILE).read_text())
+        self.assertEqual(saved["error"], state["error"])
+
+    def test_the_server_publishes_on_the_pages_poll(self) -> None:
+        httpd = podium.server(self.out, 0, plan=self.plan)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=5)
+            connection.request("GET", f"/{podium.STATUS_FILE}")
+            response = connection.getresponse()
+            body = json.loads(response.read())
+            connection.close()
+            self.assertEqual((response.status, body["summary"]), (200, PLAN["summary"]))
+            connection = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=5)
+            connection.request("GET", f"/{podium.PLAN_STATE_FILE}")
+            self.assertEqual(connection.getresponse().status, 404)
+            connection.close()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join()
+
+
 class ServerTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -351,6 +416,22 @@ class BackgroundServerTest(unittest.TestCase):
         stopped = podium.stop("mb_conductor")
         self.assertEqual(stopped["pid"], started["pid"])
         self.assertFalse(podium.status("mb_conductor")["running"])
+
+    def test_a_started_plan_is_watched_and_found_by_a_bare_publish(self) -> None:
+        with self.assertRaisesRegex(OrchestraError, "Name the plan"):
+            podium.watched_plan()
+        plan = Path(self.tmp.name) / "work-plan.json"
+        plan.write_text(json.dumps(PLAN))
+        podium.start(self.member, self.data, self.port, plan=plan)
+        self.assertEqual(podium.watched_plan(), (plan, self.data))
+        current = podium.status("mb_conductor")
+        deadline = time.monotonic() + 5
+        while not (current.get("plan_state") or {}).get("published_at") and time.monotonic() < deadline:
+            time.sleep(0.05)
+            current = podium.status("mb_conductor")
+        self.assertEqual(current["plan"], str(plan))
+        self.assertIsNone(current["plan_state"]["error"])
+        self.assertTrue((self.data / podium.STATUS_FILE).exists())
 
     def test_a_busy_port_is_refused_without_recording_a_server(self) -> None:
         with socket.socket() as busy:

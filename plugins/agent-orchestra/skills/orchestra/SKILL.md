@@ -114,11 +114,16 @@ belong to several, one session each.
     this machine (from elsewhere: `ssh -L PORT:127.0.0.1:PORT host`). A second
     start reports the running server. `--port N` (default 4300) and
     `--dir DIR` choose where; `--restart` replaces it, which an upgrade needs
-    when `podium status` shows `stale_version`.
-  - `podium status --json` and `podium stop --json` manage it.
+    when `podium status` shows `stale_version`. `--plan PLAN` makes the server
+    republish that work plan whenever the file changes, on the page's own
+    poll; start refuses a plan that does not validate.
+  - `podium status --json` and `podium stop --json` manage it. With `--plan`,
+    `plan_state` shows the last publish, or the `error` that kept a rejected
+    edit off the page; check it after editing the plan.
   - `podium check PLAN --json` validates a work plan; `podium publish PLAN
     --json` validates it and writes `work-status.json`. Both take `--dir`;
-    the default is `podium/` in the agent-orchestra state directory. A
+    the default is `podium/` in the agent-orchestra state directory. Without
+    PLAN, both use the plan and directory the running Podium watches. A
     rejected plan leaves the published report untouched.
   - Report the roster and tasks as stale when the page says so. They come from
     this member's monitor, so a dead monitor freezes them. See "Podium work
@@ -359,11 +364,12 @@ every `assign` once, promptly, on the same `TASK`.
   event in `events --json`, and broadcast `ask` with `NEED status` only to the
   members whose tasks show no message since that time. Do not poll members who
   already reported.
-- Podium. Once you hold the conductor seat, run `podium start` and give the
-  user the URL. The roster, open tasks, and attention fill in by themselves
-  from your monitor's snapshots; the page never dials the hub, so it cannot
-  keep a dead member looking connected. Republish the plan after each round
-  of reports that changes a queue. Players run nothing.
+- Podium. Once you hold the conductor seat, run `podium start --plan PLAN`
+  and give the user the URL. The roster, open tasks, and attention fill in by
+  themselves from your monitor's snapshots; the page never dials the hub, so
+  it cannot keep a dead member looking connected. Edit the plan after each
+  round of reports that changes a queue; the page picks the edit up within its
+  15-second poll, with no publish command. Players run nothing.
 - Podium work plans. The plan is yours to write; nothing infers it. Each
   member needs `id`, `name`, `role`, `task`, `reported_at` (epoch seconds of
   the report the entry rests on, not of publishing), and a `queue` list, empty
