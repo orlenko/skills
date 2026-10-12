@@ -5,8 +5,11 @@ description: "Connect this coding-agent session to an Agent Orchestra: a durable
 
 # Agent Orchestra
 
-Use the bundled `bin/agent-orchestra` executable. Resolve its absolute path from
-this skill: the plugin root is two directories above this skill directory. Keep
+Run the CLI by name, `agent-orchestra`, when `command -v agent-orchestra` finds
+it; Claude Code puts the plugin's `bin/` on PATH. Otherwise resolve the bundled
+`bin/agent-orchestra` from this skill: the plugin root is two directories above
+this skill directory. Never copy a versioned plugin-cache path from earlier in
+the conversation; after an update it still runs, as the old version. Keep
 the current working directory unchanged; it identifies this session's
 membership. Pass no `--provider` and no `--member-id`: the CLI reads the agent
 it runs under (Claude or Codex) from its process tree, and each membership

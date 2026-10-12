@@ -5,8 +5,11 @@ description: Connect exactly two coding-agent sessions through a direct, TLS-pin
 
 # Agent Pair
 
-Use the bundled `bin/agent-pair` executable. Resolve its absolute path from this
-skill: the plugin root is two directories above this skill directory. Pass
+Run the CLI by name, `agent-pair`, when `command -v agent-pair` finds it; Claude
+Code puts the plugin's `bin/` on PATH. Otherwise resolve the bundled
+`bin/agent-pair` from this skill: the plugin root is two directories above this
+skill directory. Never copy a versioned plugin-cache path from earlier in the
+conversation; after an update it still runs, as the old version. Pass
 `--provider codex` in Codex and `--provider claude` in Claude Code. Keep the
 current working directory unchanged; it identifies this session's pair.
 Retain the `endpoint_id` returned by `host` or `accept` in conversation context
