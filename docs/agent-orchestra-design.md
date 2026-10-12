@@ -780,8 +780,9 @@ hub conductor MEMBER_ID     hub kick MEMBER_ID [--reason TEXT]     hub close
 join INVITE [--name NAME] [--no-monitor]
 invite [--role player] [--parent self|MEMBER_ID] [--name NAME] [--ttl 3600]
 send [--to TOKEN]... (--stdin | TEXT...)
-inbox [--claim]      show MESSAGE_ID...      wait [--timeout 55] [--claim]      finish MESSAGE_ID...
-status   members   tasks [--response-within 900] [--stale-after 3600]
+inbox [--claim] [FILTERS] [--brief]      show MESSAGE_ID...      wait [--timeout 55] [--claim] [FILTERS] [--brief]
+finish MESSAGE_ID...      (FILTERS: --from NAME... --act ACT... --since AGE --limit N; a filtered claim moves only the rows shown)
+status   members   tasks [--response-within 900] [--stale-after 3600] [--task ID]... [--match RE] [--brief] [--wait S]
 events [--limit 20]   message MESSAGE_ID
 conductor MEMBER_ID   kick MEMBER_ID [--reason TEXT]   leave   close   monitor
 serve --orchestra-id ID   monitor-run --member-id ID   hook-context|hook-stop|hook-wait --provider codex|claude

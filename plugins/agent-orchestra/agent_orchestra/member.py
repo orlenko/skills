@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import __version__, codex_wake, core, jev, jev_shadow, keys, monitor_lock
 from .core import (
@@ -873,12 +873,25 @@ def _inbox_order(row: dict[str, Any]) -> tuple[int, float]:
     return (attention_rank(row), float(row.get("sent_at") or 0))
 
 
-def local_messages(member: dict[str, Any], *, claim: bool) -> list[dict[str, Any]]:
+Select = Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
+
+
+def local_messages(
+    member: dict[str, Any], *, claim: bool, select: Select | None = None
+) -> list[dict[str, Any]]:
+    """Locally delivered mail, in attention order; with `claim`, moved to claimed.
+
+    `select` narrows the rows (by sender, act, age, count). With `claim`, only
+    the selected rows are claimed: mail a filter hid is still pending, so the
+    hooks keep surfacing it instead of it sitting claimed and unread.
+    """
     member_id = str(member["member_id"])
     try:
         ensure_monitor(member)
     except OrchestraError:
         pass
+    if select is not None:
+        return _claim_selected(member, select(_read_buckets(member_id)), claim=claim)
     if claim:
         for source in sorted(bucket_dir(member_id, "pending").glob("*.json")):
             destination = bucket_dir(member_id, "claimed") / source.name
@@ -899,6 +912,40 @@ def local_messages(member: dict[str, Any], *, claim: bool) -> list[dict[str, Any
     if claim and member.get("provider") == "codex":
         codex_wake.observed(member_id, [str(row["id"]) for row in rows], label="Agent Orchestra")
     return sorted(rows, key=_inbox_order)
+
+
+def _read_buckets(member_id: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for bucket in ("pending", "claimed"):
+        for path in bucket_dir(member_id, bucket).glob("*.json"):
+            try:
+                item = read_json(path)
+            except OrchestraError:
+                continue
+            item["local_state"] = bucket
+            rows.append(item)
+    return sorted(rows, key=_inbox_order)
+
+
+def _claim_selected(
+    member: dict[str, Any], rows: list[dict[str, Any]], *, claim: bool
+) -> list[dict[str, Any]]:
+    if not claim:
+        return rows
+    member_id = str(member["member_id"])
+    for row in rows:
+        if row["local_state"] != "pending":
+            continue
+        name = f"{row['id']}.json"
+        try:
+            os.replace(bucket_dir(member_id, "pending") / name, bucket_dir(member_id, "claimed") / name)
+        except FileNotFoundError:
+            # Another command claimed it first; it is in claimed all the same.
+            pass
+        row["local_state"] = "claimed"
+    if member.get("provider") == "codex":
+        codex_wake.observed(member_id, [str(row["id"]) for row in rows], label="Agent Orchestra")
+    return rows
 
 
 def show_messages(member: dict[str, Any], message_ids: list[str]) -> dict[str, Any]:
@@ -1126,14 +1173,16 @@ def finish_messages(member: dict[str, Any], message_ids: list[str]) -> list[dict
     return results
 
 
-def wait_for_messages(member: dict[str, Any], timeout: float, *, claim: bool) -> list[dict[str, Any]]:
+def wait_for_messages(
+    member: dict[str, Any], timeout: float, *, claim: bool, select: Select | None = None
+) -> list[dict[str, Any]]:
     try:
         ensure_monitor(member)
     except OrchestraError:
         pass
     deadline = time.monotonic() + max(0.0, timeout)
     while True:
-        rows = local_messages(member, claim=claim)
+        rows = local_messages(member, claim=claim, select=select)
         if rows or time.monotonic() >= deadline:
             return rows
         time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))

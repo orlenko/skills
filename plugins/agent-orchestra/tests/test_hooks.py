@@ -755,6 +755,24 @@ class ShowTest(HooksTestCase):
         self.assertTrue((bucket_dir(member_id, "claimed") / f"{claimed}.json").exists())
 
 
+class SelectedClaimTest(HooksTestCase):
+    def test_a_filtered_claim_leaves_the_hidden_mail_pending(self) -> None:
+        member = self.make_member()
+        member_id = str(member["member_id"])
+        wanted, hidden = "m_" + "a" * 16, "m_" + "b" * 16
+        self.add_message(member_id, wanted, act="ask", need="sha")
+        self.add_message(member_id, hidden)
+
+        rows = member_module.local_messages(
+            member, claim=True,
+            select=lambda rows: [row for row in rows if row.get("act") == "ask"],
+        )
+
+        self.assertEqual([(row["id"], row["local_state"]) for row in rows], [(wanted, "claimed")])
+        self.assertTrue((bucket_dir(member_id, "claimed") / f"{wanted}.json").exists())
+        self.assertTrue((bucket_dir(member_id, "pending") / f"{hidden}.json").exists())
+
+
 class SandboxedStateTest(HooksTestCase):
     def test_a_denied_state_directory_keeps_every_hook_quiet(self) -> None:
         member = self.make_member()

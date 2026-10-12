@@ -87,11 +87,22 @@ belong to several, one session each.
   newlines, from any local bucket, without claiming them. Never read a body
   from the state directory by hand.
 - `wait`: run `wait --timeout 55 --claim --json`; process and finish as above.
+- Narrowing mail: `inbox` and `wait` take `--from NAME` and `--act ACT` (both
+  repeatable), `--since 30m|2h|1d`, and `--limit N` (the newest N). With
+  `--claim`, only the rows shown are claimed; the rest stay pending. `--brief`
+  prints one line per message: time, id, sender, act, task, need, and the
+  start of the body. Use these flags instead of piping `--json` through jq.
 - `tasks`: run `tasks --json`. Summarize each task by `state`, each owner by
   `state` and `delivery`, then list `attention` in the order given, with its
   times. Never read progress from `latest`; it is the newest message of any
   act. When `lifecycle` is `unavailable`, the hub predates task lifecycle: say
-  so, and make no claim that nothing is late.
+  so, and make no claim that nothing is late. `--task ID` (repeatable) and
+  `--match REGEX` narrow the list and its attention to those task ids;
+  `--brief` prints one line per task and attention item. To follow one task,
+  run `tasks --task ID --wait SECONDS --brief`, with SECONDS under your shell
+  tool's timeout (55 matches `wait`). It returns as soon as that task's state,
+  an owner, or its newest message changes, with `changed: yes`, or
+  `changed: no` at the deadline.
 - `status`, `members`, `events`, `message MESSAGE_ID`: run the command with
   `--json` and summarize.
 - `leave`: run `leave --json`. `close`: run `close --json`, and only when the

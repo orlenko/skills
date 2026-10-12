@@ -106,6 +106,78 @@ class ParserTest(unittest.TestCase):
             with mock.patch("agent_orchestra.core.agent_provider", return_value=None):
                 self.assertEqual(cli._provider_default(), "cli")
 
+    def test_mail_filters_select_by_sender_act_age_and_count(self) -> None:
+        from agent_orchestra import cli
+
+        now = cli.datetime.now(cli.timezone.utc).timestamp()
+
+        def row(message_id: str, name: str, act: str, age: float) -> dict:
+            return {"id": message_id, "from": {"name": name, "id": "mb_" + name},
+                    "act": act, "sent_at": now - age}
+
+        rows = [row("m_1", "oboe", "ask", 7200), row("m_2", "oboe", "tell", 600),
+                row("m_3", "triangle", "ask", 300), row("m_4", "oboe", "ask", 60)]
+        parse = build_parser().parse_args
+        self.assertIsNone(cli._mail_select(parse(["inbox"])))
+        pick = cli._mail_select(parse(["inbox", "--from", "OBOE", "--act", "ask"]))
+        self.assertEqual([r["id"] for r in pick(rows)], ["m_1", "m_4"])
+        pick = cli._mail_select(parse(["inbox", "--from", "mb_triangle", "--from", "oboe",
+                                       "--since", "1h"]))
+        self.assertEqual([r["id"] for r in pick(rows)], ["m_2", "m_3", "m_4"])
+        pick = cli._mail_select(parse(["wait", "--limit", "2"]))
+        self.assertEqual([r["id"] for r in pick(list(reversed(rows)))], ["m_4", "m_3"])
+        self.assertEqual(cli._parse_age("90s"), 90)
+        self.assertEqual(cli._parse_age("2h"), 7200)
+        with self.assertRaises(cli.OrchestraError):
+            cli._parse_age("soon")
+
+    def test_brief_prints_one_line_per_message_without_the_header(self) -> None:
+        from agent_orchestra import cli
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli._print_messages([{
+                "id": "m_aaaaaaaaaaaaaaaa", "from": {"name": "oboe"}, "act": "ask",
+                "task": "t_x", "need": "sha", "sent_at": 0, "local_state": "pending",
+                "text": "ACT ask\nTO conductor\nTASK t_x\n\nfirst line\nsecond " + "y" * 300,
+            }], False, brief=True)
+        lines = out.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("m_aaaaaaaaaaaaaaaa  oboe  ask  task=t_x  need=sha  (pending)  | first line second", lines[0])
+        self.assertNotIn("TO conductor", lines[0])
+        self.assertLess(len(lines[0]), 200)
+
+    def test_tasks_narrow_to_ids_and_wait_until_one_moves(self) -> None:
+        from agent_orchestra import cli
+
+        def view(state: str) -> dict:
+            return {
+                "tasks": [
+                    {"task": "t_alpha", "state": state, "owners": [{"id": "mb_1", "state": state}]},
+                    {"task": "t_beta", "state": "done", "owners": []},
+                ],
+                "attention": [{"task": "t_beta", "kind": "stale"}],
+            }
+
+        answers = iter([view("pending"), view("pending"), view("started")])
+        api = mock.Mock()
+        api.tasks.side_effect = lambda *a, **k: next(answers)
+        args = build_parser().parse_args(["tasks", "--match", "^t_al", "--wait", "30"])
+        with mock.patch.object(cli, "_TASK_WAIT_POLL_SECONDS", 0.01):
+            result = cli._tasks_view(api, {}, args)
+        self.assertEqual([row["task"] for row in result["tasks"]], ["t_alpha"])
+        self.assertEqual(result["tasks"][0]["state"], "started")
+        self.assertEqual(result["attention"], [])
+        self.assertTrue(result["changed"])
+
+        api.tasks.side_effect = lambda *a, **k: view("pending")
+        args = build_parser().parse_args(["tasks", "--task", "t_beta", "--wait", "0.05"])
+        with mock.patch.object(cli, "_TASK_WAIT_POLL_SECONDS", 0.01):
+            result = cli._tasks_view(api, {}, args)
+        self.assertEqual([row["task"] for row in result["tasks"]], ["t_beta"])
+        self.assertEqual(len(result["attention"]), 1)
+        self.assertFalse(result["changed"])
+
     def test_hub_subcommand_group(self) -> None:
         args = self.parser.parse_args(["hub", "invite", "--role", "conductor"])
         self.assertEqual(args.command, "hub")
@@ -118,7 +190,7 @@ class ParserTest(unittest.TestCase):
             self.parser.parse_args(["--version"])
         self.assertEqual(caught.exception.code, 0)
         self.assertEqual(out.getvalue().strip(), f"agent-orchestra {__version__}")
-        self.assertEqual(__version__, "0.2.20")
+        self.assertEqual(__version__, "0.2.21")
 
     def test_unknown_command_exits_non_zero(self) -> None:
         err = io.StringIO()

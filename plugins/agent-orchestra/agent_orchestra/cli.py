@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import socket
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,9 @@ from typing import Any
 from . import __version__, codex_wake
 from .core import OrchestraError, normalize_provider
 from .protocol import DEFAULT_TYPE_QUIET_SECONDS, TypeOptions
+
+
+_TASK_WAIT_POLL_SECONDS = 5.0
 
 
 def _provider_default() -> str:
@@ -37,6 +42,17 @@ def _common(parser: argparse.ArgumentParser, *, member: bool = True) -> None:
     if member:
         parser.add_argument("--member-id")
     parser.add_argument("--json", action="store_true", dest="as_json")
+
+
+def _mail_filters(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--from", action="append", default=[], dest="senders", metavar="NAME",
+                        help="Only mail from this member name or id; repeatable")
+    parser.add_argument("--act", action="append", default=[], dest="acts", metavar="ACT",
+                        help="Only this act (ask, tell, assign, ...); repeatable")
+    parser.add_argument("--since", metavar="AGE", help="Only mail sent within this age: 90s, 30m, 2h, 1d")
+    parser.add_argument("--limit", type=int, metavar="N", help="Only the newest N, after the filters")
+    parser.add_argument("--brief", action="store_true",
+                        help="One line per message: time, id, sender, act, task, need, body start")
 
 
 def _hub_common(parser: argparse.ArgumentParser, *, orchestra: bool = True) -> None:
@@ -183,11 +199,13 @@ def build_parser() -> argparse.ArgumentParser:
     inbox = commands.add_parser("inbox", help="List or claim locally delivered messages")
     _common(inbox)
     inbox.add_argument("--claim", action="store_true")
+    _mail_filters(inbox)
 
     wait = commands.add_parser("wait", help="Wait for locally delivered messages")
     _common(wait)
     wait.add_argument("--timeout", type=float, default=55)
     wait.add_argument("--claim", action="store_true")
+    _mail_filters(wait)
 
     finish = commands.add_parser("finish", help="Mark claimed messages handled")
     _common(finish)
@@ -217,6 +235,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help="How long an accepted or started task may go without a report (default 3600)",
     )
+    tasks.add_argument("--task", action="append", default=[], metavar="TASK",
+                       help="Only this task id; repeatable")
+    tasks.add_argument("--match", metavar="REGEX", help="Only task ids this regex finds")
+    tasks.add_argument("--brief", action="store_true", help="One line per task and attention item")
+    tasks.add_argument("--wait", type=float, default=0, metavar="SECONDS",
+                       help="Block until a listed task's state, owners, or latest message "
+                            "changes, or this long passes")
 
     events = commands.add_parser("events", help="List recent system events")
     _common(events)
@@ -309,12 +334,93 @@ def _human(value: Any) -> str:
     return str(value)
 
 
-def _print_messages(rows: list[dict[str, Any]], as_json: bool) -> None:
+def _parse_age(value: str) -> float:
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    text = value.strip().lower()
+    try:
+        if text and text[-1] in units:
+            return float(text[:-1]) * units[text[-1]]
+        return float(text)
+    except ValueError:
+        raise OrchestraError(f"--since {value!r}: use 90s, 30m, 2h, or 1d") from None
+
+
+def _sender_matches(row: dict[str, Any], wanted: set[str]) -> bool:
+    sender = row.get("from") if isinstance(row.get("from"), dict) else {}
+    return bool({str(sender.get("name") or "").lower(), str(sender.get("id") or "").lower()} & wanted)
+
+
+def _mail_select(args: argparse.Namespace) -> Any:
+    """The rows `--from`, `--act`, `--since` and `--limit` keep, or None for all.
+
+    Sessions rebuilt these as jq pipelines over `inbox --json`, and one of
+    them failed on a file that was not the JSON it expected.
+    """
+    if not (args.senders or args.acts or args.since or args.limit):
+        return None
+    if args.limit is not None and args.limit < 1:
+        raise OrchestraError("--limit must be at least 1")
+    senders = {name.lower() for name in args.senders}
+    acts = {act.lower() for act in args.acts}
+    cutoff = datetime.now(timezone.utc).timestamp() - _parse_age(args.since) if args.since else None
+
+    def select(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        kept = [
+            row for row in rows
+            if (not senders or _sender_matches(row, senders))
+            and (not acts or str(row.get("act") or "tell").lower() in acts)
+            and (cutoff is None or float(row.get("sent_at") or 0) >= cutoff)
+        ]
+        if args.limit:
+            newest = sorted(kept, key=lambda row: float(row.get("sent_at") or 0))[-args.limit:]
+            ids = {str(row["id"]) for row in newest}
+            kept = [row for row in kept if str(row["id"]) in ids]
+        return kept
+
+    return select
+
+
+def _clock(moment: Any) -> str:
+    try:
+        return datetime.fromtimestamp(float(moment)).strftime("%H:%M:%S")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "--:--:--"
+
+
+def _flat(value: Any, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text[: limit - 1] + "…" if len(text) > limit else text
+
+
+def _print_brief(rows: list[dict[str, Any]]) -> None:
+    for row in rows:
+        sender = row.get("from") if isinstance(row.get("from"), dict) else {}
+        text = str(row.get("text", ""))
+        body = text.split("\n\n", 1)[1] if "\n\n" in text else text
+        fields = [
+            _clock(row.get("sent_at")),
+            str(row["id"]),
+            str(sender.get("name") or sender.get("id") or "member"),
+            str(row.get("act") or "tell"),
+        ]
+        if row.get("task"):
+            fields.append(f"task={row['task']}")
+        if row.get("need") and row.get("need") != "none":
+            fields.append(f"need={_flat(row['need'], 40)}")
+        if row.get("local_state") == "pending":
+            fields.append("(pending)")
+        print("  ".join(fields) + "  | " + _flat(body, 100))
+
+
+def _print_messages(rows: list[dict[str, Any]], as_json: bool, *, brief: bool = False) -> None:
     if as_json:
         _print({"messages": rows, "count": len(rows)}, True)
         return
     if not rows:
         print("No waiting messages.")
+        return
+    if brief:
+        _print_brief(rows)
         return
     for row in rows:
         sender = row.get("from") or {}
@@ -464,6 +570,89 @@ def _run_hub(args: argparse.Namespace) -> int:
     raise OrchestraError(f"Unsupported hub command: {args.hub_command}")
 
 
+def _select_tasks(result: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    if not (args.task or args.match):
+        return result
+    try:
+        pattern = re.compile(args.match) if args.match else None
+    except re.error as exc:
+        raise OrchestraError(f"--match {args.match!r}: {exc}") from None
+    wanted = set(args.task)
+
+    def keep(task_id: Any) -> bool:
+        task_id = str(task_id or "")
+        return task_id in wanted or bool(pattern and pattern.search(task_id))
+
+    result = dict(result)
+    result["tasks"] = [row for row in result.get("tasks") or [] if keep(row.get("task"))]
+    result["attention"] = [item for item in result.get("attention") or [] if keep(item.get("task"))]
+    return result
+
+
+def _task_signature(result: dict[str, Any]) -> list[Any]:
+    return [
+        (
+            row.get("task"),
+            row.get("state"),
+            [(owner.get("id"), owner.get("state"), owner.get("delivery"))
+             for owner in row.get("owners") or []],
+            (row.get("latest") or {}).get("id"),
+        )
+        for row in result.get("tasks") or []
+    ]
+
+
+def _tasks_view(member_api: Any, member: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    """`tasks` narrowed to `--task`/`--match`, and with `--wait`, blocked until it moves.
+
+    One session polled a single task 40 times through `tasks --json | jq select`.
+    """
+    def read() -> dict[str, Any]:
+        return _select_tasks(
+            member_api.tasks(
+                member, response_within=args.response_within, stale_after=args.stale_after
+            ),
+            args,
+        )
+
+    result = read()
+    if args.wait <= 0:
+        return result
+    before = _task_signature(result)
+    deadline = time.monotonic() + args.wait
+    while time.monotonic() < deadline:
+        time.sleep(min(_TASK_WAIT_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+        result = read()
+        if _task_signature(result) != before:
+            result["changed"] = True
+            return result
+    result["changed"] = False
+    return result
+
+
+def _print_tasks_brief(result: dict[str, Any]) -> None:
+    from .lifecycle import one_line
+
+    rows = result.get("tasks") or []
+    if not rows:
+        print("No tasks.")
+    for row in rows:
+        owners = " ".join(
+            f"{owner.get('id')}={owner.get('state')}/{owner.get('delivery')}"
+            for owner in row.get("owners") or []
+        )
+        latest = row.get("latest") or {}
+        tail = f"  latest {latest.get('act')} {_clock(latest.get('sent_at'))}" if latest else ""
+        print(f"{row.get('task')}  {row.get('state')}  {owners}{tail}")
+    attention = result.get("attention") or []
+    if attention:
+        print("attention:")
+        for item in attention:
+            print(f"  {one_line(item)}")
+    if "changed" in result:
+        print(f"changed: {'yes' if result['changed'] else 'no'}")
+
+
 def run(args: argparse.Namespace) -> int:
     if "provider" in args and args.provider is None:
         # Resolved after parsing, so commands that pass the flag, the hooks
@@ -588,8 +777,8 @@ def run(args: argparse.Namespace) -> int:
         _print(result, args.as_json)
         return 0
     if args.command == "inbox":
-        rows = member_api.local_messages(member, claim=args.claim)
-        _print_messages(rows, args.as_json)
+        rows = member_api.local_messages(member, claim=args.claim, select=_mail_select(args))
+        _print_messages(rows, args.as_json, brief=args.brief)
         if args.claim and not args.as_json:
             _print_finish_reminder(member, args.provider, rows)
         return 0
@@ -605,8 +794,10 @@ def run(args: argparse.Namespace) -> int:
             print(f"Not found: {' '.join(result['missing'])}")
         return 0
     if args.command == "wait":
-        rows = member_api.wait_for_messages(member, args.timeout, claim=args.claim)
-        _print_messages(rows, args.as_json)
+        rows = member_api.wait_for_messages(
+            member, args.timeout, claim=args.claim, select=_mail_select(args)
+        )
+        _print_messages(rows, args.as_json, brief=args.brief)
         if args.claim and not args.as_json:
             _print_finish_reminder(member, args.provider, rows)
         return 0
@@ -634,12 +825,11 @@ def run(args: argparse.Namespace) -> int:
         ), args.as_json)
         return 0
     if args.command == "tasks":
-        _print(
-            member_api.tasks(
-                member, response_within=args.response_within, stale_after=args.stale_after
-            ),
-            args.as_json,
-        )
+        result = _tasks_view(member_api, member, args)
+        if args.brief and not args.as_json:
+            _print_tasks_brief(result)
+        else:
+            _print(result, args.as_json)
         return 0
     if args.command == "events":
         _print({"events": member_api.recent_events(member, limit=args.limit)}, args.as_json)
