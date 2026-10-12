@@ -73,6 +73,22 @@ class HomeTestCase(unittest.TestCase):
 
 
 class ProtocolTests(HomeTestCase):
+    def test_compose_from_flags_round_trips(self):
+        from agent_orchestra.protocol import compose_message
+
+        text = compose_message("Holds: sha abc.\n", act="tell", task="t_oboe-fix",
+                               reply_to="m_10b3db65aaaa", refs=["git:23cf639", "ops#1"])
+        self.assertEqual(text, "ACT tell\nTASK t_oboe-fix\nRE m_10b3db65aaaa\n"
+                               "REF git:23cf639, ops#1\n\nHolds: sha abc.\n")
+        envelope = parse_message(text, ["conductor"])
+        self.assertEqual((envelope.act, envelope.to, envelope.task, envelope.re),
+                         ("tell", ["conductor"], "t_oboe-fix", "m_10b3db65aaaa"))
+        self.assertEqual(envelope.refs, ["git:23cf639", "ops#1"])
+        with self.assertRaisesRegex(ProtocolError, "not both"):
+            compose_message("ACT tell\nTO all\n\nbody", act="tell")
+        with self.assertRaisesRegex(ProtocolError, "one-line"):
+            compose_message("body", act="ask", need="sha\nand more")
+
     def test_plan_example_round_trip(self):
         envelope = parse_message(PLAN_EXAMPLE)
         self.assertEqual(envelope.act, "assign")

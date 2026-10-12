@@ -779,7 +779,7 @@ hub invite  [--role player|conductor] [--parent MEMBER_ID] [--name NAME] [--ttl 
 hub conductor MEMBER_ID     hub kick MEMBER_ID [--reason TEXT]     hub close
 join INVITE [--name NAME] [--no-monitor]
 invite [--role player] [--parent self|MEMBER_ID] [--name NAME] [--ttl 3600]
-send [--to TOKEN]... (--stdin | TEXT...)
+send [--to TOKEN]... [--act A [--task T] [--re M] [--need N] [--ref R]... [--state S]] (--stdin | TEXT...)
 inbox [--claim] [FILTERS] [--brief]      show MESSAGE_ID...      wait [--timeout 55] [--claim] [FILTERS] [--brief]
 finish MESSAGE_ID...      (FILTERS: --from NAME... --act ACT... --since AGE --limit N; a filtered claim moves only the rows shown)
 status   members   tasks [--response-within 900] [--stale-after 3600] [--task ID]... [--match RE] [--brief] [--wait S]

@@ -137,6 +137,13 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("text", nargs="*")
     send.add_argument("--to", action="append", default=[], metavar="TOKEN")
     send.add_argument("--stdin", action="store_true")
+    send.add_argument("--act", help="Write the header from flags: the act (ask, tell, done, ...)")
+    send.add_argument("--task", metavar="TASK", help="TASK header; needs --act")
+    send.add_argument("--re", metavar="MESSAGE_ID", help="RE header; needs --act")
+    send.add_argument("--need", help="NEED header; needs --act")
+    send.add_argument("--ref", action="append", default=[], metavar="REF",
+                      help="REF entry; repeatable; needs --act")
+    send.add_argument("--state", help="STATE header; needs --act and --task")
 
     typing = commands.add_parser(
         "type", help="Conductor: type text into a member's session as if its user typed it"
@@ -757,6 +764,13 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command == "send":
         text = sys.stdin.read() if args.stdin else " ".join(args.text)
+        if args.act:
+            from .protocol import compose_message
+
+            text = compose_message(text, act=args.act, task=args.task, reply_to=args.re,
+                                   need=args.need, refs=args.ref, state=args.state)
+        elif args.task or args.re or args.need or args.ref or args.state:
+            raise OrchestraError("--task, --re, --need, --ref and --state build the header; add --act")
         result = member_api.send(member, text, to=args.to or None)
         _print(result, args.as_json)
         if not args.as_json and result.get("state") == "closed":

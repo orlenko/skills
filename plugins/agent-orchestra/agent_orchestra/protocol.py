@@ -77,6 +77,40 @@ class TypeOptions:
         ))
 
 
+def compose_message(
+    body: str,
+    *,
+    act: str,
+    task: str | None = None,
+    reply_to: str | None = None,
+    need: str | None = None,
+    refs: list[str] | None = None,
+    state: str | None = None,
+) -> str:
+    """A header block from `send` flags, then the body.
+
+    Sessions hand-typed the block with printf and heredocs; a typo in `TO` or
+    `RE` there misroutes. Recipients stay on `--to`, which `parse_message`
+    already merges.
+    """
+    first = body.lstrip("\n").split("\n", 1)[0]
+    match = _HEADER_LINE.match(first)
+    if match and match.group(1) in HEADER_KEYS:
+        raise ProtocolError(
+            "The text starts with a header block; pass the header as flags or in the text, not both"
+        )
+    lines = [("ACT", act), ("TASK", task), ("RE", reply_to), ("NEED", need),
+             ("REF", ", ".join(refs or []) or None), ("STATE", state)]
+    header: list[str] = []
+    for key, value in lines:
+        if value is None:
+            continue
+        if "\n" in value or not value.strip():
+            raise ProtocolError(f"--{key.lower()} needs a one-line value")
+        header.append(f"{key} {value.strip()}")
+    return "\n".join(header) + "\n\n" + body.lstrip("\n")
+
+
 def parse_message(text: str, extra_to: list[str] | None = None) -> Envelope:
     if not isinstance(text, str):
         raise ProtocolError("Message text must be a string")

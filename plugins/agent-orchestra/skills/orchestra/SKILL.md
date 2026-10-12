@@ -223,6 +223,15 @@ a key in capitals, whitespace, then a value. Keys are `ACT`, `TO`, `RE`, `TASK`,
 block is a send-time error. `ACT` is required. Recipients come from `TO`, from `--to`, or
 from both; at least one is required.
 
+`send` can write the header for you from flags, which spares hand-typing the
+block: `--act`, `--to` (repeatable), `--task`, `--re`, `--need`, `--ref`
+(repeatable), `--state`. The text, from arguments or `--stdin`, is then the
+body alone; a text that starts with its own header block is refused.
+
+    agent-orchestra send --stdin --act tell --to conductor --re m_10b3db65aaaa <<'EOF'
+    Oboe bugfix proposal holds: ...
+    EOF
+
 The seven acts:
 
 - `ask`: a question that blocks on a reply.
