@@ -329,8 +329,9 @@ class HookStopTest(HooksTestCase):
         reason = hooks.hook_stop(self.provider, self.payload())["reason"]
         # On a busy orchestra this used to paste every report into the session.
         self.assertNotIn("x" * 200, reason)
-        expected = str(bucket_dir(member_id, "pending") / f"{message_id}.json")
-        self.assertIn(f"read {json.dumps(expected)}", reason)
+        # A path to the row sent sessions to hand-rolled JSON extractors.
+        self.assertNotIn(str(bucket_dir(member_id, "pending")), reason)
+        self.assertIn(f" show --provider {self.provider} --member-id {member_id} {message_id}", reason)
         self.assertIn("8.8 KB, not shown", reason)
         self.assertIn("Bodies are not pasted here", reason)
         self.assertLess(len(reason), 2000)
@@ -732,6 +733,26 @@ class SelectWithoutMemberIdTest(HooksTestCase):
             provider=self.provider, cwd=str(self.cwd), member_id="mb_free0002"
         )
         self.assertEqual(self.select()["member_id"], "mb_free0002")
+
+
+class ShowTest(HooksTestCase):
+    def test_show_prints_a_body_from_any_bucket_and_claims_nothing(self) -> None:
+        member = self.make_member()
+        member_id = str(member["member_id"])
+        pending, claimed = "m_" + "a" * 16, "m_" + "b" * 16
+        self.add_message(member_id, pending, text="line one\nline two")
+        self.add_message(member_id, claimed, bucket="claimed")
+
+        result = member_module.show_messages(
+            member, [pending, claimed, "m_" + "c" * 16, "../../member", pending]
+        )
+
+        self.assertEqual([row["id"] for row in result["messages"]], [pending, claimed])
+        self.assertEqual(result["messages"][0]["text"], "line one\nline two")
+        self.assertEqual(result["messages"][0]["local_state"], "pending")
+        self.assertEqual(result["missing"], ["m_" + "c" * 16, "../../member"])
+        self.assertTrue((bucket_dir(member_id, "pending") / f"{pending}.json").exists())
+        self.assertTrue((bucket_dir(member_id, "claimed") / f"{claimed}.json").exists())
 
 
 class SandboxedStateTest(HooksTestCase):

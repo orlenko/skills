@@ -901,6 +901,34 @@ def local_messages(member: dict[str, Any], *, claim: bool) -> list[dict[str, Any
     return sorted(rows, key=_inbox_order)
 
 
+def show_messages(member: dict[str, Any], message_ids: list[str]) -> dict[str, Any]:
+    """Received messages by id, from any local bucket, without claiming them.
+
+    The Stop hook named each body's JSON file, and sessions read it with
+    hand-rolled extractors: one ran `python3 -c "...['text']"` 166 times in a
+    day. This answers with the body as text and leaves the message where it is.
+    """
+    member_id = str(member["member_id"])
+    rows: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for message_id in dict.fromkeys(message_ids):
+        if not re.fullmatch(core.MESSAGE_ID_RE, message_id):
+            missing.append(message_id)
+            continue
+        for bucket in ("pending", "claimed", "done"):
+            path = bucket_dir(member_id, bucket) / f"{message_id}.json"
+            try:
+                item = read_json(path)
+            except OrchestraError:
+                continue
+            item["local_state"] = bucket
+            rows.append(item)
+            break
+        else:
+            missing.append(message_id)
+    return {"messages": rows, "count": len(rows), "missing": missing}
+
+
 def pending_count(member: dict[str, Any]) -> int:
     member_id = str(member["member_id"])
     return sum(

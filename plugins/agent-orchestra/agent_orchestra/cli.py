@@ -57,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{hub,join,invite,send,inbox,wait,finish,status,members,tasks,"
+        metavar="{hub,join,invite,send,inbox,show,wait,finish,status,members,tasks,"
         "events,message,conductor,kick,leave,close,monitor,podium}",
     )
 
@@ -221,6 +221,12 @@ def build_parser() -> argparse.ArgumentParser:
     events = commands.add_parser("events", help="List recent system events")
     _common(events)
     events.add_argument("--limit", type=int, default=20)
+
+    show = commands.add_parser(
+        "show", help="Print received messages by id without claiming them"
+    )
+    _common(show)
+    show.add_argument("message_ids", nargs="+", metavar="MESSAGE_ID")
 
     message = commands.add_parser("message", help="Show delivery state of one sent message")
     _common(message)
@@ -586,6 +592,17 @@ def run(args: argparse.Namespace) -> int:
         _print_messages(rows, args.as_json)
         if args.claim and not args.as_json:
             _print_finish_reminder(member, args.provider, rows)
+        return 0
+    if args.command == "show":
+        result = member_api.show_messages(member, args.message_ids)
+        if args.as_json:
+            _print(result, True)
+        elif result["messages"]:
+            _print_messages(result["messages"], False)
+        if not result["messages"]:
+            raise OrchestraError(f"No such message here: {' '.join(result['missing'])}")
+        if result["missing"] and not args.as_json:
+            print(f"Not found: {' '.join(result['missing'])}")
         return 0
     if args.command == "wait":
         rows = member_api.wait_for_messages(member, args.timeout, claim=args.claim)

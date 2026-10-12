@@ -743,7 +743,8 @@ Copy the hook half of `plugins/agent-pair/agent_pair/client.py`
 - `_hook_message_nudge`: rows ordered by `protocol.attention_rank` (blocks,
   then reply-required), then `sent_at`;
   each block carries `sender`, `act`, `task`, `need`, `claim_token`, the body's
-  size and the path to its row. The body itself is never pasted: on a busy
+  size; one `show` command for the shown ids follows the lead line (a path to
+  the row sent sessions to hand-rolled JSON extractors). The body itself is never pasted: on a busy
   orchestra that put every member's 4 KB report in the user's transcript. `need`
   is flattened to one line and capped, so a sender cannot flood the nudge
   through a header either. Stop after 10 messages or 32 KiB of blocks; list the
@@ -779,7 +780,7 @@ hub conductor MEMBER_ID     hub kick MEMBER_ID [--reason TEXT]     hub close
 join INVITE [--name NAME] [--no-monitor]
 invite [--role player] [--parent self|MEMBER_ID] [--name NAME] [--ttl 3600]
 send [--to TOKEN]... (--stdin | TEXT...)
-inbox [--claim]      wait [--timeout 55] [--claim]      finish MESSAGE_ID...
+inbox [--claim]      show MESSAGE_ID...      wait [--timeout 55] [--claim]      finish MESSAGE_ID...
 status   members   tasks [--response-within 900] [--stale-after 3600]
 events [--limit 20]   message MESSAGE_ID
 conductor MEMBER_ID   kick MEMBER_ID [--reason TEXT]   leave   close   monitor
