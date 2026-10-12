@@ -6,18 +6,21 @@ description: "Connect this coding-agent session to an Agent Orchestra: a durable
 # Agent Orchestra
 
 Use the bundled `bin/agent-orchestra` executable. Resolve its absolute path from
-this skill: the plugin root is two directories above this skill directory. Pass
-`--provider codex` in Codex and `--provider claude` in Claude Code. Keep the
-current working directory unchanged; it identifies this session's membership.
-Retain the `member_id` returned by `join` in conversation context and pass
-`--member-id ID` on every later command. This disambiguates two same-provider
-sessions working in the same directory. This session belongs to one orchestra;
-a machine may belong to several, one session each.
+this skill: the plugin root is two directories above this skill directory. Keep
+the current working directory unchanged; it identifies this session's
+membership. Pass no `--provider` and no `--member-id`: the CLI reads the agent
+it runs under (Claude or Codex) from its process tree, and each membership
+records the agent process that holds it, so a command finds this session's own
+seat even beside another session's in the same directory. A command that cannot
+tell refuses and names the ids; it never acts through another session's seat.
+After `/clear` or a resume the seat follows on the next command, so a handoff
+note needs no member id. This session belongs to one orchestra; a machine may
+belong to several, one session each.
 
 ## Route the request
 
 - No arguments:
-  - Run `status --json`, including the retained `--member-id` when one is known.
+  - Run `status --json`.
   - With no membership, say so and give the two ways in. Either the user hands
     over an `or1.` invite minted elsewhere, or this machine starts a hub with
     `hub start`. Start a hub only on an always-on machine.
@@ -67,9 +70,9 @@ a machine may belong to several, one session each.
   `done`. `quiet --to MEMBER --off --json` lifts it, and the held mail flows.
 - `adopt`: a seat stays with the agent that joined it (Claude or Codex), and
   another agent's commands cannot take it over. When a session of the other
-  agent really replaces the one that joined, run `adopt --member-id M
-  --provider P --json` from that session, where P is the agent you are (a
-  Claude session passes `claude`), never the provider the roster shows. It
+  agent really replaces the one that joined, run `adopt --member-id M --json`
+  from that session. Pass `--provider P` only to override detection, and then
+  P is the agent you are, never the provider the roster shows. It
   moves the seat to this agent and directory, so its hooks, wake, and `type`
   follow the new agent. The hub's roster keeps the provider the seat joined
   with; that is expected, not something to adopt back.
@@ -157,11 +160,13 @@ certificate, database, log, and supervisor unit.
   newest membership. Mail for the first membership still arrives on disk and
   still raises an OS notification, and no hook surfaces it in the session
   again. Run each orchestra from its own session.
-- `--member-id ID` stops being optional once two sessions in the same directory
-  belong to different orchestras. A command without it resolves to the newest
-  open membership for this provider and directory, which may be the other
-  orchestra's. A `send` over that membership reaches the other orchestra's
-  members and reports success.
+- `--member-id ID` is for the one case a command cannot settle on its own:
+  several memberships in this directory that no live session holds, which
+  happens when two sessions were both replaced. The command refuses and lists
+  them; pass the id once and this session holds that seat from then on. A
+  membership another live session holds is never used without the flag; the
+  command refuses and names it. If this session really replaced that agent,
+  run `adopt --member-id ID --json` once.
 
 ## Coordinate safely
 
@@ -414,8 +419,8 @@ Lifecycle reminders remain available if queue delivery is unavailable.
 Set `AGENT_ORCHESTRA_CODEX_BIN` to the real executable before binding if Codex
 is outside PATH or a wrapper changes accounts. AIQ shims are bypassed for
 queue operations to preserve the bound account home. After upgrading an
-existing membership, run `monitor --restart --provider codex --member-id ID
---json` once to load the new monitor. A new membership starts it automatically.
+existing membership, run `monitor --restart --json` once to load the new
+monitor. A new membership starts it automatically.
 
 Jev (off by default). With `AGENT_ORCHESTRA_JEV=1` and `TYPESAFE_API_KEY` in
 the session's environment, two things happen; both send text to TypeSafe, a

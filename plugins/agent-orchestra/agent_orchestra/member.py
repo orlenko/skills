@@ -382,7 +382,45 @@ def select_member(*, provider: str, cwd: str, member_id: str | None = None) -> d
         raise OrchestraError(
             f"No open orchestra membership for {normalize_provider(provider)} in this directory"
         )
-    return claim_ownership(rows[0])
+    return claim_ownership(_own_member(rows))
+
+
+def _seat_label(row: dict[str, Any]) -> str:
+    where = row.get("hub_name") or row.get("orchestra_id")
+    return f"{row['member_id']} ({row.get('name') or '?'} on {where})"
+
+
+def _own_member(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The membership this session holds, found without `--member-id`.
+
+    A session is its agent process, and `owner_pid` records which one holds each
+    seat. Before this, a command without the flag took the newest membership in
+    the directory: with two sessions there in different orchestras, one
+    session's `send` went out through the other's seat and reported success.
+    A seat no live process holds is this session's only when it is the one such
+    seat; otherwise the session names it once and owns it from then on.
+    """
+    ancestors = core.agent_ancestor_pids()
+    for pid in ancestors:
+        for row in rows:
+            if _as_pid(row.get("owner_pid")) == pid:
+                return row
+    free = [row for row in rows if not _pid_alive(_as_pid(row.get("owner_pid")) or 0)]
+    if len(free) == 1:
+        return free[0]
+    if free:
+        listed = ", ".join(_seat_label(row) for row in free)
+        raise OrchestraError(
+            f"{len(free)} memberships in this directory have no live session: {listed}. "
+            "Pass --member-id once; this session holds that seat from then on"
+        )
+    listed = ", ".join(
+        f"{_seat_label(row)} held by pid {row.get('owner_pid')}" for row in rows
+    )
+    raise OrchestraError(
+        f"No membership in this directory belongs to this session: {listed}. "
+        "If this session replaced that agent, run adopt --member-id ID once"
+    )
 
 
 def load_member(member_id: str) -> dict[str, Any]:

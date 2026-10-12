@@ -24,6 +24,7 @@ os.environ["AGENT_ORCHESTRA_HOME"] = str(Path(_STATE.name) / "import-state")
 from agent_orchestra import core, hooks  # noqa: E402
 from agent_orchestra import member as member_module  # noqa: E402
 from agent_orchestra.core import (  # noqa: E402
+    OrchestraError,
     atomic_write_json,
     bucket_dir,
     instance_key,
@@ -74,6 +75,13 @@ class HooksTestCase(unittest.TestCase):
         )
         ancestor.start()
         self.addCleanup(ancestor.stop)
+        ancestors = mock.patch.object(
+            core,
+            "agent_ancestor_pids",
+            side_effect=lambda *args, **kwargs: [] if self.ancestor_pid is None else [self.ancestor_pid],
+        )
+        ancestors.start()
+        self.addCleanup(ancestors.stop)
         self.ancestor_pid: int | None = self.owner_pid
 
     def set_ancestor(self, pid: int | None) -> None:
@@ -552,7 +560,8 @@ class OwnershipRepairTest(HooksTestCase):
         holder = self.live_pid()
         member_id = self._member_with_mail(owner_pid=holder)
 
-        self._run_a_command()
+        with self.assertRaisesRegex(OrchestraError, "belongs to this session"):
+            self._run_a_command()
 
         self.assertEqual(self.owner_of(member_id), holder)
         self.assertEqual(hooks.hook_stop(self.provider, self.payload("s1", "Stop")), {})
@@ -674,6 +683,55 @@ class OwnershipRepairTest(HooksTestCase):
         )
 
         self.assertEqual(self.owner_of(member_id), self.session_pid)
+
+
+class SelectWithoutMemberIdTest(HooksTestCase):
+    """A command without --member-id acts for the seat its own session holds.
+
+    It took the newest membership in the directory before, so with two sessions
+    there in different orchestras one session's `send` went out as the other.
+    """
+
+    def select(self) -> dict[str, Any]:
+        return member_module.select_member(provider=self.provider, cwd=str(self.cwd))
+
+    def test_each_session_gets_its_own_seat_whatever_joined_last(self) -> None:
+        mine, theirs = self.live_pid(), self.live_pid()
+        self.make_member("mb_mine0001", owner_pid=mine, joined_at=self.clock - 900)
+        self.make_member("mb_them0001", owner_pid=theirs, joined_at=self.clock - 60)
+
+        self.set_ancestor(mine)
+        self.assertEqual(self.select()["member_id"], "mb_mine0001")
+        self.set_ancestor(theirs)
+        self.assertEqual(self.select()["member_id"], "mb_them0001")
+
+    def test_a_child_agent_acts_for_the_session_above_it(self) -> None:
+        session, child = self.live_pid(), self.live_pid()
+        self.make_member("mb_mine0001", owner_pid=session)
+        self.make_member("mb_them0001", owner_pid=self.live_pid())
+        self.patch("agent_orchestra.core.agent_ancestor_pids", return_value=[child, session])
+
+        self.assertEqual(self.select()["member_id"], "mb_mine0001")
+
+    def test_the_one_free_seat_is_taken_beside_a_held_one(self) -> None:
+        self.set_ancestor(self.live_pid())
+        self.make_member("mb_free0001", owner_pid=self.dead_pid(), joined_at=self.clock - 900)
+        self.make_member("mb_them0001", owner_pid=self.live_pid(), joined_at=self.clock - 60)
+
+        self.assertEqual(self.select()["member_id"], "mb_free0001")
+
+    def test_two_free_seats_need_the_id_once(self) -> None:
+        session = self.live_pid()
+        self.set_ancestor(session)
+        self.make_member("mb_free0001", owner_pid=self.dead_pid())
+        self.make_member("mb_free0002", owner_pid=None)
+
+        with self.assertRaisesRegex(OrchestraError, "mb_free0001.*mb_free0002|mb_free0002.*mb_free0001"):
+            self.select()
+        member_module.select_member(
+            provider=self.provider, cwd=str(self.cwd), member_id="mb_free0002"
+        )
+        self.assertEqual(self.select()["member_id"], "mb_free0002")
 
 
 class SandboxedStateTest(HooksTestCase):

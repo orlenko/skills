@@ -16,7 +16,10 @@ from .protocol import DEFAULT_TYPE_QUIET_SECONDS, TypeOptions
 
 
 def _provider_default() -> str:
-    return os.environ.get("AGENT_ORCHESTRA_PROVIDER", "cli")
+    """The flag, then `$AGENT_ORCHESTRA_PROVIDER`, then the agent this runs under."""
+    from .core import agent_provider
+
+    return os.environ.get("AGENT_ORCHESTRA_PROVIDER") or agent_provider() or "cli"
 
 
 def _utc_epoch(value: str) -> float:
@@ -29,7 +32,7 @@ def _utc_epoch(value: str) -> float:
 
 
 def _common(parser: argparse.ArgumentParser, *, member: bool = True) -> None:
-    parser.add_argument("--provider", default=_provider_default())
+    parser.add_argument("--provider")
     parser.add_argument("--cwd", default=os.getcwd())
     if member:
         parser.add_argument("--member-id")
@@ -456,6 +459,10 @@ def _run_hub(args: argparse.Namespace) -> int:
 
 
 def run(args: argparse.Namespace) -> int:
+    if "provider" in args and args.provider is None:
+        # Resolved after parsing, so commands that pass the flag, the hooks
+        # among them, never walk the process tree for it.
+        args.provider = _provider_default()
     if args.command == "serve":
         from .hub import serve
 

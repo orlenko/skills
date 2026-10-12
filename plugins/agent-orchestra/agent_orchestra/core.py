@@ -509,6 +509,33 @@ def agent_ancestor_pid(pid: int | None = None) -> int | None:
     return None
 
 
+def agent_ancestor_pids(pid: int | None = None) -> list[int]:
+    """Every coding-agent process above this one, nearest first.
+
+    A command finds its own membership by these. The nearest alone is not
+    enough: a `claude -p` child acts for the session that started it, and a
+    wrapper whose arguments mention the agent can sit between a shell and the
+    agent itself.
+    """
+    found: list[int] = []
+    current = pid
+    while len(found) < AGENT_ANCESTOR_LEVELS:
+        current = agent_ancestor_pid(current)
+        if current is None:
+            break
+        found.append(current)
+    return found
+
+
+def agent_provider() -> str | None:
+    """`claude` or `codex`: the agent this command runs under, when one does."""
+    for pid in agent_ancestor_pids():
+        kind = agent_kind(pid)
+        if kind:
+            return kind
+    return None
+
+
 def _is_one_shot_agent(pid: int) -> bool:
     """True when this agent process runs one task and exits."""
     tokens = (_ps_field("args=", pid) or "").split()

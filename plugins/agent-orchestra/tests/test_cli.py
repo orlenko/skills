@@ -90,18 +90,21 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(args.member_id, "mb_1234")
         self.assertTrue(args.as_json)
 
-    def test_provider_default_comes_from_environment(self) -> None:
-        previous = os.environ.get("AGENT_ORCHESTRA_PROVIDER")
-        os.environ["AGENT_ORCHESTRA_PROVIDER"] = "codex"
-        try:
-            args = build_parser().parse_args(["status"])
-        finally:
-            if previous is None:
-                os.environ.pop("AGENT_ORCHESTRA_PROVIDER", None)
-            else:
-                os.environ["AGENT_ORCHESTRA_PROVIDER"] = previous
-        self.assertEqual(args.provider, "codex")
-        self.assertEqual(build_parser().parse_args(["status"]).provider, "cli")
+    def test_provider_comes_from_flag_then_environment_then_agent(self) -> None:
+        from agent_orchestra import cli
+
+        self.assertEqual(
+            build_parser().parse_args(["status", "--provider", "codex"]).provider, "codex"
+        )
+        self.assertIsNone(build_parser().parse_args(["status"]).provider)
+        with mock.patch.dict(os.environ, {"AGENT_ORCHESTRA_PROVIDER": "codex"}), \
+                mock.patch("agent_orchestra.core.agent_provider", return_value="claude"):
+            self.assertEqual(cli._provider_default(), "codex")
+        with mock.patch.dict(os.environ, {"AGENT_ORCHESTRA_PROVIDER": ""}):
+            with mock.patch("agent_orchestra.core.agent_provider", return_value="claude"):
+                self.assertEqual(cli._provider_default(), "claude")
+            with mock.patch("agent_orchestra.core.agent_provider", return_value=None):
+                self.assertEqual(cli._provider_default(), "cli")
 
     def test_hub_subcommand_group(self) -> None:
         args = self.parser.parse_args(["hub", "invite", "--role", "conductor"])
@@ -115,7 +118,7 @@ class ParserTest(unittest.TestCase):
             self.parser.parse_args(["--version"])
         self.assertEqual(caught.exception.code, 0)
         self.assertEqual(out.getvalue().strip(), f"agent-orchestra {__version__}")
-        self.assertEqual(__version__, "0.2.17")
+        self.assertEqual(__version__, "0.2.18")
 
     def test_unknown_command_exits_non_zero(self) -> None:
         err = io.StringIO()

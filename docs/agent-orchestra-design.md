@@ -765,8 +765,11 @@ env var makes all three hooks return `{}`/0; a truncated body carries
 ## cli.py and bin/agent-orchestra
 
 `agent-orchestra --version`. Common flags on every member command:
-`--provider` (default `$AGENT_ORCHESTRA_PROVIDER` or `cli`), `--cwd`,
-`--member-id`, `--json`. Hub commands take `--orchestra-id` and `--json`.
+`--provider` (default `$AGENT_ORCHESTRA_PROVIDER`, then the claude or codex
+process the command runs under, then `cli`), `--cwd`, `--member-id` (default:
+the open membership in this directory whose `owner_pid` is one of the command's
+agent ancestors, else the only one no live process holds, else refuse), `--json`.
+Hub commands take `--orchestra-id` and `--json`.
 
 ```
 hub start   [--name NAME] [--bind 0.0.0.0] [--port 0] [--advertise IP]... [--invite-ttl 3600]
