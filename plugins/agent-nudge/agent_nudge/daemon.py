@@ -8,8 +8,9 @@ sends that line, with care:
 - only to a pane whose screen has not changed for the idle threshold, whose
   input box is empty (dim suggestions do not count), and where no attached
   tmux client has typed recently;
-- never while a dialog is open or the agent is mid-turn, and never when Jev
-  reads the last message as a question for the user;
+- never while a dialog is open or the agent is mid-turn. When Jev reads the
+  last message as a question for the user, the pane waits two hours, then
+  gets one line asking whether it still needs a person;
 - once per stop. Jev decides whether asking again would plausibly help; an
   explicit terminal answer such as "the goal is done" leaves the unchanged
   pane quiet. If another nudge still makes sense, the threshold triples, up to
@@ -40,6 +41,10 @@ POLL_SECONDS = 30.0
 WATCHER_FACTOR = 6
 STREAK_FACTOR = 3
 MAX_WAIT_SECONDS = 4 * 3600
+# A stop that reads as a person's call is held this long, then asked once.
+# studio-ops sat three hours on "blocked by Claude reviewer/judge quota": the
+# quota cleared and nothing asked again.
+HUMAN_HOLD_SECONDS = 2 * 3600
 DAILY_CAP = 12
 # A change this soon after a nudge is the agent answering it.
 RESPONSE_WINDOW_SECONDS = 180
@@ -59,6 +64,9 @@ PUSHBACK = ("[agent-nudge] It sounds like an obstacle has you stopped. Can you d
             "Ask {whom} whether anyone has solved it. If not, fix it yourself in a PR of your "
             "own, stack it under your work, and carry on. If it truly needs a person, name the "
             "exact decision you need.")
+HELD = ("[agent-nudge] Your last message has waited {minutes} min for a person and nobody has "
+        "answered. If a quota, rate limit, or outage stopped you, it may have cleared: check it and "
+        "carry on. If you still need a person, restate the exact decision in one line and stop.")
 POINTED = ("[agent-nudge] You have been idle for {minutes} min after saying you would act when "
            "something changes, and nothing is watching for it. Check it now. If it is still "
            "pending, set up something that will wake you (a monitor, a scheduled wake-up, or a "
@@ -223,6 +231,7 @@ class Nudger:
                 rec["streak"] = 0
                 rec.pop("nudge_streak_started_at", None)
                 rec.pop("pushed_back", None)
+                rec.pop("held_nudged", None)
             rec["awaiting"] = False
             rec["hash"], rec["changed_at"] = scr.body_hash, at
             rec.pop("reason", None)
@@ -275,6 +284,7 @@ class Nudger:
             return self._note(pane, rec, at, "skip", f"daily cap of {DAILY_CAP} nudges")
         live = mode() == "live"
         verdict = None
+        held = False
         if judge.enabled():
             cached = rec.get("jev") or {}
             answers = cached.get("answers")
@@ -292,7 +302,11 @@ class Nudger:
             # A permission question about a step inside its own work is the
             # push-back case, so it doesn't count as asking a person.
             if verdict["needs_human_p"] >= 0.5 and not mail and not pushback:
-                return self._note(pane, rec, at, "skip", "judge says the last message asks a person")
+                # A person's call holds the pane, but not forever: what reads as
+                # one is sometimes a limit that clears with time. Once per chain.
+                if idle < HUMAN_HOLD_SECONDS or rec.get("held_nudged"):
+                    return self._note(pane, rec, at, "skip", "judge says the last message asks a person")
+                held = True
             # Mail and typed task lifecycle are harder facts than a screen
             # reading. Otherwise ask Jev the actual policy question: whether
             # repeating the prompt can still change what this session does.
@@ -312,6 +326,9 @@ class Nudger:
                     else "the agent you report to or your pair partner")
             text = PUSHBACK.format(whom=whom)
             kind = "pushback"
+        elif held:
+            text = HELD.format(minutes=minutes)
+            kind = "held"
         else:
             text = (POINTED if pointed else GENERIC).format(minutes=minutes)
             kind = "pointed" if pointed else "generic"
@@ -336,6 +353,8 @@ class Nudger:
         rec["last_text"] = text
         if kind == "pushback":
             rec["pushed_back"] = True
+        elif kind == "held":
+            rec["held_nudged"] = True
         append_log(row)
         return row
 

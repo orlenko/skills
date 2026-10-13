@@ -390,6 +390,35 @@ class NudgerTest(unittest.TestCase):
     def test_holds_back_for_a_question_to_the_user(self):
         self._held_back(lambda: self.verdict.update(needs_human_p=0.8))
 
+    def test_a_question_to_the_user_is_asked_again_once_after_two_hours(self):
+        # studio-ops: "blocked by Claude reviewer/judge quota" read as a
+        # person's call, and the quota cleared while nothing asked again.
+        daemon.set_mode("live")
+        self.verdict["needs_human_p"] = 0.8
+        self.nudger.tick()
+        self.advance(11)
+        self.advance(100)
+        self.assertEqual(self.sent, [])
+        self.advance(10)
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("nobody has answered", self.sent[0])
+        self.advance(0.5)   # the agent restates its question
+        self.advance(300)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_outside_wake_rearms_the_held_question(self):
+        daemon.set_mode("live")
+        self.verdict["needs_human_p"] = 0.8
+        self.nudger.tick()
+        self.advance(121)
+        self.advance(0.5)
+        self.advance(5)
+        self.screen = claude_screen(IDLE_BODY + "\n❯ a new task from the person")
+        self.advance(0.5)
+        self.advance(121)
+        self.assertEqual(len(self.sent), 2)
+        self.assertIn("nobody has answered", self.sent[1])
+
     def test_holds_back_when_judge_says_working(self):
         self._held_back(lambda: self.verdict.update(state="working"))
 

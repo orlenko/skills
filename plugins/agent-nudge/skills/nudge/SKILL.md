@@ -27,7 +27,9 @@ all of these hold:
   5 minutes (`AGENT_NUDGE_HUMAN_QUIET_MINUTES`).
 - There is no spinner and no dialog.
 - TypeSafe Jev reads the screen as idle, and the last message is not a question
-  for the user.
+  for the user. A quota or outage in a tool the agent calls doesn't count as a
+  question. A question that sits unanswered for two hours gets one line asking
+  whether it still needs a person, once per chain.
 
 It nudges once per stop. Before a repeat, Jev reads the visible conversation
 and receives trusted continuity facts from the daemon: the unchanged duration,

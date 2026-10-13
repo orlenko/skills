@@ -4,6 +4,12 @@ The screen questions come from aiq's pane benchmark (aiq/bench/jev). There,
 working vs not working was 24/24 and needs_human was 88%. `waiting` is new. It
 catches the case that prompted this tool: an agent that ends its turn saying it
 will act once something changes, with nothing set up to wake it.
+
+needs_human no longer counts a quota in a tool the agent calls. A Codex session
+stopped on "blocked by Claude reviewer/judge quota" scored 0.73 under the old
+wording and sat unnudged for three hours. The new wording scored 0.27 on that
+screen. A question to the user held at 0.92, and the agent's own usage limit
+at 0.68.
 """
 
 from __future__ import annotations
@@ -42,8 +48,12 @@ QUESTIONS = {
                         "something before this session can make progress on its own?",
         "criteria": {
             "true": "A permission or trust dialog, a sign-in screen, a question the agent's last "
-                    "message asks the user, or a usage limit only the user can resolve.",
-            "false": "The agent is working, idle with nothing asked of the user, or has exited.",
+                    "message asks the user, or a usage limit on this agent's own session that "
+                    "only the user can lift.",
+            "false": "The agent is working, idle with nothing asked of the user, or has exited. "
+                     "Also false when the agent reports a quota, rate limit, or outage in a tool, "
+                     "reviewer, or service it calls: that clears with time and the agent can retry "
+                     "it without a person.",
         },
     },
     "waiting": {

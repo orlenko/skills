@@ -408,7 +408,9 @@ question into a pane only when all of these hold:
 - the screen above the input box has not changed for 10 minutes;
 - the input box is empty (dim suggestions count as empty);
 - no one has typed in that tmux session for 5 minutes;
-- TypeSafe Jev reads the screen as idle, with no question for the user.
+- TypeSafe Jev reads the screen as idle, with no question for the user
+  (after two hours unanswered, a question gets one line asking whether it
+  still needs a person).
 
 It asks whether the goal is done or blocked. If the agent said it was waiting
 on something and nothing in the footer is watching, it says that instead. Jev
