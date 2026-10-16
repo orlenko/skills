@@ -1,6 +1,6 @@
 {
   "name": "agent-orchestra",
-  "version": "0.2.23+codex.20261012175650",
+  "version": "0.2.24+codex.20261016223822",
   "description": "Durable many-agent messaging with a hub, a conductor, and players across machines.",
   "author": {
     "name": "Vlad Orlenko",

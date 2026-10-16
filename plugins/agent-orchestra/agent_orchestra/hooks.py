@@ -39,7 +39,7 @@ from .member import (
     status_owed,
 )
 from .lifecycle import one_line
-from .protocol import attention_rank, reply_required
+from .protocol import attention_rank, reply_required, wakes
 
 
 _HOOK_NEED_PREVIEW_CHARS = 200
@@ -548,6 +548,14 @@ def _pending_ids(member_id: str) -> set[str]:
     return {path.stem for path in bucket_dir(member_id, "pending").glob("*.json")}
 
 
+def _read_row(path: Path) -> dict[str, Any]:
+    try:
+        return read_json(path)
+    except OrchestraError:
+        # Gone or half-written: let it wake, as before this filter.
+        return {}
+
+
 def _sleep_unless_closed(member_id: str, seconds: float) -> None:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -649,8 +657,14 @@ def hook_wait(provider: str, payload: dict[str, Any]) -> int:
                 member = claim_ownership(member)
                 next_monitor_check = time.monotonic() + _WAIT_MONITOR_SECONDS
             # Events land in events/ and never in pending/, so a presence line
-            # can never wake the session; only real member mail does.
-            if _pending_ids(member_id) - seen and not quiet_until(member_id):
+            # can never wake the session; only real member mail does, and of
+            # that only what protocol.wakes picks. The rest waits for it.
+            fresh = _pending_ids(member_id) - seen
+            pending = bucket_dir(member_id, "pending")
+            if fresh and not any(wakes(_read_row(pending / f"{stem}.json")) for stem in fresh):
+                seen |= fresh
+                fresh = set()
+            if fresh and not quiet_until(member_id):
                 reason = _hook_message_nudge(member, provider, "")
                 if reason:
                     sys.stderr.write(f"{reason}\n")

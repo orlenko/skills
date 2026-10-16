@@ -224,6 +224,21 @@ def attention_rank(row: dict[str, Any]) -> int:
     return 1 if reply_required(row) else 2
 
 
+def wakes(row: dict[str, Any]) -> bool:
+    """Whether this mail should wake an idle session on its own.
+
+    A conductor's inbox is mostly owners' lifecycle reports and FYI tells: 334
+    of the ops6 Maestro's 463 messages on 2026-10-16. Waking on each one queued
+    a Codex notice every two or three minutes, 150 in a day. They now wait for
+    the next mail that does wake, a hook, or the person's next prompt.
+    A tell carrying STATE (reopened, cancelled) changes the owner's work, so it
+    still wakes.
+    """
+    act = row.get("act")
+    quiet = act == "status" or (act == "tell" and not row.get("lifecycle"))
+    return not quiet or reply_required(row)
+
+
 def summarize(row: dict[str, Any]) -> str:
     parts = [f"act={row.get('act') or 'tell'}"]
     task = row.get("task")

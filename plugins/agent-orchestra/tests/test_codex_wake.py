@@ -215,6 +215,21 @@ class CodexWakeTests(unittest.TestCase):
         sleep.assert_not_called()
         factory.assert_not_called()
 
+    def test_only_mail_the_filter_picks_queues_a_notice(self):
+        from agent_orchestra.protocol import wakes
+        status = self.buckets[0] / "m_status.json"
+        status.write_text(json.dumps({"id": "m_status", "act": "status", "need": "none"}))
+        codex_wake.wake(self.mailbox, buckets=self.buckets,
+                        executable=Path("/bin/agent-orchestra"), id_flag="--member-id",
+                        label="Agent Orchestra", wakes=wakes)
+        self.assertEqual(self.calls(), [])
+        block = self.buckets[0] / "m_block.json"
+        block.write_text(json.dumps({"id": "m_block", "act": "block", "need": "none"}))
+        codex_wake.wake(self.mailbox, buckets=self.buckets,
+                        executable=Path("/bin/agent-orchestra"), id_flag="--member-id",
+                        label="Agent Orchestra", wakes=wakes)
+        self.assertEqual(len(self.calls()), 1)
+
     def test_no_mail_means_no_queue(self):
         self.wake()
         self.assertEqual(self.calls(), [])

@@ -40,6 +40,7 @@ from .protocol import (
     message_body,
     parse_message,
     reply_required,
+    wakes,
 )
 
 
@@ -1974,7 +1975,7 @@ def _wake_codex(member: dict[str, Any]) -> None:
     codex_wake.wake(
         member_id, buckets=[bucket_dir(member_id, b) for b in ("pending", "claimed")],
         executable=_module_root() / "bin" / "agent-orchestra",
-        id_flag="--member-id", label="Agent Orchestra",
+        id_flag="--member-id", label="Agent Orchestra", wakes=wakes,
     )
 
 

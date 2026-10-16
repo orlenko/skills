@@ -439,7 +439,11 @@ resumed. No polling turn or Claude-style asynchronous hook is needed.
 The queued notice points at this member's current inbox. Follow its command,
 handle the messages under the same collaboration rules, and `finish` only what
 you handled. An empty inbox needs no action. System presence events and task
-attention snapshots never queue a wake; only member mail does. Successful
+attention snapshots never queue a wake; only member mail does, and not all of
+it: an `ACT status`, or an `ACT tell` without `STATE`, wakes nothing unless its
+`NEED` asks for a reply. That mail waits for the next mail that does wake, a
+hook, or the person's next prompt, and the Claude Code waiter and agent-nudge
+follow the same rule. Successful
 notices are limited to one per 60 seconds per Codex thread, shared across
 Orchestra and Pair and preserved across monitor restarts. Mail arriving during
 that minute is coalesced, and the inbox is rechecked before waking. Empty

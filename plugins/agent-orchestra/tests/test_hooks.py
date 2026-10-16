@@ -922,7 +922,7 @@ class HookWaitAfterFailureTest(HooksTestCase):
             while list(runtime_dir().glob("*.stopfailure.*.json")) and time.monotonic() < deadline:
                 time.sleep(0.05)
             self.assertEqual(list(runtime_dir().glob("*.stopfailure.*.json")), [])
-            self.add_message(member_id, "m_" + "d" * 16)
+            self.add_message(member_id, "m_" + "d" * 16, act="ask", need="sha")
             worker.join(timeout=10)
         self.assertFalse(worker.is_alive())
         self.assertEqual(hooks._failure_delay(member_id, "session-one"), 0.2)
@@ -981,6 +981,10 @@ class HookWaitTest(HooksTestCase):
             self.add_event(member_id, f"presence {CONDUCTOR['id']} maestro stale since=1")
             time.sleep(0.8)
             self.assertTrue(worker.is_alive(), "an event woke the wait hook")
+
+            self.add_message(member_id, "m_" + "b" * 16, act="status")
+            time.sleep(0.8)
+            self.assertTrue(worker.is_alive(), "an FYI status woke the wait hook")
 
             self.add_message(member_id, "m_" + "a" * 16, act="ask", need="sha")
             worker.join(timeout=10)
@@ -1067,7 +1071,7 @@ class HookWaitTest(HooksTestCase):
                 time.sleep(0.05)
             self.assertEqual(member_module.load_member(member_id)["owner_pid"], session)
 
-            self.add_message(member_id, "m_" + "a" * 16)
+            self.add_message(member_id, "m_" + "a" * 16, act="ask", need="sha")
             worker.join(timeout=10)
 
         self.assertFalse(worker.is_alive())

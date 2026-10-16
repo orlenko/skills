@@ -184,6 +184,8 @@ class OrchestraFilesTest(unittest.TestCase):
         (member / "member.json").write_text(json.dumps({"member_id": "mb_t", "name": "triangle", "role": "player", "owner_pid": 74923}))
         (member / "pending" / "m_1.json").write_text(json.dumps({"received_at": 100.0}))
         (member / "pending" / "m_2.json").write_text(json.dumps({"received_at": 50.0}))
+        (member / "pending" / "m_3.json").write_text(json.dumps(
+            {"received_at": 75.0, "act": "status", "need": "none", "lifecycle": "started"}))
         (root / "runtime" / "mb_t.tasks.json").write_text(json.dumps({"tasks": [
             {"task": "t_a", "owners": [{"id": "mb_t", "state": "started"}]},
             {"task": "t_b", "owners": [{"id": "mb_t", "state": "done"}]},
@@ -194,7 +196,7 @@ class OrchestraFilesTest(unittest.TestCase):
         seats = orchestra.seats_by_pid()
         self.assertEqual(list(seats), [74923])
         seat = seats[74923]
-        self.assertEqual((seat.unread, seat.oldest_unread_at, seat.open_tasks), (2, 50.0, [("t_a", "started")]))
+        self.assertEqual((seat.unread, seat.oldest_unread_at, seat.open_tasks), (3, 50.0, [("t_a", "started")]))
         self.assertEqual(sorted(seat.unread_times), [50.0, 100.0])
         self.assertEqual(seat.quiet_until, 0.0)
         (root / "runtime" / "mb_t.quiet.json").write_text(json.dumps({"until": 12345.5}))

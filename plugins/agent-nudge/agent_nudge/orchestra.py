@@ -31,6 +31,17 @@ class Seat:
     quiet_until: float = 0.0
 
 
+def wakes(row: dict) -> bool:
+    """agent-orchestra's protocol.wakes: mail that wakes an idle session.
+
+    Owners' lifecycle reports and FYI tells wait for mail that does. Without
+    this the nudger re-sent each one the orchestra's own wake now holds back.
+    """
+    act = row.get("act")
+    quiet = act == "status" or (act == "tell" and not row.get("lifecycle"))
+    return not quiet or str(row.get("need") or "none").strip().lower() != "none"
+
+
 def _root() -> Path:
     if os.environ.get("AGENT_ORCHESTRA_HOME"):
         return Path(os.environ["AGENT_ORCHESTRA_HOME"])
@@ -65,7 +76,7 @@ def seats_by_pid() -> dict[int, Seat]:
             row = _read(item)
             seat.unread += 1
             stamp = row.get("received_at") or row.get("sent_at")
-            if isinstance(stamp, (int, float)):
+            if isinstance(stamp, (int, float)) and wakes(row):
                 seat.oldest_unread_at = min(seat.oldest_unread_at or stamp, stamp)
                 seat.unread_times.append(float(stamp))
         try:

@@ -16,7 +16,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .core import atomic_write_json, ensure_private_dir, runtime_dir
 
@@ -266,13 +266,14 @@ def _is_notice(item: dict[str, Any], mailbox_id: str | None, label: str | None) 
             argv[1:] == ["inbox", "--provider", "codex", flag, mailbox_id or argv[5], "--claim", "--json"])
 
 
-def _ids(buckets: list[Path]) -> set[str]:
+def _ids(buckets: list[Path], wakes: Callable[[dict[str, Any]], bool] | None = None) -> set[str]:
     ids = set()
     for bucket in buckets:
         for path in bucket.glob("*.json"):
             row = _read(path)
             # finish writes the done row before unlinking pending/claimed.
-            if row.get("id") == path.stem and not (bucket.parent / "done" / path.name).exists():
+            if row.get("id") == path.stem and not (bucket.parent / "done" / path.name).exists() \
+                    and (wakes is None or wakes(row)):
                 ids.add(path.stem)
     return ids
 
@@ -333,8 +334,12 @@ def observed(mailbox_id: str, message_ids: list[str], *, label: str, wait: bool 
 
 
 def wake(mailbox_id: str, *, buckets: list[Path], executable: Path,
-         id_flag: str, label: str) -> None:
-    """Coalesce pending mail, cancel obsolete notices, and rate-limit the thread."""
+         id_flag: str, label: str,
+         wakes: Callable[[dict[str, Any]], bool] | None = None) -> None:
+    """Coalesce pending mail, cancel obsolete notices, and rate-limit the thread.
+
+    `wakes` picks the mail that may queue a notice; the rest waits for one.
+    """
     binding = target(mailbox_id)
     if not binding.get("executable"):
         return
@@ -344,7 +349,7 @@ def wake(mailbox_id: str, *, buckets: list[Path], executable: Path,
         path, receipt = _receipt(mailbox_id, binding)
         if _backing_off(receipt):
             return
-        ids = _ids(buckets)
+        ids = _ids(buckets, wakes)
         notified = set(receipt.get("notified", [])) & ids
         session_path = _session_path(binding)
         session = _read(session_path)
@@ -379,7 +384,7 @@ def wake(mailbox_id: str, *, buckets: list[Path], executable: Path,
                     due = False
                 # Querying the native queue can take time. Re-read the actual
                 # inbox immediately before deciding whether anything can wake.
-                ids = _ids(buckets)
+                ids = _ids(buckets, wakes)
                 notified &= ids
                 if not ids:
                     for notice in notices:
@@ -405,7 +410,7 @@ def wake(mailbox_id: str, *, buckets: list[Path], executable: Path,
                     session["attempted_at"] = time.time()
                     atomic_write_json(session_path, session)
                     atomic_write_json(path, receipt)
-                    if not _ids(buckets) - notified or target(mailbox_id) != binding:
+                    if not _ids(buckets, wakes) - notified or target(mailbox_id) != binding:
                         return
                     result = client.request("thread/queue/add", {
                         "threadId": binding["thread_id"],

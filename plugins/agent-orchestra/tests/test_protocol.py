@@ -45,6 +45,7 @@ from agent_orchestra.protocol import (  # noqa: E402
     reply_required,
     summarize,
     validate_fields,
+    wakes,
 )
 
 
@@ -98,6 +99,14 @@ class ProtocolTests(HomeTestCase):
         self.assertEqual(envelope.refs, ["urban-sky/ops#3380", "git:23cf639"])
         self.assertIsNone(envelope.re)
         self.assertTrue(reply_required(envelope))
+
+    def test_only_lifecycle_reports_and_fyi_tells_stay_quiet(self):
+        self.assertFalse(wakes({"act": "status", "need": "none", "lifecycle": "started"}))
+        self.assertFalse(wakes({"act": "tell", "need": "none"}))
+        self.assertTrue(wakes({"act": "status", "need": "yes/no: still on it?"}))
+        self.assertTrue(wakes({"act": "tell", "need": "none", "lifecycle": "reopened"}))
+        for act in ("ask", "block", "done", "dissent", "assign", None):
+            self.assertTrue(wakes({"act": act, "need": "none"}), act)
 
     def test_body_is_preserved_byte_for_byte(self):
         envelope = parse_message(PLAN_EXAMPLE)
