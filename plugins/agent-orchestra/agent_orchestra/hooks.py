@@ -25,6 +25,7 @@ from .member import (
     _as_pid,
     _pid_alive,
     acquire_pid_lock,
+    agy_observed,
     claim_ownership,
     ensure_monitor,
     iter_members,
@@ -58,13 +59,39 @@ def _module_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def hook_input() -> dict[str, Any]:
+def hook_input(event: str = "") -> dict[str, Any]:
     try:
         raw = sys.stdin.read()
         value = json.loads(raw) if raw.strip() else {}
     except (OSError, json.JSONDecodeError):
         return {}
-    return value if isinstance(value, dict) else {}
+    return _common_payload(value, event) if isinstance(value, dict) else {}
+
+
+def _common_payload(payload: dict[str, Any], event: str = "") -> dict[str, Any]:
+    """Antigravity's hook payload under the names Claude and Codex use.
+
+    Its fields are camelCase and carry no event name, so the hook command says
+    which event it is attached to. Its hooks run in the directory holding their
+    hooks.json; the session's own is `workspacePaths[0]`. `executionNum` counts
+    from 0 within a turn and is 1 once a Stop hook has continued it (seen on
+    agy 2026-10-19), which is Claude's `stop_hook_active`.
+    """
+    paths = payload.get("workspacePaths")
+    if not payload.get("cwd") and isinstance(paths, list) and paths and paths[0]:
+        payload["cwd"] = str(paths[0])
+    if not payload.get("session_id") and payload.get("conversationId"):
+        payload["session_id"] = str(payload["conversationId"])
+    if not payload.get("transcript_path") and payload.get("transcriptPath"):
+        payload["transcript_path"] = str(payload["transcriptPath"])
+    if event and not payload.get("hook_event_name"):
+        payload["hook_event_name"] = event
+    try:
+        if int(payload.get("executionNum") or 0) > 0:
+            payload.setdefault("stop_hook_active", True)
+    except (TypeError, ValueError):
+        pass
+    return payload
 
 
 def _hooks_disabled() -> bool:
@@ -156,6 +183,10 @@ def _write_binding(
     )
 
 
+# Antigravity has no prompt event; PreInvocation fires before each model call.
+_PROMPT_EVENTS = ("UserPromptSubmit", "PreInvocation")
+
+
 def _claim_candidate(
     rows: list[dict[str, Any]], event: str, owner: int | None, session_id: str = ""
 ) -> dict[str, Any]:
@@ -179,7 +210,7 @@ def _claim_candidate(
                                 and row["session_id"] != session_id)), None)
         if member is not None:
             return member
-    if event == "UserPromptSubmit":
+    if event in _PROMPT_EVENTS:
         # An orphaned membership — joined by a bare CLI, or by a session that is
         # gone — is adoptable, but only when a human just typed into this
         # session. SessionStart fires in print-mode children too.
@@ -306,6 +337,8 @@ def _utc_field(match: re.Match[str]) -> str:
 
 
 def hook_context(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if _later_invocation(payload):
+        return {}
     member = hook_member(provider, payload, default_event="SessionStart")
     if not member or quiet_until(str(member["member_id"])):
         # While typed conductor text is starting its work, even context on
@@ -316,14 +349,31 @@ def hook_context(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
     if not lines:
         return {}
     event = str(payload.get("hook_event_name") or "SessionStart")
-    if event == "UserPromptSubmit" and _shown_recently(member, payload, lines):
+    if event in _PROMPT_EVENTS and _shown_recently(member, payload, lines):
         return {}
+    if normalize_provider(provider) == "agy":
+        # A system message stays in the conversation, as Claude's context does;
+        # _shown_recently counts on that. An ephemeral one is gone next turn.
+        return {"injectSteps": [{"systemMessage": {"systemMessage": "\n".join(lines)}}]}
     return {
         "hookSpecificOutput": {
             "hookEventName": str(payload.get("hook_event_name") or "SessionStart"),
             "additionalContext": "\n".join(lines),
         }
     }
+
+
+def _later_invocation(payload: dict[str, Any]) -> bool:
+    """True for an Antigravity model call after the first one of its turn.
+
+    PreInvocation fires before every model call, after each tool step too
+    (`invocationNum` counts them from 0). Only the first stands where Claude's
+    UserPromptSubmit does; mail that lands later is the Stop hook's to show.
+    """
+    try:
+        return int(payload.get("invocationNum") or 0) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 _CONTEXT_REPEAT_SECONDS = 1800
@@ -389,11 +439,14 @@ def _mail_lines(member: dict[str, Any], provider: str) -> list[str]:
     if not rows:
         return []
     replies = sum(1 for row in rows if reply_required(row))
-    command = (
-        "/agent-orchestra:orchestra inbox"
-        if normalize_provider(provider) == "claude"
-        else "$agent-orchestra:orchestra inbox"
-    )
+    name = normalize_provider(provider)
+    if name == "claude":
+        command = "/agent-orchestra:orchestra inbox"
+    elif name == "agy":
+        command = shlex.join([str(_module_root() / "bin" / "agent-orchestra"), "inbox",
+                              "--provider", "agy", "--claim"])
+    else:
+        command = "$agent-orchestra:orchestra inbox"
     lines = [
         f"Agent Orchestra: {len(rows)} message(s) waiting ({replies} reply-required; "
         f"by act: {_by_act(rows)}). Run {command} to claim them. "
@@ -466,6 +519,8 @@ def _hook_message_nudge(member: dict[str, Any], provider: str, lead: str) -> str
     if provider == "codex":
         codex_wake.observed(str(member["member_id"]), [str(row["id"]) for row in rows],
                             label="Agent Orchestra", wait=False)
+    elif provider == "agy" and rows:
+        agy_observed(str(member["member_id"]), [str(row["id"]) for row in rows])
     if not rows:
         return None
     rows = sorted(
@@ -541,7 +596,9 @@ def hook_stop(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
     reason = _hook_message_nudge(member, provider, " while you were working")
     if not reason:
         return {}
-    return {"decision": "block", "reason": reason}
+    # Antigravity continues on "continue"; any other decision lets it stop.
+    decision = "continue" if normalize_provider(provider) == "agy" else "block"
+    return {"decision": decision, "reason": reason}
 
 
 def _pending_ids(member_id: str) -> set[str]:

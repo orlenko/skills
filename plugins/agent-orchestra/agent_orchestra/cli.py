@@ -319,7 +319,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     for hook_name in ("hook-context", "hook-stop", "hook-wait"):
         hook = commands.add_parser(hook_name)
-        hook.add_argument("--provider", required=True, choices=("codex", "claude"))
+        hook.add_argument("--provider", required=True, choices=("codex", "claude", "agy"))
+        # Antigravity names no event in its payload; its hooks.json says it here.
+        hook.add_argument("--event", default="")
 
     return parser
 
@@ -683,7 +685,7 @@ def run(args: argparse.Namespace) -> int:
     if args.command.startswith("hook-"):
         from .hooks import hook_context, hook_input, hook_stop, hook_wait
 
-        payload = hook_input()
+        payload = hook_input(args.event)
         try:
             if args.command == "hook-context":
                 result = hook_context(args.provider, payload)

@@ -24,7 +24,9 @@ def _run(args: list[str]) -> str:
 run: Runner = _run
 sleep: Callable[[float], None] = time.sleep
 
-PROMPT_GLYPHS = {"claude": "❯", "codex": "›"}
+PROMPT_GLYPHS = {"claude": "❯", "codex": "›", "agy": ">"}
+# Drawn elsewhere on screen too, so they count only under the input box's rule.
+_RULED_GLYPHS = ("❯", ">")
 # Codex reads a burst of keys as a paste, and an Enter inside the burst becomes
 # a newline in the composer. A pause lets the burst end before Enter lands.
 SUBMIT_PAUSE_SECONDS = 0.8
@@ -34,8 +36,12 @@ _SEP = "|:orchestra:|"
 _SGR = re.compile(r"\x1b\[([0-9;]*)m")
 _OTHER_ESC = re.compile(r"\x1b\][^\x07]*\x07|\x1b[@-Z\\-_]")
 _WORKING = re.compile(r"esc to interrupt|ctrl\+c to interrupt|press esc to stop", re.I)
+# Antigravity's footer reads "esc to cancel" while a turn runs, "? for shortcuts" idle.
+# Only below the box: Claude's permission dialogs print "Esc to cancel" too.
+_FOOTER_WORKING = re.compile(r"esc to cancel", re.I)
 # Claude's live spinner: a glyph and one word ending in an ellipsis ("✳ Nucleating…").
-_SPINNER = re.compile(r"^\s*\S\s+[A-Z][\w-]*…")
+# Antigravity's: a braille frame and a status ("⣻  Running command...").
+_SPINNER = re.compile(r"^\s*(?:\S\s+[A-Z][\w-]*…|[\u2800-\u28ff]\s+)")
 # The rule Claude draws above its input box, sometimes with the session name
 # in it ("──── Trumpet ─").
 _RULE = re.compile(r"^[\s─━═╌┄-]+(\S.*\S\s*[─━═]+\s*)?$")
@@ -140,9 +146,10 @@ def read_prompt(raw: str, agent: str = "") -> Prompt:
         head = parsed[index][0].lstrip(" │┃")
         glyph = next((item for item in glyphs if head.startswith(item)), None)
         # Claude also draws `❯` as a menu cursor ("❯ No, exit" in the trust
-        # dialog) and before every past prompt in the transcript. Only the
-        # line under a rule is the input box, and Enter on a menu picks it.
-        if glyph == PROMPT_GLYPHS["claude"] and not (
+        # dialog) and before every past prompt in the transcript, and `>` opens
+        # every Markdown quote above Antigravity's box. Only the line under a
+        # rule is the input box, and Enter on a menu picks it.
+        if glyph in _RULED_GLYPHS and not (
             index > 0 and parsed[index - 1][0].strip() and _RULE.match(parsed[index - 1][0])
         ):
             glyph = None
@@ -158,8 +165,9 @@ def read_prompt(raw: str, agent: str = "") -> Prompt:
     above = [line for line, _ in parsed[:prompt_at]]
     tail = "\n".join(line for line in above[-40:] if line.strip())
     footer = "\n".join(line for line, _ in parsed[prompt_at + 1:])
-    working = bool(_WORKING.search(tail[-600:] + "\n" + footer)) or any(
-        _SPINNER.match(line) for line in above[-6:]
+    working = (
+        bool(_WORKING.search(tail[-600:] + "\n" + footer) or _FOOTER_WORKING.search(footer))
+        or any(_SPINNER.match(line) for line in above[-6:])
     )
     return Prompt(shown=True, typed=typed, working=working)
 

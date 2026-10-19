@@ -1,4 +1,4 @@
-"""agent-nudge: wake Claude and Codex sessions in tmux that stopped short of their goal."""
+"""agent-nudge: wake Claude, Codex and Antigravity sessions in tmux that stopped short of their goal."""
 
 from __future__ import annotations
 
@@ -150,7 +150,7 @@ def _unit_text() -> str:
 </dict></plist>
 """
     return f"""[Unit]
-Description=agent-nudge: wake idle Claude and Codex sessions in tmux
+Description=agent-nudge: wake idle Claude, Codex and Antigravity sessions in tmux
 
 [Service]
 ExecStart={sys.executable} {BIN} run

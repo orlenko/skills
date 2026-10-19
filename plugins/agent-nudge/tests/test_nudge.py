@@ -91,10 +91,11 @@ class ScreenTest(unittest.TestCase):
         dialog = "Do you want to proceed?\n  1. Yes\n  2. No\n\nEsc to cancel"
         self.assertFalse(screen.parse(dialog, "claude").has_prompt)
 
-    def test_menu_cursor_reads_as_typed(self):
-        # Claude marks the selected option with the same glyph; the guard must hold.
+    def test_menu_cursor_is_not_the_prompt(self):
+        # Claude marks the selected option with the same glyph; only the line
+        # under a rule is the input box, so a dialog reads as no prompt.
         dialog = "Do you want to proceed?\n\x1b[39m❯ 1. Yes\n  2. No"
-        self.assertTrue(screen.parse(dialog, "claude").typed)
+        self.assertFalse(screen.parse(dialog, "claude").has_prompt)
 
     def test_hash_ignores_footer(self):
         a = screen.parse(claude_screen(IDLE_BODY, footer="Reset: 3hr 59m"), "claude")
@@ -102,9 +103,58 @@ class ScreenTest(unittest.TestCase):
         self.assertEqual(a.body_hash, b.body_hash)
 
 
+AGY_RULE = "─" * 82
+
+
+def agy_screen(body: str, footer: str = "? for shortcuts", box: str = ">", task: str = "") -> str:
+    # Live agy panes, 2026-10: the box between two rules, a task row and a rule
+    # under it while a background command runs, then the footer.
+    lines = [body, AGY_RULE, box, AGY_RULE]
+    if task:
+        lines += [f"  ● [11:30:15] {task} running", AGY_RULE]
+    return "\n".join(lines + [f"{footer}    Gemini 4 Argon · medium", "aiq agy/orlenko · 5h 1% · wk 0%"])
+
+
+class AgyScreenTest(unittest.TestCase):
+    def test_an_idle_box(self):
+        scr = screen.parse(agy_screen("● Opened the PR."), "agy")
+        self.assertTrue(scr.has_prompt)
+        self.assertEqual(scr.typed, "")
+        self.assertFalse(scr.working_marker)
+        self.assertEqual(scr.body, "● Opened the PR.")
+
+    def test_a_running_turn(self):
+        busy = agy_screen("● Running (...) (ctrl+o to expand)\n⣻  Running command...", footer="esc to cancel")
+        self.assertTrue(screen.parse(busy, "agy").working_marker)
+        spinner = agy_screen("● Running (...)\n⠋  Thinking...")
+        self.assertTrue(screen.parse(spinner, "agy").working_marker)
+
+    def test_a_background_task_counts_as_a_watcher(self):
+        scr = screen.parse(agy_screen("● Waiting.", footer="? for shortcuts · 1 task(s) · /tasks",
+                                      task="agent-orchestra wait --timeout 86400"), "agy")
+        self.assertEqual(scr.watchers, 1)
+        self.assertFalse(scr.working_marker)
+
+    def test_typed_text(self):
+        self.assertEqual(screen.parse(agy_screen("● Done.", box="> next step"), "agy").typed, "next step")
+
+    def test_a_markdown_quote_is_not_the_box(self):
+        # A dialog over the box: only a quote in the body starts with `>`.
+        self.assertFalse(screen.parse("● Notes:\n> quoted line\n\nAllow this command?", "agy").has_prompt)
+
+    def test_the_composer_check_reads_the_box(self):
+        saved = system.run
+        system.run = lambda args: agy_screen("● Done.", box="> [agent-nudge] still waiting?")
+        try:
+            self.assertTrue(system._still_in_composer("%1", "[agent-nudge] still waiting?"))
+        finally:
+            system.run = saved
+
+
 class AgentDetectionTest(unittest.TestCase):
     def test_argv(self):
         self.assertEqual(system.agent_of(["/Users/v/.local/bin/claude", "--settings", "{}"]), "claude")
+        self.assertEqual(system.agent_of(["/home/v/.local/bin/agy", "--model", "x"]), "agy")
         self.assertEqual(system.agent_of(["node", "/usr/lib/node_modules/@openai/codex/bin/codex.js"]), "codex")
         self.assertIsNone(system.agent_of(["/bin/zsh", "-l"]))
         self.assertIsNone(system.agent_of(["npm", "exec", "@playwright/mcp"]))
@@ -118,6 +168,14 @@ class AgentDetectionTest(unittest.TestCase):
         system.find_agent(pane, table)
         self.assertEqual((pane.agent, pane.agent_pid), ("codex", 11))
         self.assertEqual(pane.extra["agent_pids"], [11, 12])
+
+    def test_agy_under_its_aiq_shim(self):
+        # The shim execs `aiq run agy`, which starts the real binary.
+        table = {10: (1, ["-zsh"]), 11: (10, ["/home/v/.local/bin/aiq", "run", "agy", "--"]),
+                 12: (11, ["/home/v/.local/bin/agy", "--dangerously-skip-permissions"])}
+        pane = system.Pane(id="%1", pid=10, session="s", window="@1", path="/w", opt_out=False)
+        system.find_agent(pane, table)
+        self.assertEqual((pane.agent, pane.agent_pid), ("agy", 12))
 
     def test_tree_walk_finds_child(self):
         table = {10: (1, ["-zsh"]), 11: (10, ["aiq", "long"]), 12: (11, ["/bin/codex", "--yolo"])}

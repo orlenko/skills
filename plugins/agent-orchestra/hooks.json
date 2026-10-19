@@ -1,0 +1,25 @@
+{
+  "agent-orchestra": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "./bin/agent-orchestra hook-context --provider agy --event SessionStart",
+        "timeout": 15
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "./bin/agent-orchestra hook-context --provider agy --event PreInvocation",
+        "timeout": 15
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "./bin/agent-orchestra hook-stop --provider agy --event Stop",
+        "timeout": 15
+      }
+    ]
+  }
+}

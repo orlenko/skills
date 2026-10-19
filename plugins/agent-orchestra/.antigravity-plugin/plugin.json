@@ -1,0 +1,4 @@
+{
+  "name": "agent-orchestra",
+  "description": "Durable many-agent messaging with a hub, a conductor, and players across machines."
+}

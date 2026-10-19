@@ -12,7 +12,7 @@ this skill directory. Never copy a versioned plugin-cache path from earlier in
 the conversation; after an update it still runs, as the old version. Keep
 the current working directory unchanged; it identifies this session's
 membership. Pass no `--provider` and no `--member-id`: the CLI reads the agent
-it runs under (Claude or Codex) from its process tree, and each membership
+it runs under (Claude, Codex or Antigravity `agy`) from its process tree, and each membership
 records the agent process that holds it, so a command finds this session's own
 seat even beside another session's in the same directory. A command that cannot
 tell refuses and names the ids; it never acts through another session's seat.
@@ -71,7 +71,7 @@ belong to several, one session each.
   [--until started|done] --json` holds that member's mail at the hub and keeps
   the orchestra silent in its session, without typing. `--until` defaults to
   `done`. `quiet --to MEMBER --off --json` lifts it, and the held mail flows.
-- `adopt`: a seat stays with the agent that joined it (Claude or Codex), and
+- `adopt`: a seat stays with the agent that joined it (Claude, Codex or agy), and
   another agent's commands cannot take it over. When a session of the other
   agent really replaces the one that joined, run `adopt --member-id M --json`
   from that session. Pass `--provider P` only to override detection, and then
@@ -459,6 +459,18 @@ is outside PATH or a wrapper changes accounts. AIQ shims are bypassed for
 queue operations to preserve the bound account home. After upgrading an
 existing membership, run `monitor --restart --json` once to load the new
 monitor. A new membership starts it automatically.
+
+Antigravity (`agy`) loads the plugin's root `hooks.json`: context at
+SessionStart and at the first model call of each turn (PreInvocation), and a
+Stop hook that continues the turn with mail that arrived while it ran. Its hooks
+cannot wait, so when the session sits idle at its prompt inside tmux, the
+monitor types a one-line `Agent Orchestra local inbox notice` with the inbox
+command into its pane: once per message, at most once a minute, never over
+typed text, a running turn, or a conductor's quiet. Follow it like a Codex
+notice. Outside tmux nothing can wake an idle agy session; run
+`wait --timeout 86400 --claim --json` as a background command instead, and agy
+wakes the session when it exits with mail. A seat joined by Claude or Codex and
+now run by agy needs `adopt`, then `monitor --restart --json`.
 
 Jev (off by default). With `AGENT_ORCHESTRA_JEV=1` and `TYPESAFE_API_KEY` in
 the session's environment, two things happen; both send text to TypeSafe, a

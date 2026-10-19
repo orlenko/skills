@@ -1,4 +1,4 @@
-"""Find idle Claude and Codex sessions in tmux and ask them, once, whether they are done.
+"""Find idle Claude, Codex and Antigravity sessions in tmux and ask them, once, whether they are done.
 
 An agent often ends its turn short of its goal: it reports and stops, or says
 it will act when a CI job finishes and then sets nothing to wake it. One line

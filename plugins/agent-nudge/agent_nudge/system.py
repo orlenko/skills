@@ -23,7 +23,7 @@ run: Runner = _run
 
 # An agent is a process whose executable is named for it. Node-installed Codex
 # runs as `node .../@openai/codex/bin/codex.js`, so the script name counts too.
-AGENTS = {"claude": "claude", "codex": "codex"}
+AGENTS = {"claude": "claude", "codex": "codex", "agy": "agy"}
 # Printable on purpose: tmux 3.4 (Ubuntu 24.04) prints a control character in
 # -F output as an octal escape ("\\037"), so a \x1f separator never splits there.
 _SEP = "|:nudge:|"
@@ -89,7 +89,7 @@ def capture(pane_id: str) -> str:
 # typed but unsent. A pause lets the burst end before Enter lands.
 SUBMIT_PAUSE_SECONDS = 0.8
 SUBMIT_CHECK_SECONDS = 1.5
-_PROMPT_GLYPHS = ("❯", "›")
+_PROMPT_GLYPHS = ("❯", "›", ">")
 
 
 def _still_in_composer(pane_id: str, text: str) -> bool:

@@ -1,8 +1,9 @@
 """Read an agent's tmux screen: where the input box is, whether it holds typed
 text, what changed above it, and what the footer says is running.
 
-Claude Code draws its prompt as `❯`, Codex as `›`. Both draw suggestions and
-placeholders in dim text, so a line reading `❯ check messages` can be empty.
+Claude Code draws its prompt as `❯`, Codex as `›`, Antigravity as `>`. Claude
+and Codex draw suggestions and placeholders in dim text, so a line reading
+`❯ check messages` can be empty.
 Only text without the dim attribute counts as typed.
 """
 
@@ -12,7 +13,9 @@ import hashlib
 import re
 from dataclasses import dataclass
 
-PROMPT_GLYPHS = {"claude": "❯", "codex": "›"}
+PROMPT_GLYPHS = {"claude": "❯", "codex": "›", "agy": ">"}
+# Drawn elsewhere on screen too, so they count only under the input box's rule.
+_RULED_GLYPHS = ("❯", ">")
 _SGR = re.compile(r"\x1b\[([0-9;]*)m")
 _OTHER_ESC = re.compile(r"\x1b\][^\x07]*\x07|\x1b[@-Z\\-_]")
 _RULE = re.compile(r"^[\s─━═╌┄-]+(\S.*\S\s*[─━═]+\s*)?$")
@@ -20,12 +23,19 @@ _RULE = re.compile(r"^[\s─━═╌┄-]+(\S.*\S\s*[─━═]+\s*)?$")
 # "2 background tasks", "1 shell". Any of them can wake the session.
 # A narrow pane cuts the footer mid-word ("· 1 monit"), and the finished-turn
 # line may say it instead ("done 6:33 PM · 1 monitor still running"), so both
-# are read and a truncated word still counts.
-_WATCHERS = re.compile(r"\b(\d+)\s+(monit\w*|background\s+tasks?|shells?|bash\w*|jobs?)", re.I)
+# are read and a truncated word still counts. Antigravity's footer says
+# "· 1 task(s) · /tasks" while a background command or timer runs.
+_WATCHERS = re.compile(
+    r"\b(\d+)\s+(monit\w*|background\s+tasks?|shells?|bash\w*|jobs?|task\(s\))", re.I
+)
 _WORKING = re.compile(r"esc to interrupt|ctrl\+c to interrupt|press esc to stop", re.I)
+# Antigravity's footer reads "esc to cancel" while a turn runs, "? for shortcuts" idle.
+# Only below the box: Claude's permission dialogs print "Esc to cancel" too.
+_FOOTER_WORKING = re.compile(r"esc to cancel", re.I)
 # Claude's live spinner: a glyph and one word ending in an ellipsis ("✳ Nucleating…").
 # The finished line reads "✻ Cogitated for 13s · done 5:42 PM", with no ellipsis.
-_SPINNER = re.compile(r"^\s*\S\s+[A-Z][\w-]*…")
+# Antigravity's: a braille frame and a status ("⣻  Running command...").
+_SPINNER = re.compile(r"^\s*(?:\S\s+[A-Z][\w-]*…|[\u2800-\u28ff]\s+)")
 # A turn that ended by handing work to a background agent or Workflow reads
 # "✻ Waiting for 1 background agent to finish" until the work reports back
 # (Claude 2.1.282). The prompt below it is empty and still: an APRS pass
@@ -141,7 +151,10 @@ def parse(raw: str, agent: str, tail_lines: int = 40) -> Screen:
     prompt_at = None
     for index in range(len(parsed) - 1, -1, -1):
         text = parsed[index][0].lstrip(" │┃")
-        if text.startswith(glyph):
+        # `❯` is also a menu cursor and the mark of every past prompt; `>` opens
+        # every Markdown quote. Only the line under a rule is the input box.
+        if text.startswith(glyph) and (glyph not in _RULED_GLYPHS or (
+                index > 0 and parsed[index - 1][0].strip() and _RULE.match(parsed[index - 1][0]))):
             prompt_at = index
             break
     if prompt_at is None:
@@ -167,7 +180,8 @@ def parse(raw: str, agent: str, tail_lines: int = 40) -> Screen:
         tail=tail,
         footer=footer,
         watchers=max(_count_watchers(footer), _count_watchers(" ".join(body_lines[-3:]))),
-        working_marker=bool(_WORKING.search(tail[-600:] + "\n" + footer))
+        working_marker=bool(_WORKING.search(tail[-600:] + "\n" + footer)
+                            or _FOOTER_WORKING.search(footer))
         or any(_SPINNER.match(line) for line in body_lines[-4:]),
         # Only the last lines: once the work reports back, its output lands
         # below and the old "Waiting for" line scrolls up.

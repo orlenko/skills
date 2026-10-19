@@ -27,7 +27,9 @@ MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_ERROR_RESPONSE_BYTES = MAX_MESSAGE_BYTES * 2
 INVITE_PREFIX = "or1."
 AGENT_ANCESTOR_LEVELS = 20
-AGENT_COMMAND_MARKERS = ("claude", "codex")
+AGENT_COMMAND_MARKERS = ("claude", "codex", "agy")
+# The agents a seat can be joined by, as `agent_kind` names their processes.
+AGENT_PROVIDERS = ("claude", "codex", "agy")
 # A tool call runs its command in a shell whose own command line carries the
 # agent's plugin, state, and snapshot paths, so "claude" appears in the args of
 # a process that exits with the command. Anchoring ownership there records a pid
@@ -40,6 +42,8 @@ AGENT_SHELL_COMMANDS = frozenset(
 # says nothing, and there both vocabularies apply.
 AGENT_ONE_SHOT_CLAUDE = frozenset({"-p", "--print"})
 AGENT_ONE_SHOT_CODEX = frozenset({"exec"})
+# Antigravity also takes `--print=…` and `--prompt=…`; aiq's IsWorker reads the same.
+AGENT_ONE_SHOT_AGY = frozenset({"-p", "--print", "--prompt"})
 # A process with a deadline is a bad owner while it is still alive: the seat it
 # takes dies when the clock runs out. `timeout 5400 aiq run claude -- -p …` is
 # how one fleet runs its producer, and every agent process inside that tree
@@ -249,10 +253,12 @@ def normalize_provider(provider: str) -> str:
         "claude-code": "claude",
         "anthropic": "claude",
         "openai": "codex",
+        "antigravity": "agy",
+        "antigravity-cli": "agy",
     }
     value = aliases.get(value, value)
-    if value not in {"codex", "claude", "cli", "test"}:
-        raise OrchestraError("Provider must be codex, claude, cli, or test")
+    if value not in {"codex", "claude", "agy", "cli", "test"}:
+        raise OrchestraError("Provider must be codex, claude, agy, cli, or test")
     return value
 
 
@@ -528,7 +534,7 @@ def agent_ancestor_pids(pid: int | None = None) -> list[int]:
 
 
 def agent_provider() -> str | None:
-    """`claude` or `codex`: the agent this command runs under, when one does."""
+    """`claude`, `codex` or `agy`: the agent this command runs under, when one does."""
     for pid in agent_ancestor_pids():
         kind = agent_kind(pid)
         if kind:
@@ -546,17 +552,19 @@ def _is_one_shot_agent(pid: int) -> bool:
         one_shot = AGENT_ONE_SHOT_CODEX
     elif "claude" in command:
         one_shot = AGENT_ONE_SHOT_CLAUDE
+    elif command == "agy":
+        one_shot = AGENT_ONE_SHOT_AGY
     else:
         # A wrapper: `aiq run claude -- -p …`, `timeout 5400 claude -p …`. Its
-        # own name says nothing, so both vocabularies apply. A missed repair
+        # own name says nothing, so every vocabulary applies. A missed repair
         # costs one command; a seat handed to a run that ends costs the wake.
-        one_shot = AGENT_ONE_SHOT_CODEX | AGENT_ONE_SHOT_CLAUDE
+        one_shot = AGENT_ONE_SHOT_CODEX | AGENT_ONE_SHOT_CLAUDE | AGENT_ONE_SHOT_AGY
     for token in tokens[1:]:
         if token.startswith("{"):
             # An inline settings blob (`claude --settings {...}`) is data. The
             # hook commands inside it carry flags that are not this process's.
             break
-        if token in one_shot:
+        if token in one_shot or (token.startswith("--") and token.split("=", 1)[0] in one_shot):
             return True
     return False
 
@@ -585,7 +593,7 @@ def _under_deadline(pid: int) -> bool:
 
 
 def agent_kind(pid: int) -> str | None:
-    """`claude` or `codex` for an agent process, from its first two arguments.
+    """`claude`, `codex` or `agy` for an agent process, from its first two arguments.
 
     npm's Codex runs as `node .../bin/codex.js`, so the script name counts.
     """
@@ -594,7 +602,7 @@ def agent_kind(pid: int) -> str | None:
         name = Path(word).name.lower()
         for suffix in (".js", ".cjs", ".mjs"):
             name = name.removesuffix(suffix)
-        if name in ("claude", "codex"):
+        if name in AGENT_PROVIDERS:
             return name
     return None
 

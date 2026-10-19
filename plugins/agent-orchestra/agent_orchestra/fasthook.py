@@ -1,6 +1,6 @@
 """The no-membership answer for hooks, before the plugin is imported.
 
-Every Claude and Codex turn in every directory runs these hooks, and almost
+Every Claude, Codex and Antigravity turn in every directory runs these hooks, and almost
 none of those directories hold a membership. The full path imports the HTTP,
 TLS and process-walking code first, which costs most of a hook's time on a
 loaded machine. This reads only member.json files. Anything unexpected falls
@@ -18,7 +18,8 @@ import sys
 from pathlib import Path
 
 HOOKS = ("hook-context", "hook-stop", "hook-wait")
-_ALIASES = {"claude-code": "claude", "anthropic": "claude", "openai": "codex"}
+_ALIASES = {"claude-code": "claude", "anthropic": "claude", "openai": "codex",
+            "antigravity": "agy", "antigravity-cli": "agy"}
 
 
 def state_root() -> Path:
@@ -45,6 +46,14 @@ def _provider(argv: list[str]) -> str:
     return os.environ.get("AGENT_ORCHESTRA_PROVIDER", "cli")
 
 
+def payload_cwd(payload: dict) -> str:
+    """The session's directory. Antigravity runs a hook in the directory that
+    holds its hooks.json and names the workspace in `workspacePaths` instead."""
+    paths = payload.get("workspacePaths")
+    workspace = paths[0] if isinstance(paths, list) and paths else None
+    return str(payload.get("cwd") or workspace or os.getcwd())
+
+
 def _member_here(key: str) -> bool:
     for path in (state_root() / "members").glob("*/member.json"):
         try:
@@ -65,7 +74,7 @@ def nothing_to_do(argv: list[str]) -> bool:
         # The full path reads the payload again.
         sys.stdin = io.StringIO(raw)
         payload = json.loads(raw) if raw.strip() else {}
-        cwd = str(payload.get("cwd") or os.getcwd()) if isinstance(payload, dict) else os.getcwd()
+        cwd = payload_cwd(payload) if isinstance(payload, dict) else os.getcwd()
         if _member_here(instance_key(_provider(argv), cwd)):
             return False
     except Exception:  # noqa: BLE001 - any doubt goes to the full path
