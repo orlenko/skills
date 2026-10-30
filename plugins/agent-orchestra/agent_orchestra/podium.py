@@ -1,4 +1,4 @@
-"""The Podium: a loopback status page for the conductor's explicit work queues.
+"""The Podium: a status page for the conductor's explicit work queues.
 
 The conductor curates a work plan by hand: one ordered queue per member, each
 item with an activity, a stage, a blocker or next action, and an ETA. publish()
@@ -15,6 +15,10 @@ as the conductor would keep a dead conductor `connected`.
 An external collector may also drop state.json beside work-status.json. The
 page renders its sections when it is present; its shape belongs to that
 collector, not to this module.
+
+The server listens on loopback unless started with another address. The page
+has no authentication, so whoever reaches that address reads the roster, the
+tasks, and the plan.
 """
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ import math
 import os
 import signal
 import socket
+import socketserver
 import threading
 import time
 from datetime import datetime, timezone
@@ -36,6 +41,9 @@ from .core import OrchestraError, atomic_write_json, now, read_json, runtime_dir
 
 QUEUE_STATES = frozenset({"in_progress", "queued", "blocked", "waiting", "completed", "accepted", "review"})
 DEFAULT_PORT = 4300
+DEFAULT_BIND = "127.0.0.1"
+# A wildcard bind is probed through loopback; nothing can connect to 0.0.0.0.
+WILDCARDS = {"0.0.0.0": "127.0.0.1", "::": "::1"}
 PAGE = Path(__file__).with_name("podium.html")
 STATUS_FILE = "work-status.json"
 # The only files the server reads from the data directory. A plan, logs, or a
@@ -233,29 +241,59 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             super().log_message(format, *args)
 
 
+class _Server(http.server.ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        """Bind without HTTPServer's reverse DNS lookup of the address.
+
+        HTTPServer asks getfqdn() for a name before listen(), and a lookup that
+        fails can take longer than start() waits: on macOS CI runners every
+        Podium start timed out. Nothing here reads the name.
+        """
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = str(self.server_address[0]), int(self.server_address[1])
+
+
+def _host(bind: str) -> str:
+    """`bind` as it goes into a URL or an error: IPv6 literals in brackets."""
+    return f"[{bind}]" if ":" in bind else bind
+
+
+def _probe_host(bind: str) -> str:
+    return WILDCARDS.get(bind, bind)
+
+
+def url(bind: str, port: int) -> str:
+    """Where to open the page. A wildcard bind is reached by this machine's name."""
+    host = socket.gethostname() if bind in WILDCARDS else bind
+    return f"http://{_host(host)}:{port}/"
+
+
 def server(
     directory: Path, port: int = DEFAULT_PORT, member_id: str | None = None,
-    plan: Path | None = None,
+    plan: Path | None = None, bind: str = DEFAULT_BIND,
 ) -> http.server.ThreadingHTTPServer:
-    """Loopback only: the page shows task names, PR titles and member ids."""
+    """Loopback by default: the page shows task names, PR titles and member ids."""
     handler = type("PodiumHandler", (_Handler,), {
         "directory": Path(directory), "member_id": member_id,
         "plan": Path(plan) if plan else None,
     })
+    kind: type[_Server] = _Server
+    if ":" in bind:
+        kind = type("PodiumServer6", (kind,), {"address_family": socket.AF_INET6})
     try:
-        return http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
+        return kind((bind, port), handler)
     except OSError as exc:
-        raise OrchestraError(f"cannot listen on 127.0.0.1:{port}: {exc}") from exc
+        raise OrchestraError(f"cannot listen on {_host(bind)}:{port}: {exc}") from exc
 
 
 def serve(
     directory: Path, port: int = DEFAULT_PORT, member_id: str | None = None,
-    plan: Path | None = None,
+    plan: Path | None = None, bind: str = DEFAULT_BIND,
 ) -> None:
     if plan is not None:
         refresh_from_plan(plan, directory)
-    with server(directory, port, member_id, plan) as httpd:
-        print(f"Podium serving {directory} on http://127.0.0.1:{httpd.server_address[1]}/", flush=True)
+    with server(directory, port, member_id, plan, bind) as httpd:
+        print(f"Podium serving {directory} on {url(bind, httpd.server_address[1])}", flush=True)
         httpd.serve_forever()
 
 
@@ -354,9 +392,9 @@ def _pid_alive(pid: int) -> bool:
     return alive(pid)
 
 
-def _listening(port: int) -> bool:
+def _listening(port: int, bind: str = DEFAULT_BIND) -> bool:
     try:
-        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+        with socket.create_connection((_probe_host(bind), port), timeout=0.5):
             return True
     except OSError:
         return False
@@ -368,7 +406,8 @@ def status(member_id: str) -> dict[str, Any]:
     except OrchestraError:
         return {"running": False, "member_id": member_id}
     pid, port = int(record.get("pid") or 0), int(record.get("port") or 0)
-    running = _pid_alive(pid) and _listening(port)
+    # A record from before --bind listened on loopback.
+    running = _pid_alive(pid) and _listening(port, record.get("bind") or DEFAULT_BIND)
     plan_state: dict[str, Any] | None = None
     if record.get("plan") and record.get("dir"):
         try:
@@ -420,39 +459,50 @@ def stop(member_id: str) -> dict[str, Any]:
 
 def start(
     member: dict[str, Any], directory: Path, port: int = DEFAULT_PORT, *, restart: bool = False,
-    plan: Path | None = None,
+    plan: Path | None = None, bind: str | None = None,
 ) -> dict[str, Any]:
-    """One background server per membership; a second start reports the first."""
+    """One background server per membership; a second start reports the first.
+
+    Without `bind`, a restart listens where the last server did, so an upgrade
+    never quietly pulls a tailnet Podium back to loopback.
+    """
     from . import member as member_api
 
     member_id = str(member["member_id"])
     current = status(member_id)
     if current["running"] and not restart:
         return {**current, "state": "already-running"}
+    if bind is None:
+        bind = current.get("bind") or DEFAULT_BIND
     if restart or current.get("pid"):
         stop(member_id)
-    if _listening(port):
-        raise OrchestraError(f"127.0.0.1:{port} is already in use. Pass --port to choose another port.")
+    where = f"{_host(bind)}:{port}"
+    if _listening(port, bind):
+        raise OrchestraError(f"{where} is already in use. Pass --port to choose another port.")
     log = runtime_dir() / f"{member_id}.podium.log"
-    command = ["podium", "serve", "--member-id", member_id, "--dir", str(directory), "--port", str(port)]
+    command = [
+        "podium", "serve", "--member-id", member_id, "--dir", str(directory), "--port", str(port),
+        "--bind", bind,
+    ]
     if plan is not None:
         command += ["--plan", str(plan)]
     pid = member_api._spawn_module(command, log)
     deadline = time.monotonic() + 5
-    while not _listening(port):
+    while not _listening(port, bind):
         if not _pid_alive(pid) or time.monotonic() >= deadline:
             tail = log.read_text(errors="replace").strip().splitlines()[-1:] if log.exists() else []
             raise OrchestraError(
-                f"Podium did not start on 127.0.0.1:{port}"
+                f"Podium did not start on {where}"
                 + (f": {tail[0]}" if tail else "")
-                + ". Pass --port to choose another port."
+                + ". Pass --port to choose another port, or --bind another address."
             )
         time.sleep(0.05)
     record = {
         "member_id": member_id,
         "pid": pid,
         "port": port,
-        "url": f"http://127.0.0.1:{port}/",
+        "bind": bind,
+        "url": url(bind, port),
         "dir": str(directory),
         "plan": str(plan) if plan is not None else None,
         "started_at": now(),

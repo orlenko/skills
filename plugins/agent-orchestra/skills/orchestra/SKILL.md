@@ -107,16 +107,27 @@ belong to several, one session each.
   `--json` and summarize.
 - `leave`: run `leave --json`. `close`: run `close --json`, and only when the
   user asked to end the orchestra for every member.
-- `podium` (for the conductor): the Podium is a loopback page with the
-  conductor's work queues, the roster, open tasks, and late or blocked owners.
+- `podium` (for the conductor): the Podium is a page with the conductor's work
+  queues, the roster, open tasks, and late or blocked owners. It listens on
+  loopback unless told otherwise.
   - `podium start --json` serves it in the background for this membership and
-    prints its `url`. Give the user that URL; it opens only in a browser on
-    this machine (from elsewhere: `ssh -L PORT:127.0.0.1:PORT host`). A second
-    start reports the running server. `--port N` (default 4300) and
-    `--dir DIR` choose where; `--restart` replaces it, which an upgrade needs
-    when `podium status` shows `stale_version`. `--plan PLAN` makes the server
-    republish that work plan whenever the file changes, on the page's own
-    poll; start refuses a plan that does not validate.
+    prints its `url`. Give the user that URL; by default it opens only in a
+    browser on this machine (from elsewhere: `ssh -L PORT:127.0.0.1:PORT
+    host`). A second start reports the running server. `--port N` (default
+    4300) and `--dir DIR` choose where; `--restart` replaces it, which an
+    upgrade needs when `podium status` shows `stale_version`. `--plan PLAN`
+    makes the server republish that work plan whenever the file changes, on
+    the page's own poll; start refuses a plan that does not validate.
+  - `--bind ADDRESS` listens on that address or hostname instead of
+    127.0.0.1, so other machines can open the page. Prefer this machine's
+    tailnet IP (`--bind 100.x.y.z`, from `tailscale ip -4`): only the tailnet
+    reaches it. `--bind 0.0.0.0` also exposes it on every LAN and Wi-Fi this
+    machine joins. The page has no authentication: everyone who can reach the
+    address reads the roster, the tasks, and the plan, so bind beyond
+    loopback only when the user asked for it. The probe, the errors, `podium
+    status`, and the `url` follow the address; a wildcard bind prints this
+    machine's hostname. A restart without `--bind` keeps the last address;
+    `--bind 127.0.0.1` goes back to loopback.
   - `podium status --json` and `podium stop --json` manage it. With `--plan`,
     `plan_state` shows the last publish, or the `error` that kept a rejected
     edit off the page; check it after editing the plan.

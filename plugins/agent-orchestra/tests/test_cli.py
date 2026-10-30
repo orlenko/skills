@@ -61,6 +61,8 @@ DOCUMENTED = [
     ["podium", "serve", "--member-id", "mb_1234"],
     ["podium", "start"],
     ["podium", "start", "--member-id", "mb_1234", "--port", "4301", "--dir", "/tmp/podium", "--restart", "--json"],
+    ["podium", "start", "--bind", "100.77.29.15", "--plan", "plan.json", "--restart"],
+    ["podium", "serve", "--bind", "0.0.0.0", "--port", "4300"],
     ["podium", "stop", "--member-id", "mb_1234"],
     ["podium", "status", "--json"],
     ["serve", "--orchestra-id", "orc_abc"],
@@ -80,6 +82,17 @@ class ParserTest(unittest.TestCase):
             with self.subTest(argv=argv):
                 args = self.parser.parse_args(argv)
                 self.assertEqual(args.command, argv[0])
+
+    def test_bind_defaults_to_none_and_is_normalized(self) -> None:
+        from agent_orchestra import cli
+        from agent_orchestra.core import OrchestraError
+
+        self.assertIsNone(self.parser.parse_args(["podium", "start"]).bind)
+        self.assertIsNone(cli._bind(None))
+        self.assertEqual(cli._bind(" 100.77.29.15 "), "100.77.29.15")
+        self.assertEqual(cli._bind("[fd7a:115c::1]"), "fd7a:115c::1")
+        with self.assertRaises(OrchestraError):
+            cli._bind(" ")
 
     def test_member_common_flags(self) -> None:
         args = self.parser.parse_args(
@@ -190,7 +203,7 @@ class ParserTest(unittest.TestCase):
             self.parser.parse_args(["--version"])
         self.assertEqual(caught.exception.code, 0)
         self.assertEqual(out.getvalue().strip(), f"agent-orchestra {__version__}")
-        self.assertEqual(__version__, "0.2.25")
+        self.assertEqual(__version__, "0.2.26")
 
     def test_unknown_command_exits_non_zero(self) -> None:
         err = io.StringIO()
