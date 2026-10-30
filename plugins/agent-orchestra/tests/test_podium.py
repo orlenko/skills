@@ -279,6 +279,43 @@ class ServerTest(unittest.TestCase):
                 self.assertEqual(self.get(path)[0], 404)
 
 
+class BindAddressTest(unittest.TestCase):
+    def test_urls_and_probes_follow_the_bind(self) -> None:
+        self.assertEqual(podium.url("127.0.0.1", 4300), "http://127.0.0.1:4300/")
+        self.assertEqual(podium.url("100.77.29.15", 4300), "http://100.77.29.15:4300/")
+        self.assertEqual(podium.url("koza", 4300), "http://koza:4300/")
+        self.assertEqual(podium.url("fd7a:115c::1", 4300), "http://[fd7a:115c::1]:4300/")
+        with mock.patch.object(podium.socket, "gethostname", return_value="koza"):
+            self.assertEqual(podium.url("0.0.0.0", 4300), "http://koza:4300/")
+        self.assertEqual(podium._probe_host("100.77.29.15"), "100.77.29.15")
+        self.assertEqual(podium._probe_host("0.0.0.0"), "127.0.0.1")
+        self.assertEqual(podium._probe_host("::"), "::1")
+
+    def test_a_wildcard_bind_listens_beyond_loopback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            httpd = podium.server(Path(tmp), 0, bind="0.0.0.0")
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            try:
+                self.assertEqual(httpd.server_address[0], "0.0.0.0")
+                connection = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=5)
+                try:
+                    connection.request("GET", "/")
+                    self.assertEqual(connection.getresponse().status, 200)
+                finally:
+                    connection.close()
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+                thread.join()
+
+    def test_an_address_this_machine_lacks_is_named_in_the_error(self) -> None:
+        # 192.0.2.0/24 is TEST-NET-1: never assigned to a local interface.
+        with self.assertRaisesRegex(OrchestraError, "cannot listen on 192.0.2.1:"):
+            podium.server(Path("."), 0, bind="192.0.2.1")
+
+
+
 class HubViewTest(unittest.TestCase):
     """orchestra.json comes from the monitor's snapshots, never from the hub."""
 
@@ -432,6 +469,33 @@ class BackgroundServerTest(unittest.TestCase):
         self.assertEqual(current["plan"], str(plan))
         self.assertIsNone(current["plan_state"]["error"])
         self.assertTrue((self.data / podium.STATUS_FILE).exists())
+
+    def test_a_bind_is_used_and_recorded_and_a_restart_keeps_it(self) -> None:
+        started = podium.start(self.member, self.data, self.port, bind="localhost")
+        self.assertEqual((started["bind"], started["url"]), ("localhost", f"http://localhost:{self.port}/"))
+        self.assertTrue(podium.status("mb_conductor")["running"])
+        restarted = podium.start(self.member, self.data, self.port, restart=True)
+        self.assertNotEqual(restarted["pid"], started["pid"])
+        self.assertEqual(restarted["url"], f"http://localhost:{self.port}/")
+        back = podium.start(self.member, self.data, self.port, restart=True, bind="127.0.0.1")
+        self.assertEqual(back["url"], f"http://127.0.0.1:{self.port}/")
+
+    def test_the_default_bind_is_loopback(self) -> None:
+        started = podium.start(self.member, self.data, self.port)
+        self.assertEqual(started["bind"], "127.0.0.1")
+        with mock.patch.object(podium.socket, "gethostname", return_value="koza"):
+            wild = podium.start(self.member, self.data, self.port, restart=True, bind="0.0.0.0")
+        self.assertEqual(wild["url"], f"http://koza:{self.port}/")
+        self.assertTrue(podium.status("mb_conductor")["running"])
+
+    def test_a_record_from_before_bind_reads_as_loopback(self) -> None:
+        started = podium.start(self.member, self.data, self.port)
+        record = podium.read_json(podium._record_path("mb_conductor"))
+        del record["bind"]
+        podium.atomic_write_json(podium._record_path("mb_conductor"), record)
+        self.assertTrue(podium.status("mb_conductor")["running"])
+        restarted = podium.start(self.member, self.data, self.port, restart=True)
+        self.assertEqual((restarted["bind"], restarted["url"]), ("127.0.0.1", started["url"]))
 
     def test_a_busy_port_is_refused_without_recording_a_server(self) -> None:
         with socket.socket() as busy:
