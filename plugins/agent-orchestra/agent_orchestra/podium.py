@@ -28,6 +28,7 @@ import math
 import os
 import signal
 import socket
+import socketserver
 import threading
 import time
 from datetime import datetime, timezone
@@ -240,6 +241,18 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             super().log_message(format, *args)
 
 
+class _Server(http.server.ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        """Bind without HTTPServer's reverse DNS lookup of the address.
+
+        HTTPServer asks getfqdn() for a name before listen(), and a lookup that
+        fails can take longer than start() waits: on macOS CI runners every
+        Podium start timed out. Nothing here reads the name.
+        """
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = str(self.server_address[0]), int(self.server_address[1])
+
+
 def _host(bind: str) -> str:
     """`bind` as it goes into a URL or an error: IPv6 literals in brackets."""
     return f"[{bind}]" if ":" in bind else bind
@@ -264,7 +277,7 @@ def server(
         "directory": Path(directory), "member_id": member_id,
         "plan": Path(plan) if plan else None,
     })
-    kind = http.server.ThreadingHTTPServer
+    kind: type[_Server] = _Server
     if ":" in bind:
         kind = type("PodiumServer6", (kind,), {"address_family": socket.AF_INET6})
     try:

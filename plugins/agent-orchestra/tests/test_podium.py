@@ -309,6 +309,12 @@ class BindAddressTest(unittest.TestCase):
                 httpd.server_close()
                 thread.join()
 
+    def test_binding_asks_no_reverse_dns(self) -> None:
+        with mock.patch.object(socket, "getfqdn", side_effect=AssertionError("reverse DNS")):
+            httpd = podium.server(Path("."), 0)
+        httpd.server_close()
+        self.assertEqual(httpd.server_name, "127.0.0.1")
+
     def test_an_address_this_machine_lacks_is_named_in_the_error(self) -> None:
         # 192.0.2.0/24 is TEST-NET-1: never assigned to a local interface.
         with self.assertRaisesRegex(OrchestraError, "cannot listen on 192.0.2.1:"):
