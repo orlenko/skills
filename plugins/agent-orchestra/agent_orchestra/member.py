@@ -1500,6 +1500,8 @@ def _presence_summary(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row.get("id"),
         "name": row.get("name"),
+        # Other names the hub resolves to this member; a hub before 0.2.27 has none.
+        "nicks": [str(nick) for nick in row.get("nicks") or [] if isinstance(nick, str)],
         "provider": row.get("provider"),
         "role": row.get("role"),
         "parent": row.get("parent"),
@@ -1631,6 +1633,16 @@ def set_conductor(member: dict[str, Any], member_id: str) -> dict[str, Any]:
         member["role"] = "player"
     save_member(member)
     return result
+
+
+def set_nicks(
+    member: dict[str, Any], target: str, add: list[str] | None = None, remove: list[str] | None = None,
+) -> dict[str, Any]:
+    """Conductor: add or remove `target`'s nicknames, kept at the hub."""
+    ensure_hub_if_local(member)
+    return api_request(member, "POST", "/v1/nicks", {
+        "member": target, "add": add or [], "remove": remove or [],
+    })
 
 
 def kick(member: dict[str, Any], member_id: str, reason: str | None = None) -> dict[str, Any]:
@@ -1945,20 +1957,15 @@ def type_into(
 ) -> dict[str, Any]:
     """Conductor: have `target`'s monitor type `text` into its session's pane.
 
-    `target` is a member id or a roster name. With `wait`, poll this inbox for
-    the target's reply and finish it, so the answer is the command's output.
+    `target` is a member id, name, or nickname; the hub resolves it. With
+    `wait`, poll this inbox for the target's reply and finish it, so the
+    answer is the command's output.
     """
     if not text.strip() and not options.keys and not options.hold_only:
         raise OrchestraError("Nothing to type: give text, --key NAME, or both")
-    target_id = target
-    if not re.fullmatch(core.MEMBER_ID_RE, target):
-        roster = members(member)["members"]
-        matches = [row for row in roster if row.get("name") == target
-                   and row.get("presence") not in ("left", "kicked")]
-        if len(matches) != 1:
-            raise OrchestraError(f"No single active member named {target!r}; pass a member id")
-        target_id = str(matches[0]["id"])
-    headers = ["ACT type", f"TO {target_id}", f"TYPE {options.header()}"]
+    if "," in target or "\n" in target:
+        raise OrchestraError(f"ACT type goes to one member, not {target!r}")
+    headers = ["ACT type", f"TO {target.strip()}", f"TYPE {options.header()}"]
     if task:
         headers.append(f"TASK {task}")
     result = send(member, "\n".join(headers) + "\n\n" + text)

@@ -178,9 +178,17 @@ class ProtocolTests(HomeTestCase):
         with self.assertRaisesRegex(ProtocolError, "at least one recipient"):
             parse_message("ACT tell\n\nbody")
 
-    def test_unknown_recipient_token_is_rejected(self):
-        with self.assertRaisesRegex(ProtocolError, "'everyone' is not a member id"):
-            parse_message("ACT tell\nTO everyone\n\nbody")
+    def test_a_name_is_a_recipient_the_hub_resolves(self):
+        self.assertEqual(parse_message("ACT tell\nTO Harp, mb_4c1e\n\nbody").to, ["Harp", "mb_4c1e"])
+        self.assertEqual(parse_message("ACT type\nTO Harp\n\n/qc 1").to, ["Harp"])
+        with self.assertRaisesRegex(ProtocolError, "not an alias"):
+            parse_message("ACT type\nTO all\n\n/qc 1")
+
+    def test_an_unprintable_or_overlong_recipient_is_rejected(self):
+        with self.assertRaisesRegex(ProtocolError, "is not a member id"):
+            validate_fields("tell", ["bell\x07"], None, None, "none", [])
+        with self.assertRaisesRegex(ProtocolError, "is not a member id"):
+            parse_message("ACT tell\nTO " + "x" * 81 + "\n\nbody")
 
     def test_bad_re_and_task_ids_are_rejected(self):
         with self.assertRaisesRegex(ProtocolError, "RE 'nope' is not a message id"):
@@ -220,7 +228,7 @@ class ProtocolTests(HomeTestCase):
         with self.assertRaisesRegex(ProtocolError, "at least one recipient"):
             validate_fields("tell", [], None, None, "none", [])
         with self.assertRaisesRegex(ProtocolError, "not a member id"):
-            validate_fields("tell", ["everyone"], None, None, "none", [])
+            validate_fields("tell", [""], None, None, "none", [])
         with self.assertRaisesRegex(ProtocolError, "assign requires a task"):
             validate_fields("assign", ["all"], None, None, "none", [])
         with self.assertRaisesRegex(ProtocolError, "NEED must be a non-empty string"):

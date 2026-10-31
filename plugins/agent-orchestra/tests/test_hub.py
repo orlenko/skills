@@ -755,6 +755,83 @@ class HubStoreTests(TempHomeTests):
         self.assertEqual(self.store.status(principal)["queued_for_me"], 0)
 
 
+    # ---- names and nicknames ------------------------------------------------
+
+    def _recipients(self, sent):
+        return [row["id"] for row in sent["recipients"]]
+
+    def test_a_name_or_nickname_reaches_its_member_in_any_case(self):
+        conductor, player_a, player_b, _d = self._orchestra()
+        principal = {"kind": "member", **conductor["row"]}
+        added = self.store.set_nicks(principal, "a", add=["Harp"])
+        self.assertEqual((added["member_id"], added["nicks"]), (player_a["member_id"], ["Harp"]))
+        for token in ("Harp", "harp", "A", player_a["member_id"]):
+            with self.subTest(token=token):
+                self.assertEqual(self._recipients(self._send(conductor, [token])), [player_a["member_id"]])
+        both = self._send(conductor, ["HARP", "b", player_a["member_id"]])
+        self.assertEqual(self._recipients(both), [player_a["member_id"], player_b["member_id"]])
+        rows = {row["id"]: row for row in self.store.members()["members"]}
+        self.assertEqual(rows[player_a["member_id"]]["nicks"], ["Harp"])
+        self.assertEqual(rows[player_b["member_id"]]["nicks"], [])
+
+    def test_an_unknown_name_lists_the_members_and_a_shared_name_lists_both(self):
+        conductor, player_a, _b, _d = self._orchestra()
+        self.store.set_nicks({"kind": "admin"}, player_a["member_id"], add=["Harp"])
+        with self.assertRaises(APIError) as unknown:
+            self._send(conductor, ["Oboe"])
+        self.assertEqual(unknown.exception.status, 400)
+        self.assertIn("Unknown recipient: Oboe. Active members:", str(unknown.exception))
+        self.assertIn("A (Harp)", str(unknown.exception))
+        twin = self._join("a")
+        with self.assertRaises(APIError) as ambiguous:
+            self._send(conductor, ["A"])
+        self.assertIn(player_a["member_id"], str(ambiguous.exception))
+        self.assertIn(twin["member_id"], str(ambiguous.exception))
+        self.assertEqual(self._recipients(self._send(conductor, ["Harp"])), [player_a["member_id"]])
+        with self.assertRaises(APIError) as itself:
+            self._send(player_a, ["harp"])
+        self.assertEqual(str(itself.exception), "harp is you")
+
+    def test_only_the_conductor_or_admin_names_members(self):
+        conductor, player_a, player_b, _d = self._orchestra()
+        with self.assertRaises(APIError) as player:
+            self.store.set_nicks({"kind": "member", **player_a["row"]}, "B", add=["Oboe"])
+        self.assertEqual(player.exception.status, 403)
+        self.store.set_nicks({"kind": "member", **conductor["row"]}, "B", add=["Oboe", "oboe"])
+        removed = self.store.set_nicks({"kind": "admin"}, "oboe", remove=["OBOE"])
+        self.assertEqual(removed, {"member_id": player_b["member_id"], "name": "B", "nicks": []})
+
+    def test_a_nickname_never_collides_with_a_name_an_alias_or_an_id(self):
+        conductor, player_a, player_b, _d = self._orchestra()
+        admin = {"kind": "admin"}
+        self.store.set_nicks(admin, "A", add=["Harp"])
+        refused = {
+            "a": 409, "HARP": 409, "Children": 400, "all": 400, "mb_abcdef": 400, "  ": 400, "a,b": 400,
+        }
+        for nick, status in refused.items():
+            with self.subTest(nick=nick):
+                with self.assertRaises(APIError) as caught:
+                    self.store.set_nicks(admin, "B", add=[nick])
+                self.assertEqual(caught.exception.status, status)
+        # A refused add changes nothing; the member's own name is not repeated as a nickname.
+        self.assertEqual(self.store.set_nicks(admin, "B", add=["b"])["nicks"], [])
+        self.assertEqual(self.store.set_nicks(admin, "B", add=["Oboe"])["nicks"], ["Oboe"])
+
+    def test_kick_conductor_and_type_take_a_nickname(self):
+        conductor, player_a, player_b, _d = self._orchestra()
+        admin = {"kind": "admin"}
+        self.store.set_nicks(admin, "A", add=["Harp"])
+        self.store.set_nicks(admin, "B", add=["Oboe"])
+        typed = self._send(conductor, ["harp"], act="type",
+                           text="ACT type\nTO harp\nTYPE enter idle quiet=0\n\n/qc 1\n")
+        self.assertEqual(self._recipients(typed), [player_a["member_id"]])
+        self.assertEqual(self.store.set_conductor(admin, "Oboe"), {"conductor_id": player_b["member_id"]})
+        kicked = self.store.kick(admin, "HARP")
+        self.assertEqual(kicked["member_id"], player_a["member_id"])
+        with self.assertRaises(APIError) as gone:
+            self.store.kick(admin, "Harp")
+        self.assertIn("Unknown or inactive member: Harp", str(gone.exception))
+
 class HubLifecycleFileTests(TempHomeTests):
     def _write_hub(self, orchestra_id, *, created_at, closed_at=None, port=4443, bind="127.0.0.1"):
         config = {
@@ -962,6 +1039,26 @@ class HubServerTests(TempHomeTests):
             "token": joined["token"],
         }
         return joined, connection
+
+    def test_a_nickname_set_over_https_addresses_its_member(self):
+        created = self._create()
+        conductor, conductor_conn = self._join(created["conductor_invite"], "Conductor")
+        admin = admin_connection(created["orchestra_id"])
+        player, player_conn = self._join(
+            api_request(admin, "POST", "/v1/invite", {"role": "player"})["invite"], "aiq"
+        )
+        with self.assertRaises(APIError) as refused:
+            api_request(player_conn, "POST", "/v1/nicks", {"member": "aiq", "add": ["Harp"]})
+        self.assertEqual(refused.exception.status, 403)
+        named = api_request(conductor_conn, "POST", "/v1/nicks", {"member": "aiq", "add": ["Harp"]})
+        self.assertEqual((named["member_id"], named["nicks"]), (player["member_id"], ["Harp"]))
+        sent = api_request(conductor_conn, "POST", "/v1/messages", {
+            "id": core.new_message_id(), "to": ["Harp"], "act": "tell", "re": None, "task": None,
+            "need": "none", "refs": [], "text": "ACT tell\nTO Harp\n\nhello\n",
+        })
+        self.assertEqual([row["id"] for row in sent["recipients"]], [player["member_id"]])
+        roster = {row["id"]: row for row in api_request(conductor_conn, "GET", "/v1/members")["members"]}
+        self.assertEqual(roster[player["member_id"]]["nicks"], ["Harp"])
 
     def test_join_invites_and_long_poll_over_https(self):
         created = self._create()
