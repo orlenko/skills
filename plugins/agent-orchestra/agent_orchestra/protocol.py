@@ -12,6 +12,8 @@ ACTS = ("ask", "tell", "done", "block", "dissent", "assign", "status", "type")
 ALIASES = ("conductor", "parent", "children", "siblings", "all")
 HEADER_KEYS = ("ACT", "TO", "RE", "TASK", "NEED", "REF", "STATE", "TYPE")
 MAX_HEADER_LINES = 20
+# The hub's MAX_NAME_CHARACTERS: a recipient name is a member name or nickname.
+MAX_RECIPIENT_CHARACTERS = 80
 
 _HEADER_LINE = re.compile(r"^([A-Z]+)[ \t]+(.+)$")
 _MESSAGE_ID = re.compile(MESSAGE_ID_RE)
@@ -203,8 +205,8 @@ def message_body(text: str) -> str:
 
 
 def _check_type_recipients(to: Any) -> None:
-    if len(to) != 1 or not _MEMBER_ID.fullmatch(str(to[0]).strip()):
-        raise ProtocolError("ACT type goes to exactly one member id, not an alias")
+    if len(to) != 1 or str(to[0]).strip() in ALIASES:
+        raise ProtocolError("ACT type goes to exactly one member, by id, name, or nickname; not an alias")
 
 
 def reply_required(envelope_or_row: Envelope | dict[str, Any]) -> bool:
@@ -374,11 +376,15 @@ def _recipients(raw: str | None, extra_to: list[str] | None) -> list[str]:
 
 
 def _check_recipient(value: str) -> None:
-    if value in ALIASES:
+    """An alias, a member id, or a member's name or nickname.
+
+    The hub resolves names, so every member reads a nickname the same way; an
+    unknown one is the hub's rejection, which lists the active members.
+    """
+    if value in ALIASES or _MEMBER_ID.fullmatch(value):
         return
-    if _MEMBER_ID.fullmatch(value):
-        return
-    raise ProtocolError(
-        f"Recipient {value!r} is not a member id matching {MEMBER_ID_RE} "
-        f"nor one of the aliases: {', '.join(ALIASES)}"
-    )
+    if not value or len(value) > MAX_RECIPIENT_CHARACTERS or not value.isprintable():
+        raise ProtocolError(
+            f"Recipient {value!r} is not a member id ({MEMBER_ID_RE}), a member name, "
+            f"or one of the aliases: {', '.join(ALIASES)}"
+        )

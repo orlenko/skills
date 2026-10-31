@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlsplit
 from .core import (
     APIError,
     MAX_MESSAGE_BYTES,
+    MEMBER_ID_RE,
     MESSAGE_ID_RE,
     OrchestraError,
     atomic_write_json,
@@ -42,7 +43,7 @@ from .core import (
 )
 from .core import SEAT_STATES
 from .lifecycle import ASSIGNER_STATES, OWNER_STATES, TERMINAL, aggregate, derive_owners
-from .protocol import ProtocolError, message_body, parse_message, validate_fields
+from .protocol import ALIASES, ProtocolError, message_body, parse_message, validate_fields
 
 
 PRESENCE_INTERVAL_SECONDS = 10.0
@@ -70,6 +71,7 @@ MAX_REQUEST_BYTES = 3 * MAX_MESSAGE_BYTES + 4096
 HANDSHAKE_TIMEOUT_SECONDS = 10.0
 LIVENESS_PROBE_SECONDS = 1.0
 MAX_NAME_CHARACTERS = 80
+MAX_NICKS = 8
 
 SYSTEM_SENDER = "sys"
 
@@ -79,6 +81,7 @@ _SPAWN_ENTRY: tuple[str, ...] = ("-m", "agent_orchestra")
 _BACKGROUND_PROCESSES: list[subprocess.Popen[bytes]] = []
 
 _MESSAGE_ID = re.compile(MESSAGE_ID_RE)
+_MEMBER_ID = re.compile(MEMBER_ID_RE)
 _MESSAGE_PATH = re.compile(r"/v1/messages/(m_[A-Za-z0-9_-]+)")
 _MESSAGE_MARK_PATH = re.compile(r"/v1/messages/(m_[A-Za-z0-9_-]+)/(ack|handled)")
 
@@ -126,6 +129,7 @@ _ADDED_COLUMNS = (
     ("members", "hold_task", "TEXT"),
     ("members", "hold_state", "TEXT"),
     ("members", "hold_message", "TEXT"),
+    ("members", "nicks", "TEXT"),
 )
 # What ends a hold early, by the member's own message on the held task.
 _HOLD_ENDS = {"started": ("started",), "done": ()}
@@ -149,7 +153,16 @@ def public_member(row: dict[str, Any]) -> dict[str, Any]:
         "hold_until": row.get("hold_until"),
         "hold_task": row.get("hold_task"),
         "hold_state": row.get("hold_state"),
+        "nicks": member_nicks(row),
     }
+
+
+def member_nicks(row: dict[str, Any]) -> list[str]:
+    try:
+        nicks = json.loads(row.get("nicks") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return [str(nick) for nick in nicks if isinstance(nick, str)] if isinstance(nicks, list) else []
 
 
 def system_sender() -> dict[str, Any]:
@@ -168,6 +181,21 @@ def sanitize_name(value: Any, fallback: str = "member") -> str:
     kept = "".join(char for char in raw if char.isprintable() or char.isspace())
     collapsed = " ".join(kept.split())
     return collapsed[:MAX_NAME_CHARACTERS].strip() or fallback
+
+
+def _label(row: dict[str, Any]) -> str:
+    """`aiq (Harp)`: a member's name with its nicknames, for errors and lists."""
+    nicks = member_nicks(row)
+    return f"{row['name']} ({', '.join(nicks)})" if nicks else str(row["name"])
+
+
+def _check_nick(value: Any) -> str:
+    nick = sanitize_name(value, fallback="")
+    if not nick or "," in nick:
+        raise APIError(400, f"Nickname {value!r} must be a non-empty name without commas")
+    if nick.casefold() in ALIASES or _MEMBER_ID.fullmatch(nick):
+        raise APIError(400, f"Nickname {nick!r} is reserved: it reads as an alias or a member id")
+    return nick
 
 
 def clamp_ttl(ttl: Any) -> int:
@@ -290,6 +318,37 @@ class HubStore:
         if row and row["revoked_at"] is None:
             return row
         return None
+
+    def _lookup(
+        self, token: str, active: dict[str, dict[str, Any]] | None = None, *,
+        unknown: str = "Unknown or inactive member",
+    ) -> str:
+        """The active member a token names: its id, its name, or a nickname.
+
+        Names and nicknames match without regard to case. The person names
+        players after instruments, and a member that joined as "aiq" is
+        "Harp" to them. A name two members share is refused with both ids,
+        never guessed.
+        """
+        if active is None:
+            active = {row["id"]: row for row in self._members(active_only=True)}
+        if token in active:
+            return token
+        wanted = token.casefold()
+        matches = [
+            member_id for member_id, row in active.items()
+            if wanted in {str(row["name"]).casefold(), *(nick.casefold() for nick in member_nicks(row))}
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            raise APIError(400, f"Ambiguous member {token!r}: " + ", ".join(
+                f"{member_id} ({_label(active[member_id])})" for member_id in matches
+            ) + ". Pass a member id")
+        if _MEMBER_ID.fullmatch(token):
+            raise APIError(400, f"{unknown}: {token}")
+        known = ", ".join(_label(row) for row in active.values())
+        raise APIError(400, f"{unknown}: {token}. Active members: {known or 'none'}")
 
     def _conductor_id(self) -> str | None:
         conductor_id = self._get("conductor_id")
@@ -916,9 +975,10 @@ class HubStore:
                     if member_id != sender_id:
                         add(member_id)
             else:
-                if entry == sender_id or entry not in active:
-                    raise APIError(400, f"Unknown recipient: {entry}")
-                add(entry)
+                member_id = self._lookup(entry, active, unknown="Unknown recipient")
+                if member_id == sender_id:
+                    raise APIError(400, f"{entry} is you")
+                add(member_id)
         if not resolved:
             raise APIError(400, "No recipients resolved")
         return resolved
@@ -1112,10 +1172,9 @@ class HubStore:
         with self.changed:
             self._live(_principal_id(principal))
             self._require_command(principal)
+            member_id = self._lookup(member_id)
             if principal.get("kind") == "member" and principal["id"] == member_id:
                 raise APIError(400, "Use leave to remove yourself")
-            if not self._active_member(member_id):
-                raise APIError(400, f"Unknown or inactive member: {member_id}")
             self._revoke(member_id, "kicked", now())
             self.db.commit()
             self.changed.notify_all()
@@ -1137,9 +1196,8 @@ class HubStore:
         with self.changed:
             self._live(_principal_id(principal))
             self._require_command(principal)
-            target = self._active_member(str(member_id))
-            if target is None:
-                raise APIError(400, f"Unknown or inactive member: {member_id}")
+            target = self._active_member(self._lookup(str(member_id)))
+            assert target is not None
             previous = self._conductor_id()
             if previous and previous != target["id"]:
                 self.db.execute("UPDATE members SET role='player' WHERE id=?", (previous,))
@@ -1154,6 +1212,38 @@ class HubStore:
             self.db.commit()
             self.changed.notify_all()
             return {"conductor_id": target["id"]}
+
+    def set_nicks(
+        self, principal: dict[str, Any], member: str, add: Any = None, remove: Any = None,
+    ) -> dict[str, Any]:
+        """Add or remove a member's nicknames. Every member resolves them here,
+        so a nickname means the same member to everyone."""
+        with self.changed:
+            self._live(_principal_id(principal))
+            self._require_command(principal)
+            active = {row["id"]: row for row in self._members(active_only=True)}
+            member_id = self._lookup(str(member), active)
+            nicks = member_nicks(active[member_id])
+            for raw in remove or []:
+                nicks = [nick for nick in nicks if nick.casefold() != str(raw).strip().casefold()]
+            for raw in add or []:
+                nick = _check_nick(raw)
+                taken = [
+                    other_id for other_id, row in active.items() if other_id != member_id
+                    and nick.casefold() in {str(row["name"]).casefold(), *(n.casefold() for n in member_nicks(row))}
+                ]
+                if taken:
+                    raise APIError(409, f"Nickname {nick!r} already names {taken[0]} ({_label(active[taken[0]])})")
+                if nick.casefold() not in {n.casefold() for n in nicks} and nick.casefold() != str(
+                    active[member_id]["name"]
+                ).casefold():
+                    nicks.append(nick)
+            if len(nicks) > MAX_NICKS:
+                raise APIError(400, f"A member has at most {MAX_NICKS} nicknames")
+            self.db.execute("UPDATE members SET nicks=? WHERE id=?", (json.dumps(nicks), member_id))
+            self.db.commit()
+            self.changed.notify_all()
+            return {"member_id": member_id, "name": active[member_id]["name"], "nicks": nicks}
 
     def close(self, principal: dict[str, Any]) -> dict[str, Any]:
         with self.changed:
@@ -1409,6 +1499,12 @@ class OrchestraHandler(BaseHTTPRequestHandler):
                     200,
                     store.kick(principal, str(body.get("member_id", "")), body.get("reason")),
                 )
+                return
+            if self.command == "POST" and parsed.path == "/v1/nicks":
+                body = self._read_body()
+                self._respond(200, store.set_nicks(
+                    principal, str(body.get("member", "")), body.get("add"), body.get("remove"),
+                ))
                 return
             if self.command == "POST" and parsed.path == "/v1/close":
                 self._read_body()

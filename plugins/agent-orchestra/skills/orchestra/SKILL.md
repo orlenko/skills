@@ -57,7 +57,7 @@ belong to several, one session each.
   `send --stdin --json`. Add `--to TOKEN` once per extra recipient.
 - `type` (conductor only): run `type --to MEMBER --json -- TEXT` to have that
   member's monitor type TEXT into its session's tmux pane and press Enter, as
-  if its user typed it. MEMBER is a member id or a roster name. It types only
+  if its user typed it. MEMBER is a member id, name, or nickname. It types only
   into an idle session: input box showing, empty, no turn running. Report the
   `outcome` as it comes back: `typed`, `refused-busy` (retry later),
   `no-pane` (the session is not in tmux or no live session holds the seat),
@@ -104,7 +104,14 @@ belong to several, one session each.
   an owner, or its newest message changes, with `changed: yes`, or
   `changed: no` at the deadline.
 - `status`, `members`, `events`, `message MESSAGE_ID`: run the command with
-  `--json` and summarize.
+  `--json` and summarize. Name a member by its roster name with its nicknames
+  after it, as `aiq (Harp)`.
+- `nick` (conductor only): `nick MEMBER --add NICK --json` gives a member
+  another name, and `--remove NICK` takes one away; both repeat. The hub keeps
+  nicknames, so every member resolves them the same way. It refuses a
+  nickname that is already another member's name or nickname, a `TO` alias,
+  or anything shaped like a member id. On the hub machine with no membership,
+  `hub nick` does the same with the admin token.
 - `leave`: run `leave --json`. `close`: run `close --json`, and only when the
   user asked to end the orchestra for every member.
 - `podium` (for the conductor): the Podium is a page with the conductor's work
@@ -165,7 +172,8 @@ Report these CLI states exactly as they come back:
   Its admin token stays on the hub host and mints any invite.
 - **Conductor.** Exactly one member at a time, and where the human sits. It
   owns the `conductor` alias, mints invites of any role and parent, reassigns
-  the role with `conductor MEMBER_ID`, revokes with `kick`, and closes the
+  the role with `conductor MEMBER`, revokes with `kick`, names members with
+  `nick`, and closes the
   orchestra. Otherwise it is a member with a mailbox.
 - **Player.** Every other member. A player may mint invites only for its own
   children (`--role player --parent self`). It may not close the orchestra.
@@ -184,7 +192,7 @@ certificate, database, log, and supervisor unit.
   orchestra this machine already hosts, mint an invite from that hub.
 - `hub list --json` names every unclosed hub on this machine.
 - Every other `hub` subcommand — `status`, `ensure`, `unit`, `invite`,
-  `conductor`, `kick`, `close` — takes `--orchestra-id ID`. With one hub the
+  `conductor`, `kick`, `nick`, `close` — takes `--orchestra-id ID`. With one hub the
   flag is optional. With two the command refuses and names the ids; read one
   from that error or from `hub list --json` and run the command again with the
   flag.
@@ -282,7 +290,12 @@ The five `TO` aliases resolve at the hub, relative to the sender: `conductor`
 is the current conductor, `parent` is this member's parent, `children` is every
 active member whose parent is this member, `siblings` is every active member
 sharing this member's parent, and `all` is every other active member. Member
-ids (`mb_...`) may be mixed with aliases.
+ids (`mb_...`) may be mixed with aliases, and so may a member's name or
+nickname, in any case: `TO Harp, conductor`. The hub resolves names too, and
+everywhere a command names a member (`--to`, `type`, `quiet`, `kick`,
+`conductor`, `nick`). It rejects an unknown name with the list of active
+members, and a name two members share with both ids. Use the id then. An
+alias always wins over a member that joined under the same name.
 
 Write the body under these rules:
 

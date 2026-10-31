@@ -74,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="command",
         required=True,
         metavar="{hub,join,invite,send,inbox,show,wait,finish,status,members,tasks,"
-        "events,message,conductor,kick,leave,close,monitor,podium}",
+        "events,message,conductor,kick,nick,leave,close,monitor,podium}",
     )
 
     hub = commands.add_parser("hub", help="Run and administer the hub on the always-on machine")
@@ -109,12 +109,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     hub_conductor = hub_commands.add_parser("conductor", help="Move the conductor role")
     _hub_common(hub_conductor)
-    hub_conductor.add_argument("target", metavar="MEMBER_ID")
+    hub_conductor.add_argument("target", metavar="MEMBER", help="Member id, name, or nickname")
 
     hub_kick = hub_commands.add_parser("kick", help="Revoke a membership")
     _hub_common(hub_kick)
-    hub_kick.add_argument("target", metavar="MEMBER_ID")
+    hub_kick.add_argument("target", metavar="MEMBER", help="Member id, name, or nickname")
     hub_kick.add_argument("--reason", default=None)
+
+    hub_nick = hub_commands.add_parser("nick", help="Add or remove a member's nicknames")
+    _hub_common(hub_nick)
+    _nick_arguments(hub_nick)
 
     hub_close = hub_commands.add_parser("close", help="Close the orchestra for every member")
     _hub_common(hub_close)
@@ -150,7 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _common(typing)
     typing.add_argument("text", nargs="*")
-    typing.add_argument("--to", required=True, metavar="MEMBER", help="Member id or name")
+    typing.add_argument("--to", required=True, metavar="MEMBER", help="Member id, name, or nickname")
     typing.add_argument("--stdin", action="store_true", help="Read the text from stdin")
     typing.add_argument("--no-enter", action="store_true", help="Type without submitting")
     typing.add_argument("--anytime", action="store_true",
@@ -174,7 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
              "session, without typing anything",
     )
     _common(quiet)
-    quiet.add_argument("--to", required=True, metavar="MEMBER", help="Member id or name")
+    quiet.add_argument("--to", required=True, metavar="MEMBER", help="Member id, name, or nickname")
     quiet.add_argument("--for", dest="seconds", type=int, default=3600, metavar="SECONDS",
                        help="How long (default %(default)s)")
     quiet.add_argument("--task", help="Only this task's reports end it")
@@ -266,12 +270,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     conductor = commands.add_parser("conductor", help="Move the conductor role")
     _common(conductor)
-    conductor.add_argument("target", metavar="MEMBER_ID")
+    conductor.add_argument("target", metavar="MEMBER", help="Member id, name, or nickname")
 
     kick = commands.add_parser("kick", help="Revoke another membership")
     _common(kick)
-    kick.add_argument("target", metavar="MEMBER_ID")
+    kick.add_argument("target", metavar="MEMBER", help="Member id, name, or nickname")
     kick.add_argument("--reason", default=None)
+
+    nick = commands.add_parser(
+        "nick", help="Conductor: add or remove a member's nicknames, which every member can address"
+    )
+    _common(nick)
+    _nick_arguments(nick)
 
     leave = commands.add_parser("leave", help="Leave the orchestra")
     _common(leave)
@@ -339,6 +349,20 @@ def _bind(value: str | None) -> str | None:
     if not bound:
         raise OrchestraError("--bind needs an address or a hostname")
     return bound
+
+
+def _nick_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("target", metavar="MEMBER", help="Member id, name, or nickname")
+    parser.add_argument("--add", action="append", default=[], metavar="NICK",
+                        help="A nickname to add; repeatable")
+    parser.add_argument("--remove", action="append", default=[], metavar="NICK",
+                        help="A nickname to remove; repeatable")
+
+
+def _member_label(row: dict[str, Any]) -> str:
+    """`aiq (Harp)`: the joined name, then its nicknames."""
+    nicks = row.get("nicks") or []
+    return f"{row.get('name')} ({', '.join(nicks)})" if nicks else str(row.get("name"))
 
 
 def _print(value: Any, as_json: bool) -> None:
@@ -592,6 +616,11 @@ def _run_hub(args: argparse.Namespace) -> int:
             api_request(connection, "POST", "/v1/kick", {"member_id": args.target, "reason": args.reason}),
             args.as_json,
         )
+        return 0
+    if args.hub_command == "nick":
+        _print(api_request(connection, "POST", "/v1/nicks", {
+            "member": args.target, "add": args.add, "remove": args.remove,
+        }), args.as_json)
         return 0
     if args.hub_command == "close":
         _print(api_request(connection, "POST", "/v1/close", {}), args.as_json)
@@ -853,7 +882,14 @@ def run(args: argparse.Namespace) -> int:
         _print(member_api.status(member), args.as_json)
         return 0
     if args.command == "members":
-        _print(member_api.members(member), args.as_json)
+        result = member_api.members(member)
+        if args.as_json:
+            _print(result, True)
+        else:
+            for row in result["members"]:
+                print("  ".join(str(part) for part in (
+                    _member_label(row), row.get("id"), row.get("role"), row.get("presence"),
+                )))
         return 0
     if args.command == "quiet":
         _print(member_api.type_into(
@@ -887,6 +923,9 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command == "kick":
         _print(member_api.kick(member, args.target, args.reason), args.as_json)
+        return 0
+    if args.command == "nick":
+        _print(member_api.set_nicks(member, args.target, args.add, args.remove), args.as_json)
         return 0
     if args.command == "leave":
         _print(member_api.leave(member), args.as_json)
