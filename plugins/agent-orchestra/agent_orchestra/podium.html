@@ -179,10 +179,10 @@ const TASK_STATE = {pending:['no answer yet','warn'], accepted:['accepted',''], 
 const ATTENTION = {blocked:['blocked','bad'], 'no-response':['no response','warn'], stale:['no report','warn']};
 
 // `aiq (Harp)`: the joined name, then the nicknames the hub resolves to it.
-const label = (m) => (m.name || m.id) + (m.nicks?.length ? ` (${m.nicks.join(', ')})` : '');
+const memberName = (m) => (m.name || m.id) + (m.nicks?.length ? ` (${m.nicks.join(', ')})` : '');
 
 function names(hub) {
-  const map = new Map((hub?.roster?.members || []).map(m => [m.id, label(m)]));
+  const map = new Map((hub?.roster?.members || []).map(m => [m.id, memberName(m)]));
   return (id) => map.get(id) || id;
 }
 
@@ -202,7 +202,7 @@ function hubMembers(hub) {
       m.unhandled ? `${m.unhandled} unhandled, oldest ${dur(m.oldest_unhandled_age)}` : '',
       m.hold_until ? `mail held${m.hold_task ? ' for ' + m.hold_task : ''}` : ''].filter(Boolean).join(' · ');
     s.append($(`<div class="row"><span class="dot ${tone || 'idle'}"></span>
-      <span class="seat">${esc(label(m))}</span><span class="grow" style="color:var(--faint)" title="${esc(notes)}">${esc(notes)}</span>
+      <span class="seat">${esc(memberName(m))}</span><span class="grow" style="color:var(--faint)" title="${esc(notes)}">${esc(notes)}</span>
       <span class="meta">${esc(label)}${m.last_seen_age != null ? ' ' + dur(m.last_seen_age) : ''}</span></div>`));
   }
   return s;
