@@ -1,0 +1,377 @@
+{
+  "schema_version": 1,
+  "repository": "orlenko/skills",
+  "execution": {
+    "trusted_local": false,
+    "isolation": "unavailable",
+    "checks": [
+      {
+        "id": "node-runtime",
+        "argv": [
+          "node",
+          "--version"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 1024,
+        "effects": [
+          "Reads the Node runtime version; required by the existing Podium JavaScript test."
+        ]
+      },
+      {
+        "id": "manifest-01",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          ".agents/plugins/marketplace.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-02",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          ".claude-plugin/marketplace.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-03",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          "plugins/agent-pair/.codex-plugin/plugin.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-04",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          "plugins/agent-pair/.claude-plugin/plugin.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-05",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          "plugins/agent-pair/hooks/codex-hooks.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-06",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          "plugins/agent-pair/hooks/claude-hooks.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-07",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          "plugins/agent-orchestra/.codex-plugin/plugin.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-08",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          "plugins/agent-orchestra/.claude-plugin/plugin.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-09",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          "plugins/agent-orchestra/hooks/codex-hooks.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-10",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          "plugins/agent-orchestra/hooks/claude-hooks.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-11",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          "plugins/agent-nudge/.codex-plugin/plugin.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-12",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          "plugins/agent-nudge/.claude-plugin/plugin.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-13",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          "plugins/agent-observer/.codex-plugin/plugin.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-14",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          "plugins/agent-observer/.claude-plugin/plugin.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-15",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          "plugins/design-skeptic/.codex-plugin/plugin.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-16",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          "plugins/design-skeptic/.claude-plugin/plugin.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-17",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          "plugins/undrudge-apply/.codex-plugin/plugin.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "manifest-18",
+        "argv": [
+          "python",
+          "-m",
+          "json.tool",
+          "plugins/undrudge-apply/.claude-plugin/plugin.json"
+        ],
+        "timeout_seconds": 30,
+        "max_log_bytes": 65536,
+        "effects": [
+          "Reads and parses the named public JSON manifest; emits its content to the private bounded log."
+        ]
+      },
+      {
+        "id": "agent-observer",
+        "argv": [
+          "python",
+          "-W",
+          "error::ResourceWarning",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "plugins/agent-observer/tests",
+          "-v"
+        ],
+        "timeout_seconds": 300,
+        "max_log_bytes": 1048576,
+        "effects": [
+          "Runs the existing plugin suite with subprocesses and disposable fixture state; loopback listeners, process inspection and external-runtime requirements depend on the suite. This local route is not qualified or enabled."
+        ]
+      },
+      {
+        "id": "agent-pair",
+        "argv": [
+          "python",
+          "-W",
+          "error::ResourceWarning",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "plugins/agent-pair/tests",
+          "-v"
+        ],
+        "timeout_seconds": 300,
+        "max_log_bytes": 1048576,
+        "effects": [
+          "Runs the existing plugin suite with subprocesses and disposable fixture state; loopback listeners, process inspection and external-runtime requirements depend on the suite. This local route is not qualified or enabled."
+        ]
+      },
+      {
+        "id": "agent-orchestra",
+        "argv": [
+          "python",
+          "-W",
+          "error::ResourceWarning",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "plugins/agent-orchestra/tests",
+          "-v"
+        ],
+        "timeout_seconds": 300,
+        "max_log_bytes": 1048576,
+        "effects": [
+          "Runs the existing plugin suite with subprocesses and disposable fixture state; loopback listeners, process inspection and external-runtime requirements depend on the suite. This local route is not qualified or enabled."
+        ]
+      },
+      {
+        "id": "agent-nudge",
+        "argv": [
+          "python",
+          "-W",
+          "error::ResourceWarning",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "plugins/agent-nudge/tests",
+          "-v"
+        ],
+        "timeout_seconds": 300,
+        "max_log_bytes": 1048576,
+        "effects": [
+          "Runs the existing plugin suite with subprocesses and disposable fixture state; loopback listeners, process inspection and external-runtime requirements depend on the suite. This local route is not qualified or enabled."
+        ]
+      }
+    ]
+  },
+  "reviewer": {
+    "protocol": "recorded-v1",
+    "require_distinct_identities": true,
+    "routes": [
+      {
+        "id": "independent-source",
+        "reviewer_id": "unprovisioned:skills-source-review",
+        "boundary": {
+          "read_only": true,
+          "enforced": true,
+          "paths": "tracked-source",
+          "tools": [
+            "source-read",
+            "diff-read"
+          ],
+          "network": false,
+          "disclosure": "none"
+        }
+      }
+    ]
+  },
+  "references": {
+    "instructions": "README.md",
+    "architecture": "README.md",
+    "threat_model": "SECURITY.md",
+    "integration": "docs/software-quality.md"
+  }
+}

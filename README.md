@@ -543,6 +543,9 @@ plugins/undrudge-apply/
 
 ## Development
 
+The [shared quality setup](docs/software-quality.md) records the pinned,
+inspection-only tooling, existing complete gates and unsupported stages.
+
 ```sh
 python3 -m unittest discover -s plugins/agent-observer/tests -v
 python3 -m unittest discover -s plugins/agent-pair/tests -v
