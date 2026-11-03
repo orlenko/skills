@@ -9,8 +9,10 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from . import __version__, codex_wake, core, jev, jev_shadow, keys, monitor_lock
 from .core import (
@@ -122,34 +124,37 @@ def _as_pid(value: Any) -> int | None:
     return pid if pid > 1 else None
 
 
-def acquire_pid_lock(path: Path) -> bool:
-    """Take an exclusive lock file, breaking one a dead process left behind."""
-    for _ in range(2):
+@contextmanager
+def pid_lock(path: Path) -> Iterator[bool]:
+    """Kernel ownership plus transient PID metadata for older waiters."""
+    with monitor_lock.hold_path(path.with_name(path.name + ".guard")) as guard:
+        if guard is None:
+            yield False
+            return
         try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump({"pid": os.getpid(), "started_at": now()}, stream)
-            return True
-        except FileExistsError:
+            previous = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError, UnicodeError):
+            previous = {}
+        if not isinstance(previous, dict):
+            previous = {}
+        # A free guard proves a marked record is stale, even if its PID lives.
+        # Unmarked live records still represent waiters running older code.
+        if previous.get("lock_protocol") != "flock-v1":
+            pid = _as_pid(previous.get("pid"))
+            if pid is not None and _pid_alive(pid):
+                yield False
+                return
+        token = uuid.uuid4().hex
+        atomic_write_json(path, {"pid": os.getpid(), "started_at": now(),
+                                 "lock_protocol": "flock-v1", "lock_token": token})
+        try:
+            yield True
+        finally:
             try:
-                pid = int(read_json(path).get("pid", 0))
-            except (OrchestraError, TypeError, ValueError):
-                pid = 0
-            if _pid_alive(pid):
-                return False
-            try:
-                path.unlink()
-            except FileNotFoundError:
+                if read_json(path).get("lock_token") == token:
+                    path.unlink(missing_ok=True)
+            except OrchestraError:
                 pass
-    return False
-
-
-def release_pid_lock(path: Path) -> None:
-    try:
-        if int(read_json(path).get("pid", 0)) == os.getpid():
-            path.unlink(missing_ok=True)
-    except (OrchestraError, TypeError, ValueError):
-        pass
 
 
 def _reap_spawned_processes(pids: list[int], timeout: float = 5.0) -> None:
@@ -291,27 +296,24 @@ def claim_ownership(member: dict[str, Any]) -> dict[str, Any]:
         return member
     member_id = str(member["member_id"])
     lock_path = runtime_dir() / f"{member_id}.owner.lock"
-    if not acquire_pid_lock(lock_path):
-        # Another session is claiming the same orphan. First writer wins, and
-        # this one reads the winner's live pid on its next command.
-        return member
-    try:
-        # save_member replaces the whole file, so the decision is made again on
-        # what is on disk now, under the lock.
-        fresh = load_member(member_id)
-        current = _as_pid(fresh.get("owner_pid"))
-        if current == pid or (current is not None and _pid_alive(current)):
+    with pid_lock(lock_path) as acquired:
+        if not acquired:
+            # Another session is claiming the same orphan. First writer wins.
+            return member
+        try:
+            # save_member replaces the whole file, so decide again under the lock.
+            fresh = load_member(member_id)
+            current = _as_pid(fresh.get("owner_pid"))
+            if current == pid or (current is not None and _pid_alive(current)):
+                return fresh
+            if fresh.get("closed_at") or _bound_to_another_session(member_id, pid):
+                return fresh
+            fresh["owner_pid"] = pid
+            save_member(fresh)
             return fresh
-        if fresh.get("closed_at") or _bound_to_another_session(member_id, pid):
-            return fresh
-        fresh["owner_pid"] = pid
-        save_member(fresh)
-        return fresh
-    except (OrchestraError, OSError):
-        # A seat that cannot be repaired is not a command that should fail.
-        return member
-    finally:
-        release_pid_lock(lock_path)
+        except (OrchestraError, OSError):
+            # A seat that cannot be repaired is not a command that should fail.
+            return member
 
 
 def _other_agent(member: dict[str, Any], pid: int) -> bool:
@@ -346,9 +348,9 @@ def adopt(member_id: str, *, provider: str, cwd: str) -> dict[str, Any]:
         # from the session and hid two messages from its hooks.
         raise OrchestraError(f"This session is {kind}; run adopt with --provider {kind}")
     lock_path = runtime_dir() / f"{member_id}.owner.lock"
-    if not acquire_pid_lock(lock_path):
-        raise OrchestraError("Another command is changing this seat; try again")
-    try:
+    with pid_lock(lock_path) as acquired:
+        if not acquired:
+            raise OrchestraError("Another command is changing this seat; try again")
         member = load_member(member_id)
         if member.get("closed_at"):
             raise OrchestraError(f"Membership is closed ({member.get('closed_reason') or 'closed'})")
@@ -359,8 +361,6 @@ def adopt(member_id: str, *, provider: str, cwd: str) -> dict[str, Any]:
         member["owner_pid"] = None
         member["adopted"] = {**before, "at": now()}
         save_member(member)
-    finally:
-        release_pid_lock(lock_path)
     if provider != "codex":
         for suffix in (".codex-session.json", ".codex-wake.json"):
             (runtime_dir() / f"{member_id}{suffix}").unlink(missing_ok=True)

@@ -24,7 +24,6 @@ from .core import (
 from .member import (
     _as_pid,
     _pid_alive,
-    acquire_pid_lock,
     agy_observed,
     claim_ownership,
     ensure_monitor,
@@ -32,9 +31,9 @@ from .member import (
     load_member,
     local_messages,
     pending_count,
+    pid_lock,
     quiet_until,
     recent_events,
-    release_pid_lock,
     save_member,
     snapshot_attention,
     status_owed,
@@ -286,17 +285,16 @@ def _remember_session(member: dict[str, Any], session_id: str) -> dict[str, Any]
     # claim_ownership rewrites member.json under this lock; writing beside it
     # could put back the owner_pid it just repaired.
     lock_path = runtime_dir() / f"{member_id}.owner.lock"
-    if not acquire_pid_lock(lock_path):
-        return member
-    try:
-        fresh = load_member(member_id)
-        fresh["session_id"] = session_id
-        save_member(fresh)
-        return fresh
-    except (OrchestraError, OSError):
-        return member
-    finally:
-        release_pid_lock(lock_path)
+    with pid_lock(lock_path) as acquired:
+        if not acquired:
+            return member
+        try:
+            fresh = load_member(member_id)
+            fresh["session_id"] = session_id
+            save_member(fresh)
+            return fresh
+        except (OrchestraError, OSError):
+            return member
 
 
 def _by_act(rows: list[dict[str, Any]]) -> str:
@@ -690,9 +688,9 @@ def hook_wait(provider: str, payload: dict[str, Any]) -> int:
         # instead, and wake only on mail that arrives after this point.
         seen = _pending_ids(member_id)
     lock_path = _watch_lock_path(member_id, session_id)
-    if not acquire_pid_lock(lock_path):
-        return 0
-    try:
+    with pid_lock(lock_path) as acquired:
+        if not acquired:
+            return 0
         if failed:
             _sleep_unless_closed(member_id, delay)
             try:
@@ -732,5 +730,3 @@ def hook_wait(provider: str, payload: dict[str, Any]) -> int:
             except OrchestraError:
                 return 0
         return 0
-    finally:
-        release_pid_lock(lock_path)

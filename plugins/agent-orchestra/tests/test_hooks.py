@@ -19,6 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 _STATE = tempfile.TemporaryDirectory(prefix="agent-orchestra-hooks-")
+unittest.addModuleCleanup(_STATE.cleanup)
 os.environ["AGENT_ORCHESTRA_HOME"] = str(Path(_STATE.name) / "import-state")
 
 from agent_orchestra import core, hooks  # noqa: E402
@@ -206,7 +207,7 @@ class HooksTestCase(unittest.TestCase):
         return json.loads(self.bindings()[index].read_text(encoding="utf-8"))
 
     def dead_pid(self) -> int:
-        process = subprocess.Popen([sys.executable, "-c", "pass"])
+        process = subprocess.Popen([sys.executable, "-I", "-S", "-c", "pass"])
         process.wait(timeout=10)
         return process.pid
 
@@ -216,7 +217,7 @@ class HooksTestCase(unittest.TestCase):
         Ownership and bindings are decided by liveness, so a session that has
         to look alive needs a process behind it, not an invented number.
         """
-        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+        process = subprocess.Popen([sys.executable, "-I", "-S", "-c", "import time; time.sleep(300)"])
 
         def stop() -> None:
             process.terminate()
