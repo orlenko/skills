@@ -1892,6 +1892,7 @@ def _type_into_pane(
     agent = str(member.get("provider") or "claude")
     agent = agent if agent in keys.PROMPT_GLYPHS else "claude"
     quiet_installed = False
+    previous_quiet = None
     try:
         if not options.anytime:
             shown = pane.prompt(agent)
@@ -1904,6 +1905,8 @@ def _type_into_pane(
                 return "refused-busy", "the input box already holds text", pane.id
         pane.prepare(body, options)
         if options.quiet:
+            if _quiet_path(member_id).exists():
+                previous_quiet = read_json(_quiet_path(member_id))
             _set_quiet(member_id, options, task, message_id)
             quiet_installed = True
         submitted = True
@@ -1914,7 +1917,18 @@ def _type_into_pane(
         if pane.backend == "herdr" and pane.possibly_sent:
             return "delivery-uncertain", "input may still arrive at the pinned terminal; do not resend", pane.id
         if quiet_installed:
-            clear_quiet(member_id)
+            try:
+                # Roll back only this operation's temporary hold. A failed
+                # new input must not erase an older uncertain hold, nor undo
+                # a release/replacement performed while terminal I/O ran.
+                current_quiet = read_json(_quiet_path(member_id))
+                if current_quiet.get("message_id") == message_id:
+                    if previous_quiet is not None:
+                        atomic_write_json(_quiet_path(member_id), previous_quiet)
+                    else:
+                        clear_quiet(member_id)
+            except (OrchestraError, OSError):
+                pass  # Leave state intact if rollback cannot be established.
         detail = str(exc)[:300] if isinstance(exc, keys.KeysError) else "terminal control failed"
         return "tmux-error" if pane.backend == "tmux" else "terminal-error", detail, pane.id
     if options.keys:

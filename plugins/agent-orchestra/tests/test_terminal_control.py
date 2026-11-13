@@ -471,6 +471,35 @@ class NativeOperationTests(unittest.TestCase):
             self.assertFalse(control.possibly_sent)
         self.assertEqual(self.transport.frames, [])
 
+    def test_pre_input_failure_restores_older_quiet_but_preserves_newer_replacement(
+        self,
+    ):
+        self.transport.hold = True
+        self.assertEqual(self.handle("/inert"), "delivery-uncertain")
+        quiet = member._quiet_path(self.seat["member_id"]).read_bytes()
+        self.transport.hold = False
+        with mock.patch.object(
+            native.Herdr,
+            "_write",
+            side_effect=keys.KeysError("invented mode change before DATA"),
+        ):
+            self.assertEqual(self.handle("/other"), "terminal-error")
+        self.assertEqual(member._quiet_path(self.seat["member_id"]).read_bytes(), quiet)
+
+        def newer_then_fail(*_args):
+            member._set_quiet(
+                self.seat["member_id"], TypeOptions(quiet=77), None, "m_newer00000001"
+            )
+            raise keys.KeysError("invented competing replacement before DATA")
+
+        with mock.patch.object(native.Herdr, "_write", side_effect=newer_then_fail):
+            self.assertEqual(self.handle("/other"), "terminal-error")
+        self.assertEqual(
+            core.read_json(member._quiet_path(self.seat["member_id"]))["message_id"],
+            "m_newer00000001",
+        )
+        self.assertEqual(len(self.transport.frames), 1)
+
     def test_held_menu_key_cannot_use_unrelated_transcript_as_confirmation(self):
         self.seat["provider"] = "codex"
         self.transport.codex = self.transport.popup = self.transport.hold = (
