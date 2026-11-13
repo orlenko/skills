@@ -366,6 +366,43 @@ class NativeOperationTests(unittest.TestCase):
             )
         self.assertEqual(self.transport.frames, [])
 
+    def test_held_menu_key_cannot_use_unrelated_transcript_as_confirmation(self):
+        self.seat["provider"] = "codex"
+        self.transport.codex = self.transport.popup = self.transport.hold = (
+            self.transport.unrelated_output
+        ) = True
+        self.transport.draft = "$inert"
+        self.assertEqual(
+            self.handle("", TypeOptions(keys=("Tab", "Enter"))), "delivery-uncertain"
+        )
+        self.assertEqual(self.transport.frames, [b"\t"])
+        self.assertIsNotNone(member.quiet_until(self.seat["member_id"]))
+
+    def test_markdown_divider_draft_refuses_both_transports_and_divider_body_submits(
+        self,
+    ):
+        draft = "human\n\n---\nhidden human draft"
+        for provider in ("claude", "codex"):
+            with self.subTest(provider=provider):
+                self.seat["provider"] = provider
+                self.transport.codex = provider == "codex"
+                self.transport.draft = draft
+                self.transport.cursor = None
+                self.assertEqual(self.handle("inert"), "refused-busy")
+                self.assertEqual(self.transport.frames, [])
+                self.transport.draft = ""
+                body = "invented\n\n---\nafter divider"
+                self.assertEqual(
+                    self.handle(body, TypeOptions(submit=False, quiet=0)), "typed"
+                )
+                self.assertEqual(len(self.transport.frames), 1)
+                self.transport.draft = ""
+                self.transport.cursor = None
+                self.transport.frames.clear()
+                self.assertEqual(self.handle(body, TypeOptions(quiet=0)), "typed")
+                self.assertEqual(len(self.transport.frames), 2)
+                self.transport.frames.clear()
+
     def handle(
         self, text="/inert fixture", options=None, sender="mb_conductor1", ident=None
     ):
@@ -776,7 +813,7 @@ class FramingTests(unittest.TestCase):
             mock.patch.object(
                 native, "_group_members", return_value=[(200, owner), (300, child)]
             ),
-            mock.patch.object(native, "_stdin_is_tty", return_value=True),
+            mock.patch.object(native, "_reads_tty", return_value=True),
         ):
             with self.assertRaisesRegex(keys.KeysError, "another foreground"):
                 native._exclusive_consumer(200, owner, {100, 200}, time.monotonic() + 2)
@@ -784,7 +821,7 @@ class FramingTests(unittest.TestCase):
             mock.patch.object(
                 native, "_group_members", return_value=[(200, owner), (300, child)]
             ),
-            mock.patch.object(native, "_stdin_is_tty", return_value=False),
+            mock.patch.object(native, "_reads_tty", return_value=False),
         ):
             native._exclusive_consumer(200, owner, {100, 200}, time.monotonic() + 2)
 
@@ -1012,7 +1049,7 @@ class NativeAbiTests(unittest.TestCase):
             stdin=subprocess.PIPE,
         ) as child:
             try:
-                self.assertFalse(native._stdin_is_tty(child.pid, info.tty))
+                self.assertFalse(native._reads_tty(child.pid, info.tty))
             finally:
                 child.communicate(timeout=3)
 

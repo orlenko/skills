@@ -407,15 +407,17 @@ its precise tmux pane target. Different members may use different transports.
 
 Native discovery uses an owning-session binding, the connected Unix peer's
 identity, terminal incarnation, process ancestry, controlling TTY and process
-start times. It does not select by directory or client `HC_SOCKET`. Existing
-members record a native binding on their next owning CLI command/hook; after
+start times. It does not select by directory or client `HC_SOCKET`. Other
+foreground consumers with readable terminal descriptors make a target ambiguous
+and refuse input; verified ancestor launchers may remain in the process group.
+Existing members record a native binding on their next owning CLI command/hook; after
 an upgrade, restart that member's monitor from its session. Account replacement
 follows normal membership adoption before a new operation binds its target.
 
 Native input preserves composer checks, multiline paste, `--no-enter`, explicit
 keys and quiet holds. Native `--anytime` overrides busy/draft checks while still
 requiring a recognized composer and refusing blocked/auth/dialog screens.
-Append and cursor insertion are supported; highlighted selections and unknown
+Append and cursor insertion are supported; reverse-video selection spans and unknown
 screen/key modes refuse. Keys require a corresponding observable effect before
 another key is sent or success is reported. This is checked input
 at operation boundaries, not atomic process-generation fencing. A possibly

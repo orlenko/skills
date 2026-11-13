@@ -156,37 +156,59 @@ def _group_members(group: int, deadline: float) -> list[tuple[int, Process]]:
     return members
 
 
-def _stdin_is_tty(pid: int, tty: int) -> bool:
-    """Inspect fd metadata without opening, reading or naming its contents."""
+def _reads_tty(pid: int, tty: int, deadline: float | None = None) -> bool:
+    """Bounded descriptor/access metadata, including /dev/tty opened after fd0.
+
+    Never resolve descriptor paths or open/read another process's file contents.
+    Linux fdinfo contains numeric kernel metadata, not the underlying file.
+    """
+    deadline = deadline if deadline is not None else time.monotonic() + 2
+    devices = (tty, os.stat("/dev/tty").st_rdev)
     if sys.platform == "darwin":
-        # SDK proc_info.h: proc_fdinfo is 8 bytes; vnode_fdinfo is 176,
-        # vst_mode at 24+4 and vst_rdev at 24+116. No path flavor is used.
+        # SDK proc_info.h: 8-byte proc_fdinfo, 176-byte vnode_fdinfo;
+        # fi_openflags at 0 uses FREAD=1, mode at 28 and rdev at 140.
         listing = ctypes.create_string_buffer(4096)
         count = core._libc().proc_pidinfo(pid, 1, ctypes.c_uint64(0), listing, 4096)
         if count <= 0 or count >= 4096 or count % 8:
-            raise keys.KeysError("stdin descriptor metadata unavailable")
-        kind = next(
-            (
-                kind
-                for fd, kind in struct.iter_unpack("iI", listing.raw[:count])
-                if fd == 0
-            ),
-            None,
-        )
-        if kind != 1:  # Closed, pipe, socket: not a terminal input consumer.
-            return False
-        buffer = ctypes.create_string_buffer(176)
-        if core._libc().proc_pidfdinfo(pid, 0, 1, buffer, 176) != 176:
-            raise keys.KeysError("stdin vnode metadata unavailable")
-        mode = struct.unpack_from("H", buffer.raw, 28)[0]
-        device = struct.unpack_from("I", buffer.raw, 140)[0]
-    else:
-        try:
-            info = os.stat(f"/proc/{pid}/fd/0")
-        except FileNotFoundError:
-            return False
-        mode, device = info.st_mode, info.st_rdev
-    return stat.S_ISCHR(mode) and device in (tty, os.stat("/dev/tty").st_rdev)
+            raise keys.KeysError("descriptor metadata unavailable or exceeds bound")
+        for fd, kind in struct.iter_unpack("iI", listing.raw[:count]):
+            _time_check(deadline)
+            if kind != 1:  # Pipes, sockets and closed descriptors cannot be TTYs.
+                continue
+            buffer = ctypes.create_string_buffer(176)
+            if core._libc().proc_pidfdinfo(pid, fd, 1, buffer, 176) != 176:
+                raise keys.KeysError("vnode metadata changed or unavailable")
+            flags = struct.unpack_from("I", buffer.raw, 0)[0]
+            mode = struct.unpack_from("H", buffer.raw, 28)[0]
+            device = struct.unpack_from("I", buffer.raw, 140)[0]
+            if flags & 1 and stat.S_ISCHR(mode) and device in devices:
+                return True
+        return False
+    with os.scandir(f"/proc/{pid}/fd") as entries:
+        for count, entry in enumerate(entries, 1):
+            _time_check(deadline)
+            if count > 512 or not entry.name.isdecimal():
+                raise keys.KeysError("descriptor metadata exceeds bound")
+            try:
+                info = entry.stat()
+                if not stat.S_ISCHR(info.st_mode) or info.st_rdev not in devices:
+                    continue
+                with open(
+                    f"/proc/{pid}/fdinfo/{entry.name}", encoding="ascii"
+                ) as metadata:
+                    raw = metadata.read(4097)
+                match = re.search(r"^flags:\s*([0-7]+)$", raw, re.M)
+                if len(raw) > 4096 or not match:
+                    raise keys.KeysError("terminal descriptor access unavailable")
+                flags = int(match[1], 8)
+                if not flags & getattr(os, "O_PATH", 0) and flags & os.O_ACCMODE in (
+                    os.O_RDONLY,
+                    os.O_RDWR,
+                ):
+                    return True
+            except FileNotFoundError as exc:
+                raise keys.KeysError("descriptor changed during verification") from exc
+    return False
 
 
 def _exclusive_consumer(
@@ -202,7 +224,7 @@ def _exclusive_consumer(
         if (
             pid not in ancestry
             and candidate.tty == info.tty
-            and _stdin_is_tty(pid, info.tty)
+            and _reads_tty(pid, info.tty, deadline)
         ):
             raise keys.KeysError(
                 "another foreground terminal reader makes the owner ambiguous"
@@ -510,9 +532,17 @@ class Screen:
             and rows[index - 2].strip() == "enter insert · esc close"
             and not rows[index - 1].strip()
         ):
-            menu = tuple(rows[max(0, index - 12) : index - 2])
-            if any(row.startswith("› ") and "[Skill]" in row for row in menu):
-                return menu
+            menu = []
+            for row in reversed(rows[max(0, index - 12) : index - 2]):
+                if not row.strip():
+                    if menu:
+                        break
+                    continue
+                if not re.match(r"(?:› |  )\S.*\[Skill\]", row):
+                    break
+                menu.insert(0, row)
+            if any(row.startswith("› ") for row in menu):
+                return tuple(menu)
         return ()
 
 

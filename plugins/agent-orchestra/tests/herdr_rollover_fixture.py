@@ -20,10 +20,11 @@ def reader(role: str, endpoint: str) -> None:
         def event(**data):
             control.sendall(json.dumps(data).encode() + b"\n")
 
+        input_fd = os.open("/dev/tty", os.O_RDWR)
         draft = transcript = ""
 
         def draw():
-            width = os.get_terminal_size(0).columns
+            width = os.get_terminal_size(input_fd).columns
             lines = draft.split("\n")
             cursor_row = (
                 sum(
@@ -52,7 +53,7 @@ def reader(role: str, endpoint: str) -> None:
         event(event="ready", role=role, pid=os.getpid())
         pending = b""
         while True:
-            chunk = os.read(0, 65536)
+            chunk = os.read(input_fd, 65536)
             if not chunk:
                 return
             pending += chunk
@@ -82,7 +83,10 @@ def reader(role: str, endpoint: str) -> None:
 def runner(endpoint: str) -> None:
     tty.setraw(0)
     for role in ("A", "B"):
-        child = subprocess.Popen([sys.executable, __file__, "--reader", role, endpoint])
+        child = subprocess.Popen(
+            [sys.executable, "-I", "-S", __file__, "--reader", role, endpoint],
+            stdin=subprocess.DEVNULL,
+        )
         child.wait()
 
 
@@ -176,7 +180,10 @@ def main() -> None:
                 assert not select.select([connections[0][0]], [], [], 0)[0], (
                     "ambiguous owner received input"
                 )
-                print("SAME-GROUP INTERACTIVE CHILD REFUSAL VERIFIED", flush=True)
+                print(
+                    "SAME-GROUP FD3 TERMINAL READER / DEVNULL STDIN REFUSAL VERIFIED",
+                    flush=True,
+                )
                 member.save_member(seat)
                 original = {
                     "id": "m_rollover000001",

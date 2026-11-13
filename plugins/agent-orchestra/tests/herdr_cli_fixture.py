@@ -318,7 +318,7 @@ try:
             _, _, ancestors = terminal_control._prove(pid, t)
         except keys.KeysError:
             continue
-        if terminal_control._stdin_is_tty(pid, info.tty):
+        if terminal_control._reads_tty(pid, info.tty):
             candidates.append((pid, ancestors))
     owners = [
         pid
