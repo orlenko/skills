@@ -16,6 +16,7 @@ import re
 import socket
 import stat
 import struct
+import subprocess
 import sys
 import time
 import unicodedata
@@ -50,6 +51,10 @@ class Process:
     start: tuple[int, ...]
 
 
+class _ZombieProcess(keys.KeysError):
+    """Conclusive kernel exit state; unlike unavailable live process metadata."""
+
+
 def process(pid: int) -> Process:
     """An OS process incarnation, without reading environment or credentials."""
     try:
@@ -60,7 +65,7 @@ def process(pid: int) -> Process:
             if size != 136 or struct.unpack_from("I", raw, 20)[0] != os.getuid():
                 raise ValueError()
             if struct.unpack_from("I", raw, 4)[0] == 5:  # SZOMB
-                raise ValueError()
+                raise _ZombieProcess("native terminal process has exited")
             return Process(
                 struct.unpack_from("I", raw, 16)[0],
                 struct.unpack_from("I", raw, 100)[0],
@@ -75,7 +80,7 @@ def process(pid: int) -> Process:
             raw = (path / "stat").read_text()
             fields = raw[raw.rindex(")") + 2 :].split()
             if fields[0] == "Z":
-                raise ValueError()
+                raise _ZombieProcess("native terminal process has exited")
             return Process(*(int(fields[i]) for i in (1, 2, 4, 5)), (int(fields[19]),))
     except (OSError, ValueError, IndexError, AttributeError, struct.error):
         pass
@@ -143,11 +148,33 @@ def _group_members(group: int, deadline: float) -> list[tuple[int, Process]]:
         _time_check(deadline)
         try:
             info = process(pid)
+        except _ZombieProcess:
+            # A zombie cannot read a terminal; its parent may not have reaped
+            # it yet. Unknown metadata for a live process still refuses below.
+            continue
         except keys.KeysError:
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
                 continue
+            if sys.platform == "darwin":
+                # libproc omits zombies from pidinfo, although listpids and
+                # kill(0) retain them. Query ONLY this PID's kernel state; no
+                # arguments, paths, environment or credentials are read.
+                _time_check(deadline)
+                try:
+                    state = subprocess.run(
+                        ["/bin/ps", "-p", str(pid), "-o", "stat="],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=min(0.25, deadline - time.monotonic()),
+                    )
+                    _time_check(deadline)
+                    if state.returncode == 0 and state.stdout.strip().startswith("Z"):
+                        continue
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
             raise
         if info.group == group:
             members.append((pid, info))
@@ -1149,9 +1176,16 @@ class Herdr:
             cancelled = (
                 previous.working
                 and not current.working
-                and bool(
-                    re.search(
+                and len(
+                    re.findall(
                         r"interrupted|turn aborted|request cancelled", after.plain, re.I
+                    )
+                )
+                > len(
+                    re.findall(
+                        r"interrupted|turn aborted|request cancelled",
+                        before.plain,
+                        re.I,
                     )
                 )
             )

@@ -173,6 +173,7 @@ class Transport:
         self.cursor = None
         self.block_after_paste = self.unrelated_output = False
         self.after_paste_state = None
+        self.finish_turn_on_held_key = False
         self.terminal = {
             "address": "t1",
             "pid": 100,
@@ -247,6 +248,8 @@ class Transport:
                 if transport.rollover:
                     transport.seat["owner_pid"] = 201
                 if transport.hold:
+                    if transport.finish_turn_on_held_key:
+                        transport.state = "idle"
                     return
                 if data.startswith(b"\x1b[200~"):
                     draft = transport.draft.replace("\r\n", "\n")
@@ -376,6 +379,22 @@ class NativeOperationTests(unittest.TestCase):
             self.handle("", TypeOptions(keys=("Tab", "Enter"))), "delivery-uncertain"
         )
         self.assertEqual(self.transport.frames, [b"\t"])
+        self.assertIsNotNone(member.quiet_until(self.seat["member_id"]))
+
+    def test_held_interrupt_cannot_use_a_stale_marker_when_turn_finishes_naturally(
+        self,
+    ):
+        self.transport.transcript = "previous turn interrupted\r\n"
+        self.transport.state = "working"
+        self.transport.hold = self.transport.finish_turn_on_held_key = (
+            self.transport.unrelated_output
+        ) = True
+        options = TypeOptions(anytime=True, keys=("Escape", "Enter"))
+        self.assertEqual(
+            self.handle("", options, ident="m_stale00000001"), "delivery-uncertain"
+        )
+        self.assertEqual(self.handle("", options, ident="m_stale00000001"), "duplicate")
+        self.assertEqual(self.transport.frames, [b"\x1b"])
         self.assertIsNotNone(member.quiet_until(self.seat["member_id"]))
 
     def test_markdown_divider_draft_refuses_both_transports_and_divider_body_submits(
@@ -1022,6 +1041,23 @@ class OwnershipPersistenceTests(unittest.TestCase):
     sys.platform == "darwin" or sys.platform.startswith("linux"), "native Unix ABI"
 )
 class NativeAbiTests(unittest.TestCase):
+    def test_conclusively_exited_child_does_not_make_a_live_group_ambiguous(self):
+        import subprocess
+
+        # Wait for EOF on our child's private pipe without reaping it. Until
+        # wait(), both supported kernels report its conclusive zombie state.
+        with subprocess.Popen(
+            [sys.executable, "-I", "-S", "-c", "pass"], stdout=subprocess.PIPE
+        ) as child:
+            self.assertEqual(child.stdout.read(), b"")
+            with self.assertRaises(keys.KeysError):
+                native.process(child.pid)
+            info = native.process(os.getpid())
+            members = dict(native._group_members(info.group, time.monotonic() + 2))
+            self.assertIn(os.getpid(), members)
+            self.assertNotIn(child.pid, members)
+            child.wait(timeout=3)
+
     def test_process_identity_matches_independent_os_parent_and_group(self):
         first, second = native.process(os.getpid()), native.process(os.getpid())
         self.assertEqual(first.parent, os.getppid())
