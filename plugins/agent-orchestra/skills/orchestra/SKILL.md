@@ -66,7 +66,9 @@ belong to several, one session each.
   `delivery-uncertain` (input may still arrive; do not resend or send another
   Enter to confirm it), or `no-reply-yet` (the answer arrives later as mail with `RE`
   the type message id). Flags: `--no-enter` types without submitting,
-  `--anytime` skips the idle check, `--task T`, `--quiet SECONDS` (default
+  `--anytime` skips busy/draft checks; native Herdr still requires a recognized
+  composer and refuses blocked/auth/dialog input or highlighted selections.
+  `--task T`, `--quiet SECONDS` (default
   1800, 0 for none) and `--quiet-until started|done` control the quiet below,
   `--stdin` reads multi-line text, which goes in as one paste.
   Native Herdr needs a binding recorded by the owning CLI: an existing member

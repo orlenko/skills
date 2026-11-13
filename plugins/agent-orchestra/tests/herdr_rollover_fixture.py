@@ -6,10 +6,9 @@ import json
 import os
 from pathlib import Path
 import socket
-import shutil
+import select
 import subprocess
 import sys
-import tempfile
 import tty
 from unittest import mock
 
@@ -24,6 +23,18 @@ def reader(role: str, endpoint: str) -> None:
         draft = transcript = ""
 
         def draw():
+            width = os.get_terminal_size(0).columns
+            lines = draft.split("\n")
+            cursor_row = (
+                sum(
+                    max(1, (len(line) + width - 1) // width)
+                    for line in transcript.split("\r\n")[:-1]
+                )
+                + 2
+                + sum((len(line) + 2) // width + 1 for line in lines[:-1])
+                + (len(lines[-1]) + 2) // width
+            )
+            cursor_col = (len(lines[-1]) + 2) % width + 1
             screen = (
                 "\x1b[2J\x1b[H\x1b[?2004h"
                 + transcript
@@ -33,6 +44,7 @@ def reader(role: str, endpoint: str) -> None:
                 + "\r\n"
                 + "─" * 60
                 + "\r\n? for shortcuts"
+                + f"\x1b[{cursor_row};{cursor_col}H"
             )
             os.write(1, screen.encode() + b"\x1b]7501;state=idle:app=claude\x1b\\")
 
@@ -78,16 +90,11 @@ def main() -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from agent_orchestra import keys, member, terminal_control
 
-    root = Path(tempfile.mkdtemp(prefix="aoroll-", dir="/tmp")).resolve()
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("HC_", "XDG_"))}
-    env.update(
-        HC_SOCKET=str(root / "core.sock"),
-        HC_SESSION="orchestra-rollover-fixture",
-        XDG_STATE_HOME=str(root / "state"),
-        XDG_CONFIG_HOME=str(root / "config"),
-        XDG_CACHE_HOME=str(root / "cache"),
-        XDG_DATA_HOME=str(root / "data"),
-    )
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from herdr_fixture_env import environment, fixture_root
+
+    root = fixture_root()
+    env = environment(root)
     hc = os.environ.get("AGENT_TEST_HERDR_BIN", "hc")
     with socket.socket(socket.AF_UNIX) as listener:
         listener.bind(str(root / "reader.sock"))
@@ -146,6 +153,30 @@ def main() -> None:
                     "conductor_id": "mb_conductor1",
                     "terminal_control": binding,
                 }
+                # The waiting runner shares A's foreground group and TTY but
+                # must not be accepted as its direct input consumer.
+                root_pid = binding["pid"]
+                assert terminal_control.capture_binding(root_pid) is None
+                ambiguous = {
+                    **seat,
+                    "owner_pid": root_pid,
+                    "terminal_control": {
+                        **binding,
+                        "owner_pid": root_pid,
+                        "owner_start": binding["root_start"],
+                    },
+                }
+                member.save_member(ambiguous)
+                assert (
+                    terminal_control.resolve(
+                        ambiguous, lambda: member.load_member(seat["member_id"])
+                    )
+                    is None
+                )
+                assert not select.select([connections[0][0]], [], [], 0)[0], (
+                    "ambiguous owner received input"
+                )
+                print("SAME-GROUP INTERACTIVE CHILD REFUSAL VERIFIED", flush=True)
                 member.save_member(seat)
                 original = {
                     "id": "m_rollover000001",
@@ -153,7 +184,11 @@ def main() -> None:
                     "act": "type",
                     "text": "ACT type\nTO mb_rollover01\nTYPE enter idle quiet=60\n\n/rollover-after-paste",
                 }
-                assert member._handle_type(seat, original) == "delivery-uncertain"
+                outcome = member._handle_type(seat, original)
+                assert outcome == "delivery-uncertain", (
+                    outcome,
+                    member._typed_log(seat["member_id"]).read_text(),
+                )
                 assert json.loads(stream_a.readline()) == {
                     "event": "paste",
                     "text": "/rollover-after-paste",
@@ -194,7 +229,24 @@ def main() -> None:
                     "text": "ACT type\nTO mb_rollover01\nTYPE enter idle quiet=0\n\n"
                     + long_text,
                 }
-                assert member._handle_type(adopted, wrapped) == "typed"
+                outcome = member._handle_type(adopted, wrapped)
+                if outcome != "typed":
+                    control = terminal_control.resolve(
+                        adopted, lambda: member.load_member(seat["member_id"])
+                    )
+                    screen = control.snapshot()
+                    print(
+                        "wrapped diagnostic",
+                        screen.prompt("claude"),
+                        screen.cursor,
+                        screen.bounds(),
+                        repr(screen.plain),
+                        flush=True,
+                    )
+                assert outcome == "typed", (
+                    outcome,
+                    member._typed_log(seat["member_id"]).read_text(),
+                )
                 assert json.loads(stream_b.readline()) == {
                     "event": "paste",
                     "text": long_text,
@@ -207,24 +259,9 @@ def main() -> None:
                     "ROLLOVER VERIFIED: stopped after paste, no replay, adopted replacement before binding"
                 )
         finally:
-            try:
-                result = subprocess.run(
-                    [hc, "server", "stop", "--json"],
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    timeout=12,
-                )
-                print("private core cleanup", result.returncode, result.stdout.strip())
-                if (
-                    result.returncode == 0
-                    and os.environ.get("AGENT_TEST_KEEP_HERDR_ARTIFACTS") != "1"
-                ):
-                    shutil.rmtree(root)
-            finally:
-                for connection, stream in connections:
-                    stream.close()
-                    connection.close()
+            for connection, stream in connections:
+                stream.close()
+                connection.close()
 
 
 if __name__ == "__main__":

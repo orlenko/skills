@@ -4,18 +4,19 @@ import json
 import os
 import pathlib
 import queue
-import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 provider = sys.argv[1]
 herdr_binary = os.environ.get("AGENT_TEST_HERDR_BIN", "hc")
-root = pathlib.Path(tempfile.mkdtemp(prefix="aocli-", dir="/tmp")).resolve()
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from herdr_fixture_env import environment, fixture_root  # noqa: E402
+
+root = fixture_root()
 print("fixture", root, flush=True)
 requests = queue.Queue()
 marker = "ORCHESTRA_INVENTED_SKILL_BODY_8E84"
@@ -131,27 +132,10 @@ class Model(BaseHTTPRequestHandler):
 server = ThreadingHTTPServer(("127.0.0.1", 0), Model)
 thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
-env = {
-    k: v
-    for k, v in os.environ.items()
-    if not k.startswith(
-        ("HC_", "XDG_", "CODEX_", "CLAUDE_", "ANTHROPIC_", "OPENAI_", "AIQ_")
-    )
-}
-env.update(
-    HC_SOCKET=str(root / "core.sock"),
-    HC_SESSION="orchestra-cli-fixture",
-    XDG_STATE_HOME=str(root / "state"),
-    XDG_CONFIG_HOME=str(root / "config"),
-    XDG_CACHE_HOME=str(root / "cache"),
-    XDG_DATA_HOME=str(root / "data"),
-    AIQ_BYPASS="1",
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1",
-    DISABLE_AUTOUPDATER="1",
-)
+env = environment(root)
 workspace = root / "workspace"
 workspace.mkdir()
-subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+subprocess.run(["git", "init", "-q", str(workspace)], env=env, check=True)
 skilltext = (
     "---\nname: orchestra-inert\ndescription: Inert local Orchestra transport fixture.\n---\n\n"
     + marker
@@ -322,7 +306,30 @@ try:
     from unittest import mock
 
     t = rpc("terminal.get", {"terminal": address})
-    owner = t["pid"]
+    # A provider launcher may wait for its real UI child (e.g. a Node wrapper).
+    # This inference is ONLY for this invented terminal, never production seats.
+    candidates = []
+    root_pid = t["pid"]
+    root_info = terminal_control.process(root_pid)
+    for pid, info in terminal_control._group_members(
+        root_info.group, time.monotonic() + 2
+    ):
+        try:
+            _, _, ancestors = terminal_control._prove(pid, t)
+        except keys.KeysError:
+            continue
+        if terminal_control._stdin_is_tty(pid, info.tty):
+            candidates.append((pid, ancestors))
+    owners = [
+        pid
+        for pid, _ in candidates
+        if not any(pid in ancestors and pid != other for other, ancestors in candidates)
+    ]
+    assert len(owners) == 1, f"ambiguous private UI owners: {owners}"
+    owner = owners[0]
+    session = terminal_control.Session(env["HC_SOCKET"], time.monotonic() + 2)
+    print("RUNNING CORE", session.version, flush=True)
+    session.close()
     with mock.patch.dict(
         os.environ,
         {
@@ -348,6 +355,49 @@ try:
             )
             print("actual adapter initial prompt", control.prompt(provider), flush=True)
             original_type = terminal_control.Herdr.type_text
+            original_submitted = terminal_control.Herdr._submitted
+
+            def diagnostic_submitted(before, after, intended, agent):
+                confirmed = original_submitted(before, after, intended, agent)
+                if not confirmed:
+                    print(
+                        "submission bounds",
+                        before.bounds(),
+                        after.bounds(),
+                        "intended",
+                        repr(intended),
+                        "before cursor",
+                        before.cursor,
+                        "after cursor",
+                        after.cursor,
+                        flush=True,
+                    )
+                    needle = terminal_control._rendered_text(
+                        keys.PROMPT_GLYPHS[agent] + intended
+                    )
+                    print(
+                        "transcript counts",
+                        *[
+                            terminal_control._rendered_text(
+                                "\n".join(s.plain.splitlines()[: s.bounds()[0]])
+                            ).count(needle)
+                            for s in (before, after)
+                        ],
+                        "prompts",
+                        before.prompt(agent),
+                        after.prompt(agent),
+                        flush=True,
+                    )
+                    print(
+                        "before nonblank",
+                        [
+                            row
+                            for row in before.plain.splitlines()[: before.bounds()[0]]
+                            if row.strip()
+                        ][-12:],
+                        flush=True,
+                    )
+                return confirmed
 
             def traced_type(self, *a, **kw):
                 try:
@@ -371,7 +421,14 @@ try:
                     )
                     raise
 
-            with mock.patch.object(terminal_control.Herdr, "type_text", traced_type):
+            with (
+                mock.patch.object(terminal_control.Herdr, "type_text", traced_type),
+                mock.patch.object(
+                    terminal_control.Herdr,
+                    "_submitted",
+                    staticmethod(diagnostic_submitted),
+                ),
+            ):
                 envelope = {
                     "id": "m_fixture00000001",
                     "from": {"id": "mb_conductor01"},
@@ -475,23 +532,51 @@ try:
             provider,
             flush=True,
         )
+        rpc("terminal.wait", {"terminal": address, "timeout": 8})
+
+        def edit(number, flags, body=""):
+            operation = {
+                **envelope,
+                "id": f"m_fixture{number:08d}",
+                "text": f"ACT type\nTO mb_fixture0001\nTYPE {flags} quiet=0\n\n{body}",
+            }
+            outcome = member._handle_type(seat, operation)
+            assert outcome == "typed", (
+                flags,
+                outcome,
+                member._typed_log(seat["member_id"]).read_text()[-2000:],
+            )
+
+        edit(5, "no-enter idle", "ORCHESTRA_EDIT_AB")
+        edit(6, "no-enter anytime", "C")
+        edit(7, "anytime key=Left key=BSpace")
+        edit(8, "no-enter anytime", "Z")
+        edit(9, "key=Enter")
+        deadline = time.monotonic() + 10
+        edited = False
+        while time.monotonic() < deadline:
+            try:
+                path, payload = requests.get(
+                    timeout=max(0.01, deadline - time.monotonic())
+                )
+            except queue.Empty:
+                break
+            if b"ORCHESTRA_EDIT_AZC" in payload and path.split("?")[0].endswith(
+                ("/messages", "/responses")
+            ):
+                edited = True
+                break
+        assert edited, (
+            "real CLI append/navigation/delete/mid-draft insertion not observed"
+        )
+        print(
+            "ANYTIME APPEND / CURSOR NAVIGATION / DELETE / MID-DRAFT INSERTION VERIFIED",
+            provider,
+            flush=True,
+        )
 
 finally:
-    try:
-        r = subprocess.run(
-            [herdr_binary, "server", "stop", "--json"],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=12,
-        )
-        print("private core cleanup", r.returncode, r.stdout.strip(), flush=True)
-        if (
-            r.returncode == 0
-            and os.environ.get("AGENT_TEST_KEEP_HERDR_ARTIFACTS") != "1"
-        ):
-            shutil.rmtree(root)
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
+    # The unittest parent owns the core even if this process is killed.
