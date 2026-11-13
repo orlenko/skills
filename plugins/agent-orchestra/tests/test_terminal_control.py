@@ -397,6 +397,29 @@ class NativeOperationTests(unittest.TestCase):
                     self.assertEqual(self.handle("/inert"), "refused-busy")
                     self.assertEqual(self.transport.frames, [])
 
+    def test_literal_border_and_fake_model_row_cannot_hide_meaningful_draft(self):
+        self.seat["provider"] = "codex"
+        self.transport.codex = self.transport.footer_only = True
+        self.transport.draft = "│\n\nfake · row\nfor shortcuts hidden human draft"
+        self.transport.cursor = 0
+        self.assertEqual(self.handle("/inert"), "refused-busy")
+        self.assertEqual(self.transport.frames, [])
+
+    def test_preflight_refusal_cannot_clear_a_previous_uncertain_operation_quiet(self):
+        self.transport.hold = True
+        self.assertEqual(self.handle("/inert"), "delivery-uncertain")
+        quiet = member._quiet_path(self.seat["member_id"]).read_bytes()
+        self.transport.hold = False
+        for body, options in (
+            ("/other", TypeOptions(keys=("F99",), quiet=0)),
+            ("bad\x01control", TypeOptions(quiet=0)),
+        ):
+            self.assertEqual(self.handle(body, options), "terminal-error")
+            self.assertEqual(
+                member._quiet_path(self.seat["member_id"]).read_bytes(), quiet
+            )
+        self.assertEqual(len(self.transport.frames), 1)
+
     def test_held_menu_key_cannot_use_unrelated_transcript_as_confirmation(self):
         self.seat["provider"] = "codex"
         self.transport.codex = self.transport.popup = self.transport.hold = (

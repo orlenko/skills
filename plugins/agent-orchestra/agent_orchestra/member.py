@@ -1891,6 +1891,7 @@ def _type_into_pane(
         return "no-pane", f"agent pid {owner} has no verified tmux or native Herdr terminal", None
     agent = str(member.get("provider") or "claude")
     agent = agent if agent in keys.PROMPT_GLYPHS else "claude"
+    quiet_installed = False
     try:
         if not options.anytime:
             shown = pane.prompt(agent)
@@ -1904,6 +1905,7 @@ def _type_into_pane(
         pane.prepare(body, options)
         if options.quiet:
             _set_quiet(member_id, options, task, message_id)
+            quiet_installed = True
         submitted = True
         if body:
             submitted = pane.type_text(agent, body, submit=options.submit and not options.keys)
@@ -1911,7 +1913,8 @@ def _type_into_pane(
     except (keys.KeysError, OSError, ValueError, KeyError, TypeError) as exc:
         if pane.backend == "herdr" and pane.possibly_sent:
             return "delivery-uncertain", "input may still arrive at the pinned terminal; do not resend", pane.id
-        clear_quiet(member_id)
+        if quiet_installed:
+            clear_quiet(member_id)
         detail = str(exc)[:300] if isinstance(exc, keys.KeysError) else "terminal control failed"
         return "tmux-error" if pane.backend == "tmux" else "terminal-error", detail, pane.id
     if options.keys:

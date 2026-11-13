@@ -305,30 +305,46 @@ try:
     from agent_orchestra import terminal_control, member, keys, core
     from unittest import mock
 
-    t = rpc("terminal.get", {"terminal": address})
-    # A provider launcher may wait for its real UI child (e.g. a Node wrapper).
-    # This inference is ONLY for this invented terminal, never production seats.
-    candidates = []
-    root_pid = t["pid"]
-    root_info = terminal_control.process(root_pid)
-    for pid, info in terminal_control._group_members(
-        root_info.group, time.monotonic() + 2
-    ):
-        try:
-            _, _, ancestors = terminal_control._prove(pid, t)
-        except keys.KeysError:
-            continue
-        if core.agent_kind(pid) == provider and terminal_control._reads_tty(
-            pid, info.tty
+    # Identify only invented descendants, before any input is attempted.
+    def private_owner():
+        t = rpc("terminal.get", {"terminal": address})
+        candidates = []
+        root_pid = t["pid"]
+        root_info = terminal_control.process(root_pid)
+        for pid, info in terminal_control._group_members(
+            root_info.group, time.monotonic() + 2
         ):
-            candidates.append((pid, ancestors))
-    owners = [
-        pid
-        for pid, _ in candidates
-        if not any(pid in ancestors and pid != other for other, ancestors in candidates)
-    ]
-    assert len(owners) == 1, f"ambiguous private UI owners: {owners}"
-    owner = owners[0]
+            try:
+                _, _, ancestors = terminal_control._prove(pid, t)
+            except keys.KeysError:
+                continue
+            if core.agent_kind(pid) == provider and terminal_control._reads_tty(
+                pid, info.tty
+            ):
+                candidates.append((pid, ancestors))
+        owners = [
+            pid
+            for pid, _ in candidates
+            if not any(
+                pid in ancestors and pid != other for other, ancestors in candidates
+            )
+        ]
+        return owners[0] if len(owners) == 1 else None
+
+    discover_until = time.monotonic() + 8
+    discovery_error = "no unique provider UI"
+    while True:
+        try:
+            owner = private_owner()
+            if owner:
+                break
+        except (keys.KeysError, OSError) as exc:
+            discovery_error = str(exc)
+        assert time.monotonic() < discover_until, (
+            "private provider startup not ready",
+            discovery_error,
+        )
+        time.sleep(0.05)
     session = terminal_control.Session(env["HC_SOCKET"], time.monotonic() + 2)
     print("RUNNING CORE", session.version, flush=True)
     session.close()

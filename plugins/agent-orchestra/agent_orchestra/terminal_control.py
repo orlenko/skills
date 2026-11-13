@@ -542,13 +542,26 @@ class Screen:
             "\n".join(styled[: index + 1] + ["footer " + row for row in styled[end:]]),
             agent,
         )
+        text, mask, reverse = parsed[index]
+        glyph = next(g for g in keys.PROMPT_GLYPHS.values() if text.startswith(g))
+        start = len(glyph)
+        first = (
+            ""
+            if keys._ghost_cursor_only(text[start:], mask[start:], reverse[start:])
+            else "".join(
+                c for c, dim in zip(text[start:], mask[start:]) if not dim
+            ).strip()
+        )
+        # These canonical composer rows have no side-border decoration. Keep
+        # literal user │/┃ characters, including an otherwise empty first row;
+        # the tmux parser's decorative-border trimming must not hide a draft.
         continuation = [
-            "".join(c for c, dim in zip(text, mask) if not dim).strip(" │┃")
+            "".join(c for c, dim in zip(text, mask) if not dim).strip()
             for text, mask, _reverse in parsed[index + 1 : end]
         ]
         return keys.Prompt(
             result.shown and self.status not in ("blocked", "error"),
-            "\n".join([result.typed, *continuation]).strip(),
+            "\n".join([first, *continuation]).strip(),
             result.working or self.status == "working",
         )
 
