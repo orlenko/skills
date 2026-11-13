@@ -484,8 +484,10 @@ class Screen:
                 if end is not None:
                     return index, end
                 continue
-            # Codex has no bottom rule. Require its actual model/status row,
-            # after the input cursor, with only recognized footer rows below.
+            # Codex has no bottom rule. Prefer its model/status row, followed
+            # only by known footer rows. Some idle layouts omit the model row;
+            # then the final nonblank shortcut row bounds the whole composer.
+            # Pick the last footer, never a user-written lookalike before it.
             budget.spend(len(rows) - index)
             candidates = [
                 i
@@ -494,14 +496,34 @@ class Screen:
                 and " · " in rows[i]
                 and not rows[i - 1].strip()
             ]
-            if len(candidates) != 1:
+            if len(candidates) == 1:
+                end = candidates[0]
+                if all(
+                    not row.strip()
+                    or "for shortcuts" in row
+                    or ("warning" in row and "f2 to view" in row)
+                    for row in rows[end + 1 :]
+                ) and (
+                    text[len(glyph) :].strip()
+                    or any(row.strip() for row in rows[index + 1 : end])
+                ):
+                    # Empty real composers render a suggestion; a bare wrapped
+                    # literal glyph must not hide the earlier draft prefix.
+                    return index, end
+            nonblank = [i for i in range(len(rows)) if rows[i].strip()]
+            if not nonblank:
                 continue
-            end = candidates[0]
-            if all(
-                not row.strip()
-                or "for shortcuts" in row
-                or ("warning" in row and "f2 to view" in row)
-                for row in rows[end + 1 :]
+            end = nonblank[-1]
+            if (
+                end >= max(index + 2, self.cursor[1] + 1)
+                and not rows[end - 1].strip()
+                and re.fullmatch(
+                    r"  (?:← for agents · )?\? for shortcuts", rows[end].rstrip()
+                )
+                and (
+                    text[len(glyph) :].strip()
+                    or any(row.strip() for row in rows[index + 1 : end])
+                )
             ):
                 return index, end
         return None

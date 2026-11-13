@@ -53,6 +53,18 @@ def composer(draft: str = "", *, codex: bool = False, popup: bool = False) -> st
 
 
 class ScreenTests(unittest.TestCase):
+    def test_codex_footer_only_idle_layout_and_user_footer_lookalike(self):
+        for draft in ("", "\n  ? for shortcuts\nsecret human draft"):
+            body = (
+                composer(draft, codex=True)
+                .replace("\r\n  fixture-model · context left", "")
+                .replace("\r\n? for shortcuts", "\r\n  ? for shortcuts")
+            )
+            cursor = (2, 0) if not draft else (20, 2)
+            screen = native.render(paint(body, cursor=cursor), 100, 20)
+            self.assertTrue(screen.prompt("codex").shown)
+            self.assertEqual(screen.prompt("codex").typed, draft.strip())
+
     def test_highlighted_composer_span_is_refused_but_single_cursor_cell_is_allowed(
         self,
     ):
@@ -175,6 +187,7 @@ class Transport:
         self.after_paste_state = None
         self.finish_turn_on_held_key = False
         self.held_key_prose = ""
+        self.footer_only = False
         self.terminal = {
             "address": "t1",
             "pid": 100,
@@ -235,13 +248,14 @@ class Transport:
                         if x >= transport.terminal["cols"]:
                             x, y = 0, y + 1
                         x += 1
-                return paint(
-                    transport.transcript
-                    + composer(
-                        transport.draft, codex=transport.codex, popup=transport.popup
-                    ),
-                    cursor=(x, y),
+                body = composer(
+                    transport.draft, codex=transport.codex, popup=transport.popup
                 )
+                if transport.footer_only:
+                    body = body.replace(
+                        "\r\n  fixture-model · context left", ""
+                    ).replace("\r\n? for shortcuts", "\r\n  ? for shortcuts")
+                return paint(transport.transcript + body, cursor=(x, y))
 
             def frame(self, channel, kind, data):
                 assert channel == 1 and kind == 0  # Never AUTOMATIC_INPUT.
@@ -370,6 +384,18 @@ class NativeOperationTests(unittest.TestCase):
                 "terminal-error",
             )
         self.assertEqual(self.transport.frames, [])
+
+    def test_wrapped_literal_glyph_and_footer_lookalikes_cannot_hide_codex_draft(self):
+        self.seat["provider"] = "codex"
+        self.transport.codex = True
+        for footer_only in (False, True):
+            for draft in ("a" * 98 + "› ", "\n  ? for shortcuts\nsecret human draft"):
+                with self.subTest(footer_only=footer_only, draft=draft):
+                    self.transport.footer_only = footer_only
+                    self.transport.draft = draft
+                    self.transport.cursor = None
+                    self.assertEqual(self.handle("/inert"), "refused-busy")
+                    self.assertEqual(self.transport.frames, [])
 
     def test_held_menu_key_cannot_use_unrelated_transcript_as_confirmation(self):
         self.seat["provider"] = "codex"
@@ -869,6 +895,32 @@ class FramingTests(unittest.TestCase):
         ):
             native._exclusive_consumer(200, owner, {100, 200}, time.monotonic() + 2)
 
+    def test_protected_live_group_member_is_never_silently_ignored(self):
+        from types import SimpleNamespace
+
+        def listing(_kind, _group, buffer, _size):
+            buffer[0] = 300
+            return 4
+
+        with (
+            mock.patch.object(native.sys, "platform", "darwin"),
+            mock.patch.object(
+                native.core,
+                "_libc",
+                return_value=SimpleNamespace(proc_listpids=listing),
+            ),
+            mock.patch.object(
+                native,
+                "process",
+                side_effect=keys.KeysError("invented protected live metadata"),
+            ),
+            mock.patch.object(
+                native.os, "kill", side_effect=PermissionError("invented EPERM")
+            ),
+        ):
+            with self.assertRaises((keys.KeysError, PermissionError)):
+                native._group_members(200, time.monotonic() + 2)
+
     def test_slow_drip_paint_expires_its_total_deadline(self):
         with self.connection() as session:
             session.deadline = 2
@@ -1075,22 +1127,57 @@ class OwnershipPersistenceTests(unittest.TestCase):
     sys.platform == "darwin" or sys.platform.startswith("linux"), "native Unix ABI"
 )
 class NativeAbiTests(unittest.TestCase):
-    def test_conclusively_exited_child_does_not_make_a_live_group_ambiguous(self):
+    def _isolated_group_probe(self, body):
         import subprocess
+        import textwrap
 
-        # Wait for EOF on our child's private pipe without reaping it. Until
-        # wait(), both supported kernels report its conclusive zombie state.
-        with subprocess.Popen(
-            [sys.executable, "-I", "-S", "-c", "pass"], stdout=subprocess.PIPE
-        ) as child:
-            self.assertEqual(child.stdout.read(), b"")
-            with self.assertRaises(keys.KeysError):
-                native.process(child.pid)
-            info = native.process(os.getpid())
-            members = dict(native._group_members(info.group, time.monotonic() + 2))
-            self.assertIn(os.getpid(), members)
-            self.assertNotIn(child.pid, members)
-            child.wait(timeout=3)
+        script = (
+            "import os, subprocess, sys, time\nsys.path.insert(0, sys.argv[1])\nfrom agent_orchestra import terminal_control as native, keys\n"
+            + textwrap.dedent(body)
+        )
+        with tempfile.TemporaryDirectory(prefix="orchestra-abi-") as directory:
+            env = {
+                key: os.environ[key]
+                for key in ("PATH", "LANG", "LC_ALL", "LC_CTYPE")
+                if key in os.environ
+            }
+            env["HOME"] = directory
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-S",
+                    "-c",
+                    script,
+                    str(Path(__file__).resolve().parents[1]),
+                ],
+                env=env,
+                cwd=directory,
+                start_new_session=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        self.assertEqual(
+            result.returncode, 0, result.stdout[-1000:] + result.stderr[-3000:]
+        )
+
+    def test_conclusively_exited_child_does_not_make_a_live_group_ambiguous(self):
+        self._isolated_group_probe("""
+            assert os.getpgrp() == os.getpid()
+            # EOF without wait() keeps our exited child unreaped for the probe.
+            with subprocess.Popen([sys.executable, "-I", "-S", "-c", "pass"], stdout=subprocess.PIPE) as child:
+                assert child.stdout.read() == b""
+                try:
+                    native.process(child.pid)
+                except keys.KeysError:
+                    pass
+                else:
+                    raise AssertionError("exited child accepted as live owner")
+                members = dict(native._group_members(os.getpgrp(), time.monotonic() + 2))
+                assert os.getpid() in members and child.pid not in members
+                child.wait(timeout=3)
+        """)
 
     def test_process_identity_matches_independent_os_parent_and_group(self):
         first, second = native.process(os.getpid()), native.process(os.getpid())
@@ -1109,19 +1196,17 @@ class NativeAbiTests(unittest.TestCase):
             right.close()
 
     def test_foreground_group_enumeration_and_pipe_stdin_metadata(self):
-        info = native.process(os.getpid())
-        found = dict(native._group_members(info.group, time.monotonic() + 2))
-        self.assertEqual(found[os.getpid()].start, info.start)
-        import subprocess
-
-        with subprocess.Popen(
-            [sys.executable, "-I", "-S", "-c", "import sys; sys.stdin.read()"],
-            stdin=subprocess.PIPE,
-        ) as child:
-            try:
-                self.assertFalse(native._reads_tty(child.pid, info.tty))
-            finally:
-                child.communicate(timeout=3)
+        self._isolated_group_probe("""
+            assert os.getpgrp() == os.getpid()
+            info = native.process(os.getpid())
+            found = dict(native._group_members(info.group, time.monotonic() + 2))
+            assert found[os.getpid()].start == info.start
+            with subprocess.Popen([sys.executable, "-I", "-S", "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE) as child:
+                try:
+                    assert not native._reads_tty(child.pid, info.tty)
+                finally:
+                    child.communicate(timeout=3)
+        """)
 
 
 if __name__ == "__main__":
