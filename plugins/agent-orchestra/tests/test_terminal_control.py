@@ -174,6 +174,7 @@ class Transport:
         self.block_after_paste = self.unrelated_output = False
         self.after_paste_state = None
         self.finish_turn_on_held_key = False
+        self.held_key_prose = ""
         self.terminal = {
             "address": "t1",
             "pid": 100,
@@ -250,6 +251,7 @@ class Transport:
                 if transport.hold:
                     if transport.finish_turn_on_held_key:
                         transport.state = "idle"
+                        transport.transcript += transport.held_key_prose
                     return
                 if data.startswith(b"\x1b[200~"):
                     draft = transport.draft.replace("\r\n", "\n")
@@ -394,6 +396,17 @@ class NativeOperationTests(unittest.TestCase):
             self.handle("", options, ident="m_stale00000001"), "delivery-uncertain"
         )
         self.assertEqual(self.handle("", options, ident="m_stale00000001"), "duplicate")
+        self.assertEqual(self.transport.frames, [b"\x1b"])
+        self.assertIsNotNone(member.quiet_until(self.seat["member_id"]))
+
+    def test_held_interrupt_cannot_use_fresh_ordinary_cancellation_prose(self):
+        self.transport.state = "working"
+        self.transport.hold = self.transport.finish_turn_on_held_key = True
+        self.transport.held_key_prose = "An invented protocol uses request cancelled and interrupted as field values.\r\n"
+        self.assertEqual(
+            self.handle("", TypeOptions(anytime=True, keys=("Escape", "Enter"))),
+            "delivery-uncertain",
+        )
         self.assertEqual(self.transport.frames, [b"\x1b"])
         self.assertIsNotNone(member.quiet_until(self.seat["member_id"]))
 
@@ -884,6 +897,14 @@ class OwnershipPersistenceTests(unittest.TestCase):
             member._set_quiet(
                 seat["member_id"], TypeOptions(quiet=60), None, "m_fixture00001"
             )
+            wake = {
+                "thread_id": "invented-thread",
+                "codex_home": "/invented/home",
+                "executable": "/invented/codex",
+            }
+            core.atomic_write_json(
+                core.runtime_dir() / f"{seat['member_id']}.codex-session.json", wake
+            )
             member._log_typed(
                 seat["member_id"],
                 {"id": "m_fixture00001", "result": "delivery-uncertain"},
@@ -909,6 +930,7 @@ class OwnershipPersistenceTests(unittest.TestCase):
             start.assert_called_once_with(seat)
             self.assertEqual({p: p.read_bytes() for p in before}, before)
             self.assertTrue(member._typed_before(seat["member_id"], "m_fixture00001"))
+            self.assertEqual(member.codex_wake.target(seat["member_id"]), wake)
 
     def test_fifty_types_keep_presence_and_failed_heartbeat_redelivery_is_not_retyped(
         self,

@@ -302,7 +302,7 @@ try:
             timeout=15,
         )
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-    from agent_orchestra import terminal_control, member, keys
+    from agent_orchestra import terminal_control, member, keys, core
     from unittest import mock
 
     t = rpc("terminal.get", {"terminal": address})
@@ -318,7 +318,9 @@ try:
             _, _, ancestors = terminal_control._prove(pid, t)
         except keys.KeysError:
             continue
-        if terminal_control._reads_tty(pid, info.tty):
+        if core.agent_kind(pid) == provider and terminal_control._reads_tty(
+            pid, info.tty
+        ):
             candidates.append((pid, ancestors))
     owners = [
         pid
@@ -338,8 +340,13 @@ try:
             "HC_TERMINAL_ID": address,
         },
     ):
-        binding = terminal_control.capture_binding(owner)
-        assert binding, "fixture binding failed"
+        bind_until = time.monotonic() + 5
+        while True:
+            binding = terminal_control.capture_binding(owner)
+            if binding:
+                break
+            assert time.monotonic() < bind_until, "fixture binding failed"
+            time.sleep(0.05)
         seat = {
             "member_id": "mb_fixture0001",
             "name": "fixture",
@@ -350,9 +357,20 @@ try:
         }
         member.save_member(seat)
         with mock.patch.object(keys, "find_pane", return_value=None):
-            control = terminal_control.resolve(
-                seat, lambda: member.load_member(seat["member_id"])
-            )
+            # No input has been attempted. Let private startup helpers finish
+            # before the test begins, rather than treating a transient worker
+            # inheriting readable TTY descriptors as the owning provider UI.
+            ready_until = time.monotonic() + 5
+            while True:
+                control = terminal_control.resolve(
+                    seat, lambda: member.load_member(seat["member_id"])
+                )
+                if control is not None:
+                    break
+                assert time.monotonic() < ready_until, (
+                    "private CLI never obtained an unambiguous input owner"
+                )
+                time.sleep(0.05)
             print("actual adapter initial prompt", control.prompt(provider), flush=True)
             original_type = terminal_control.Herdr.type_text
             original_submitted = terminal_control.Herdr._submitted

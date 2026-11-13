@@ -1173,23 +1173,10 @@ class Herdr:
         if name in ("Escape", "C-c"):
             cleared = bool(previous.typed) and not current.typed
             dismissed = bool(before.completion()) and not after.completion()
-            cancelled = (
-                previous.working
-                and not current.working
-                and len(
-                    re.findall(
-                        r"interrupted|turn aborted|request cancelled", after.plain, re.I
-                    )
-                )
-                > len(
-                    re.findall(
-                        r"interrupted|turn aborted|request cancelled",
-                        before.plain,
-                        re.I,
-                    )
-                )
-            )
-            return cleared or dismissed or cancelled
+            # Turn completion and prose (even fresh cancellation words) cannot
+            # acknowledge an interrupt. Without a composer/menu effect, stop
+            # uncertain after this possible key and send no remainder.
+            return cleared or dismissed
         return False
 
     def send_keys(self, names: tuple[str, ...]) -> None:

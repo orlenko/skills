@@ -424,6 +424,9 @@ at operation boundaries, not atomic process-generation fencing. A possibly
 delayed or partial input returns `delivery-uncertain`, retains its configured
 quiet/hold and is never replayed automatically; it may still reach the pinned
 terminal later. Inspect that session before issuing another input operation.
+An interrupt that only ends a busy turn cannot be distinguished from natural
+completion, so it remains uncertain unless it also clears an existing draft or
+dismisses the recognized completion menu.
 
 Optional regressions run real interactive CLIs against a local mock model and
 private Herdr state, without accounts or existing panes. Set executable paths
