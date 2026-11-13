@@ -435,6 +435,18 @@ class NativeOperationTests(unittest.TestCase):
                 self.assertEqual(len(self.transport.frames), 2)
                 self.transport.frames.clear()
 
+    def test_empty_first_composer_line_before_markdown_divider_still_protects_hidden_draft(
+        self,
+    ):
+        for provider in ("claude", "codex"):
+            with self.subTest(provider=provider):
+                self.seat["provider"] = provider
+                self.transport.codex = provider == "codex"
+                self.transport.draft = "\n---\nhidden human draft"
+                self.transport.cursor = None
+                self.assertEqual(self.handle("inert"), "refused-busy")
+                self.assertEqual(self.transport.frames, [])
+
     def handle(
         self, text="/inert fixture", options=None, sender="mb_conductor1", ident=None
     ):

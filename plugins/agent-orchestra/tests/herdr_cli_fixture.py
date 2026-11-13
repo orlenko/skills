@@ -360,15 +360,25 @@ try:
             # No input has been attempted. Let private startup helpers finish
             # before the test begins, rather than treating a transient worker
             # inheriting readable TTY descriptors as the owning provider UI.
-            ready_until = time.monotonic() + 5
+            ready_until = time.monotonic() + 8
+            ready_screen = None
             while True:
                 control = terminal_control.resolve(
                     seat, lambda: member.load_member(seat["member_id"])
                 )
                 if control is not None:
-                    break
+                    try:
+                        shown = control.prompt(provider)
+                        ready_screen = control.last
+                    except keys.KeysError:
+                        shown = None
+                    if shown is not None and shown.idle:
+                        break
                 assert time.monotonic() < ready_until, (
-                    "private CLI never obtained an unambiguous input owner"
+                    "private CLI never obtained an unambiguous idle composer",
+                    (ready_screen.cursor, ready_screen.bounds(), ready_screen.plain)
+                    if ready_screen
+                    else None,
                 )
                 time.sleep(0.05)
             print("actual adapter initial prompt", control.prompt(provider), flush=True)
