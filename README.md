@@ -472,6 +472,10 @@ binding after refresh. Older loaded hooks reuse a live refreshed monitor, but
 may respawn old source after a later crash until the provider reloads its plugin
 hooks on resume/new session. Normal plugin reload is the remedy; refreshing
 monitors does not restart provider sessions or rewrite versioned caches.
+Quiet mutations in the updated monitor/commands/hooks share a short local lock.
+Older loaded code does not participate in that lock: keep its writers quiescent
+or reload them normally before relying on serialized hold rollback. Installing
+the plugin and refreshing a monitor alone does not reload a provider's old hooks.
 
 ## Agent Nudge
 

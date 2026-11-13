@@ -500,6 +500,61 @@ class NativeOperationTests(unittest.TestCase):
         )
         self.assertEqual(len(self.transport.frames), 1)
 
+    def test_quiet_release_at_rollback_boundary_cannot_be_resurrected(self):
+        import threading
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+
+        member_id = self.seat["member_id"]
+        member._set_quiet(member_id, TypeOptions(), "T", "m_older00000001")
+        previous = member._set_quiet(member_id, TypeOptions(), "T", "m_current000001")
+        contended, finished = threading.Event(), threading.Event()
+        errors = []
+
+        def release():
+            try:
+                member._release_quiet_on(
+                    member_id, SimpleNamespace(task="T", act="done", lifecycle=None)
+                )
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                finished.set()
+
+        worker = threading.Thread(target=release)
+        original_read, original_lock = member.read_json, member.monitor_lock.hold_path
+
+        @contextmanager
+        def traced_lock(path):
+            with original_lock(path) as held:
+                if held is None and threading.current_thread() is worker:
+                    contended.set()
+                yield held
+
+        def read_at_boundary(path):
+            record = original_read(path)
+            if threading.current_thread() is threading.main_thread():
+                worker.start()
+                self.assertTrue(
+                    contended.wait(1),
+                    "release did not contend on the actual mutation lock",
+                )
+                self.assertFalse(finished.is_set())
+            return record
+
+        with (
+            mock.patch.object(member, "read_json", side_effect=read_at_boundary),
+            mock.patch.object(member.monitor_lock, "hold_path", traced_lock),
+        ):
+            try:
+                member._rollback_quiet(member_id, "m_current000001", previous)
+            finally:
+                worker.join(timeout=3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertTrue(finished.is_set())
+        self.assertFalse(member._quiet_path(member_id).exists())
+
     def test_held_menu_key_cannot_use_unrelated_transcript_as_confirmation(self):
         self.seat["provider"] = "codex"
         self.transport.codex = self.transport.popup = self.transport.hold = (

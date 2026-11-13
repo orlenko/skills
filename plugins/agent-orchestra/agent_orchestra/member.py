@@ -1778,6 +1778,20 @@ def _quiet_path(member_id: str) -> Path:
     return runtime_dir() / f"{member_id}.quiet.json"
 
 
+@contextmanager
+def _quiet_mutation(member_id: str) -> Iterator[None]:
+    """Serialize short local mutations, never terminal/network operations."""
+    deadline = time.monotonic() + 2
+    while True:
+        with monitor_lock.hold_path(runtime_dir() / f"{member_id}.quiet-mutate.lock") as held:
+            if held is not None:
+                yield
+                return
+        if time.monotonic() >= deadline:
+            raise OrchestraError("Timed out waiting for quiet state mutation")
+        time.sleep(0.01)
+
+
 def quiet_until(member_id: str) -> float | None:
     """When the orchestra may speak in this member's session again, or None.
 
@@ -1799,14 +1813,15 @@ def clear_quiet(member_id: str, task: str | None = None) -> None:
 
     A quiet tied to a task ends only on that task's STATE started.
     """
-    path = _quiet_path(member_id)
-    try:
-        record = read_json(path)
-    except OrchestraError:
-        return
-    if task and record.get("task") and record.get("task") != task:
-        return
-    path.unlink(missing_ok=True)
+    with _quiet_mutation(member_id):
+        path = _quiet_path(member_id)
+        try:
+            record = read_json(path)
+        except OrchestraError:
+            return
+        if task and record.get("task") and record.get("task") != task:
+            return
+        path.unlink(missing_ok=True)
 
 
 def _release_quiet_on(member_id: str, envelope: Any) -> None:
@@ -1816,23 +1831,39 @@ def _release_quiet_on(member_id: str, envelope: Any) -> None:
     ends either kind. A multi-PR /qc reports started at its first launch and
     still has later launches to relay.
     """
-    path = _quiet_path(member_id)
-    try:
-        record = read_json(path)
-    except OrchestraError:
-        return
-    if record.get("task") and record.get("task") != envelope.task:
-        return
-    until = record.get("until_state") or "started"
-    if envelope.act in ("done", "block") or (envelope.lifecycle == "started" and until == "started"):
-        path.unlink(missing_ok=True)
+    with _quiet_mutation(member_id):
+        path = _quiet_path(member_id)
+        try:
+            record = read_json(path)
+        except OrchestraError:
+            return
+        if record.get("task") and record.get("task") != envelope.task:
+            return
+        until = record.get("until_state") or "started"
+        if envelope.act in ("done", "block") or (envelope.lifecycle == "started" and until == "started"):
+            path.unlink(missing_ok=True)
 
 
-def _set_quiet(member_id: str, options: TypeOptions, task: str | None, message_id: str) -> None:
-    atomic_write_json(_quiet_path(member_id), {
-        "until": now() + options.quiet, "task": task, "until_state": options.until,
-        "message_id": message_id, "set_at": now(),
-    })
+def _set_quiet(member_id: str, options: TypeOptions, task: str | None, message_id: str) -> dict[str, Any] | None:
+    with _quiet_mutation(member_id):
+        path = _quiet_path(member_id)
+        previous = read_json(path) if path.exists() else None
+        atomic_write_json(path, {
+            "until": now() + options.quiet, "task": task, "until_state": options.until,
+            "message_id": message_id, "set_at": now(),
+        })
+        return previous
+
+
+def _rollback_quiet(member_id: str, message_id: str, previous: dict[str, Any] | None) -> None:
+    with _quiet_mutation(member_id):
+        path = _quiet_path(member_id)
+        current = read_json(path)
+        if current.get("message_id") == message_id:
+            if previous is not None:
+                atomic_write_json(path, previous)
+            else:
+                path.unlink(missing_ok=True)
 
 
 def _typed_log(member_id: str) -> Path:
@@ -1905,9 +1936,7 @@ def _type_into_pane(
                 return "refused-busy", "the input box already holds text", pane.id
         pane.prepare(body, options)
         if options.quiet:
-            if _quiet_path(member_id).exists():
-                previous_quiet = read_json(_quiet_path(member_id))
-            _set_quiet(member_id, options, task, message_id)
+            previous_quiet = _set_quiet(member_id, options, task, message_id)
             quiet_installed = True
         submitted = True
         if body:
@@ -1921,12 +1950,7 @@ def _type_into_pane(
                 # Roll back only this operation's temporary hold. A failed
                 # new input must not erase an older uncertain hold, nor undo
                 # a release/replacement performed while terminal I/O ran.
-                current_quiet = read_json(_quiet_path(member_id))
-                if current_quiet.get("message_id") == message_id:
-                    if previous_quiet is not None:
-                        atomic_write_json(_quiet_path(member_id), previous_quiet)
-                    else:
-                        clear_quiet(member_id)
+                _rollback_quiet(member_id, message_id, previous_quiet)
             except (OrchestraError, OSError):
                 pass  # Leave state intact if rollback cannot be established.
         detail = str(exc)[:300] if isinstance(exc, keys.KeysError) else "terminal control failed"
