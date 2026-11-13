@@ -618,11 +618,15 @@ class OwnershipRepairTest(HooksTestCase):
         # A barrier merely before lookup allows a legitimate late-session
         # refusal after the first thread has already become the live owner.
         start = threading.Barrier(len(claimants))
-        real_claim = hooks.claim_ownership
+        selected: list[str] = []
+        real_claim = member_module.claim_ownership
+
         def overlapping_claim(member):
+            selected.append(threading.current_thread().name)
             start.wait(timeout=10)
             return real_claim(member)
-        self.patch("agent_orchestra.hooks.claim_ownership", new=overlapping_claim)
+
+        self.patch("agent_orchestra.member.claim_ownership", new=overlapping_claim)
         failures: list[BaseException] = []
 
         def claim() -> None:
@@ -638,6 +642,7 @@ class OwnershipRepairTest(HooksTestCase):
             thread.join(timeout=20)
         self.assertTrue(all(not thread.is_alive() for thread in threads))
 
+        self.assertCountEqual(selected, claimants)
         self.assertEqual(failures, [])
         self.assertEqual(len(written), 1)
         self.assertIn(self.owner_of(member_id), list(claimants.values()))
