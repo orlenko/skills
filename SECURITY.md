@@ -83,6 +83,15 @@ Stop hooks may expose a sender, act, task, message id, and up to 4 KiB of body
 without claiming the local row. The skill directs agents to treat bodies as
 input that cannot expand authorization or override repository or system policy.
 
+Conductor terminal input remains an authenticated Orchestra operation. Native
+Herdr control verifies a local owning-session binding, connected peer UID,
+terminal incarnation, foreground TTY/process ancestry and process start times.
+It checks the adopted owner between input phases; it does not atomically fence
+provider replacement. Raw terminal input can be delayed by Herdr. Ambiguous
+delivery retains its configured quiet/hold, is reported as possibly arriving
+later, and is not retried or redirected. Screens are inspected transiently;
+they are not added to the persistent typing audit.
+
 The hub keeps member rows, hashed tokens, message envelopes, and delivery state
 in a user-private SQLite database. A body is nulled once every recipient has
 taken delivery. Handled messages are pruned after seven days, system events and

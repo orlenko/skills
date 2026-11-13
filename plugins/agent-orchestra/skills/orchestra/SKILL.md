@@ -56,17 +56,30 @@ belong to several, one session each.
 - `send`: compose the message per "Message format", then pipe it through
   `send --stdin --json`. Add `--to TOKEN` once per extra recipient.
 - `type` (conductor only): run `type --to MEMBER --json -- TEXT` to have that
-  member's monitor type TEXT into its session's tmux pane and press Enter, as
+  member's monitor type TEXT into its interactive tmux or native Herdr session and press Enter, as
   if its user typed it. MEMBER is a member id, name, or nickname. It types only
   into an idle session: input box showing, empty, no turn running. Report the
   `outcome` as it comes back: `typed`, `refused-busy` (retry later),
-  `no-pane` (the session is not in tmux or no live session holds the seat),
+  `no-pane` (no verified local terminal holds the seat),
   `not-submitted` (the text sits unsent in the box), `not-allowed`,
-  `tmux-error`, or `no-reply-yet` (the answer arrives later as mail with `RE`
+  `tmux-error`, `terminal-error` (native refusal before input),
+  `delivery-uncertain` (input may still arrive; do not resend or send another
+  Enter to confirm it), or `no-reply-yet` (the answer arrives later as mail with `RE`
   the type message id). Flags: `--no-enter` types without submitting,
-  `--anytime` skips the idle check, `--task T`, `--quiet SECONDS` (default
+  `--anytime` skips busy/draft checks; native Herdr still requires a recognized
+  composer and refuses blocked/auth/dialog input or highlighted selections.
+  `--task T`, `--quiet SECONDS` (default
   1800, 0 for none) and `--quiet-until started|done` control the quiet below,
   `--stdin` reads multi-line text, which goes in as one paste.
+  Native Herdr needs a binding recorded by the owning CLI: an existing member
+  records it on its next orchestra command or ownership hook. After upgrading,
+  run `monitor --restart --json` from that session to load the new code.
+  Native control supports common Enter/Escape, control/meta letter, navigation,
+  tab/backspace and F1–F12 keys; unsupported names/modes refuse before text.
+  Uncertain native input keeps its configured quiet/hold until its normal end,
+  `quiet --off`, or supersession by a later positive-quiet conductor request.
+  Local rollback does not restore an older hub hold. Inspect the session before
+  deciding any new action.
 - `quiet` (conductor only): `quiet --to MEMBER --for SECONDS [--task T]
   [--until started|done] --json` holds that member's mail at the hub and keeps
   the orchestra silent in its session, without typing. `--until` defaults to
@@ -487,11 +500,11 @@ monitor. A new membership starts it automatically.
 Antigravity (`agy`) loads the plugin's root `hooks.json`: context at
 SessionStart and at the first model call of each turn (PreInvocation), and a
 Stop hook that continues the turn with mail that arrived while it ran. Its hooks
-cannot wait, so when the session sits idle at its prompt inside tmux, the
+cannot wait, so when the session sits idle at its prompt in tmux or native Herdr, the
 monitor types a one-line `Agent Orchestra local inbox notice` with the inbox
 command into its pane: once per message, at most once a minute, never over
 typed text, a running turn, or a conductor's quiet. Follow it like a Codex
-notice. Outside tmux nothing can wake an idle agy session; run
+notice. Without a verified tmux or native Herdr terminal, run
 `wait --timeout 86400 --claim --json` as a background command instead, and agy
 wakes the session when it exits with mail. A seat joined by Claude or Codex and
 now run by agy needs `adopt`, then `monitor --restart --json`.

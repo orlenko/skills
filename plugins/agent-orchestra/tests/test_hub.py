@@ -832,6 +832,19 @@ class HubStoreTests(TempHomeTests):
             self.store.kick(admin, "Harp")
         self.assertIn("Unknown or inactive member: Harp", str(gone.exception))
 
+    def test_uncertain_input_receipt_keeps_mail_held_until_explicit_release(self):
+        conductor, player, _b, _d = self._orchestra()
+        typed = self._send(conductor, [player["member_id"]], act="type",
+                           text=f"ACT type\nTO {player['member_id']}\nTYPE enter idle quiet=60\n\n/inert\n")
+        mail = self._send(conductor, [player["member_id"]], text="ACT tell\nTO all\n\nheld fixture mail")
+        self.store._release_hold_on(player["member_id"], "tell", None, None, typed["id"],
+                                   "ACT tell\nTO conductor\n\ntype held: delivery-uncertain: input may still arrive; do not resend")
+        self.assertTrue(self.store._held(player["member_id"]))
+        self.assertNotIn(mail["id"], [row["id"] for row in self.store.pending(player["row"], 0, 50)])
+        self.store._set_hold(player["member_id"], 0, None, "started")
+        self.assertIn(mail["id"], [row["id"] for row in self.store.pending(player["row"], 0, 50)])
+
+
 class HubLifecycleFileTests(TempHomeTests):
     def _write_hub(self, orchestra_id, *, created_at, closed_at=None, port=4443, bind="127.0.0.1"):
         config = {

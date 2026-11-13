@@ -394,6 +394,93 @@ Both send content to that third party.
 
 `AGENT_ORCHESTRA_JEV_SHADOW=1`, the 0.2.3 name, still works.
 
+### Interactive terminal input
+
+The conductor's `type --to MEMBER -- TEXT` reaches the member's actual CLI
+composer, so Claude commands and Codex skills use their normal interactive
+dispatch path. Local monitors support tmux and direct native Herdr terminals
+on macOS/Linux. The adapter uses the generation-1 socket API documented in
+[Herdr Core 0.1.20](https://github.com/herdrdev/herdr-core/blob/de97ea5ba5d6877a5e082316b4a1a5b4918e861f/schema/README.md);
+local interactive qualification used running Core 0.1.21. The installed `hc`
+version alone does not identify the running core. A nested tmux member keeps
+its precise tmux pane target. Different members may use different transports.
+
+Native discovery uses an owning-session binding, the connected Unix peer's
+identity, terminal incarnation, process ancestry, controlling TTY and process
+start times. It does not select by directory or client `HC_SOCKET`. Other
+foreground consumers with readable terminal descriptors make a target ambiguous
+and refuse input; verified ancestor launchers may remain in the process group.
+Existing members record a native binding on their next owning CLI command/hook; after
+an upgrade, restart that member's monitor from its session. Account replacement
+follows normal membership adoption before a new operation binds its target.
+
+Native input preserves composer checks, multiline paste, `--no-enter`, explicit
+keys and quiet holds. Native `--anytime` overrides busy/draft checks while still
+requiring a recognized composer and refusing blocked/auth/dialog screens.
+Append and cursor insertion are supported; reverse-video selection spans and unknown
+screen/key modes refuse. Keys require a corresponding observable effect before
+another key is sent or success is reported. This is checked input
+at operation boundaries, not atomic process-generation fencing. A possibly
+delayed or partial input returns `delivery-uncertain`, retains its configured
+quiet/hold and is never replayed automatically; it may still reach the pinned
+terminal later. Inspect that session before issuing another input operation.
+A later positive-quiet conductor request supersedes the hub's single hold,
+including when that later input is refused. A local pre-input rollback can
+retain an older local quiet; it does not recreate the hub's previous hold.
+An interrupt that only ends a busy turn cannot be distinguished from natural
+completion, so it remains uncertain unless it also clears an existing draft or
+dismisses the recognized completion menu.
+
+Optional regressions run real interactive CLIs against a local mock model and
+private Herdr state, without accounts or existing panes. Set executable paths
+to real binaries rather than account-routing shims:
+
+```sh
+AGENT_TEST_HERDR_BIN=/path/to/hc \
+AGENT_TEST_CODEX_BIN=/path/to/codex \
+AGENT_TEST_CLAUDE_BIN=/path/to/claude \
+python3 -W error::ResourceWarning -m unittest discover \
+  -s plugins/agent-orchestra/tests -p test_herdr_cli.py -v
+```
+
+The parent owns a private core/root and stops it even after a fixture timeout.
+Children start with isolated Python imports, a private `HOME`, provider config
+and XDG state, and an allowlisted environment; no auth/routing variables carry
+over. The fixture uses Codex `--no-daemon` with hooks and plugin bootstrap disabled (an invented
+workspace skill supplies the dispatch check), or Claude
+`--bare` with only the invented plugin, no tools and no MCP servers. It sends
+model requests only to the local mock. Its output records the running core
+version. Supply a trusted native provider executable (a Node launcher may need
+its interpreter on `PATH`); this fixture setup is not an OS sandbox for an
+arbitrary binary. Running the suite on another host qualifies that host's
+actual core/provider combination before updating its plugins.
+
+### Refreshing existing monitors
+
+Install through each provider's normal plugin mechanism and retain existing
+state, credentials and membership files. Newly created memberships use the new
+monitor. For an existing membership, its own session can run `monitor --restart`;
+that command also checks ownership and binds the caller's Codex wake target.
+An external maintenance session must instead import the reviewed installed
+module and call `restart_monitor(load_member(member_id))` with the exact existing
+`AGENT_ORCHESTRA_HOME` (or corresponding XDG state root). Do not use `select_member`,
+`join`, `adopt`, or wake registration during external maintenance.
+
+Pause new conductor typing and let active input operations finish before
+restarting monitors. An unfinished `typing` audit row or uncertain delivery
+needs inspection before maintenance; killing a monitor mid-operation cannot
+establish whether its bytes arrived. Keep quiet files, task holds, outbox and
+typed audit intact. Do not replay a pending type or clear a hold just because a
+monitor was replaced. Verify the new monitor's source/version, owner and wake
+binding after refresh. Older loaded hooks reuse a live refreshed monitor, but
+may respawn old source after a later crash until the provider reloads its plugin
+hooks on resume/new session. Normal plugin reload is the remedy; refreshing
+monitors does not restart provider sessions or rewrite versioned caches.
+Quiet mutations in the updated monitor/commands/hooks share a short local lock.
+Older loaded code does not participate in that lock: keep its writers quiescent
+or reload them normally before relying on serialized hold rollback. Installing
+the plugin and refreshing a monitor alone does not reload a provider's old hooks.
+
 ## Agent Nudge
 
 Coding agents often stop short of their goal. They report and stop, or they

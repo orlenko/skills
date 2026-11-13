@@ -53,6 +53,8 @@ class HooksTestCase(unittest.TestCase):
         self.cwd.mkdir(parents=True)
         self.set_env("AGENT_ORCHESTRA_HOME", str(self.home))
         self.set_env("AGENT_ORCHESTRA_NO_WAIT", None)
+        self.set_env("HC_TERMINAL_SOCKET", None)
+        self.set_env("HC_TERMINAL_ID", None)
         # No hub, no network, no monitor: every spawning helper is stubbed out.
         self.patch("agent_orchestra.hooks.ensure_monitor", return_value=0)
         self.patch("agent_orchestra.member.ensure_monitor", return_value=0)
@@ -612,12 +614,23 @@ class OwnershipRepairTest(HooksTestCase):
 
         self.patch("agent_orchestra.member.save_member", new=counting_save)
 
+        # Both contenders must select the orphan before either can claim it.
+        # A barrier merely before lookup allows a legitimate late-session
+        # refusal after the first thread has already become the live owner.
         start = threading.Barrier(len(claimants))
+        selected: list[str] = []
+        real_claim = member_module.claim_ownership
+
+        def overlapping_claim(member):
+            selected.append(threading.current_thread().name)
+            start.wait(timeout=10)
+            return real_claim(member)
+
+        self.patch("agent_orchestra.member.claim_ownership", new=overlapping_claim)
         failures: list[BaseException] = []
 
         def claim() -> None:
             try:
-                start.wait(timeout=10)
                 self._run_a_command()
             except BaseException as exc:  # noqa: BLE001 - reported below
                 failures.append(exc)
@@ -627,10 +640,24 @@ class OwnershipRepairTest(HooksTestCase):
             thread.start()
         for thread in threads:
             thread.join(timeout=20)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
 
+        self.assertCountEqual(selected, claimants)
         self.assertEqual(failures, [])
         self.assertEqual(len(written), 1)
         self.assertIn(self.owner_of(member_id), list(claimants.values()))
+
+    def test_a_late_session_cannot_reclaim_a_newly_owned_seat(self) -> None:
+        member_id = self._member_with_mail(owner_pid=self.dead_pid())
+        winner, late = self.live_pid(), self.live_pid()
+        caller = [winner]
+        self.patch("agent_orchestra.core.agent_session_pid", side_effect=lambda *args, **kwargs: caller[0])
+        self._run_a_command()
+        self.assertEqual(self.owner_of(member_id), winner)
+        caller[0] = late
+        with self.assertRaisesRegex(OrchestraError, f"held by pid {winner}"):
+            self._run_a_command()
+        self.assertEqual(self.owner_of(member_id), winner)
 
     def test_a_stale_binding_stops_blocking_the_replacement_session(self) -> None:
         dead = self.dead_pid()

@@ -49,6 +49,8 @@ class ResilienceTestCase(unittest.TestCase):
 
         # No desktop notifications and no monitor subprocesses: a test that wants
         # a monitor runs monitor_loop in a daemon thread it can join.
+        self._patch(core, "agent_ancestor_pid", lambda *args, **kwargs: None)
+        self._patch(member_module.terminal_control, "capture_binding", lambda owner: None)
         self._patch(member_module, "_notify", lambda *args, **kwargs: None)
         self._patch(member_module, "start_monitor", lambda member: 0)
         self._patch(member_module, "MONITOR_WAIT_SECONDS", 1)
