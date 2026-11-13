@@ -594,6 +594,73 @@ class NativeOperationTests(unittest.TestCase):
         )
         self.assertEqual(self.handle("/inert", ident="m_contended00001"), "duplicate")
 
+    def test_hold_only_set_and_release_lock_timeouts_also_get_receipts(self):
+        import threading
+
+        member_id = self.seat["member_id"]
+        member._set_quiet(member_id, TypeOptions(), None, "m_previous00001")
+        previous = member._quiet_path(member_id).read_bytes()
+        for index, quiet in enumerate((30, 0)):
+            ident = f"m_holdtimeout{index:04d}"
+            result, errors = [], []
+            finished = threading.Event()
+
+            def blocked_hold():
+                try:
+                    result.append(
+                        self.handle(
+                            "", TypeOptions(hold_only=True, quiet=quiet), ident=ident
+                        )
+                    )
+                except Exception as exc:
+                    errors.append(exc)
+                finally:
+                    finished.set()
+
+            worker = threading.Thread(target=blocked_hold)
+            with member._quiet_mutation(member_id):
+                worker.start()
+                self.assertTrue(
+                    finished.wait(6), "hold-only lock failure did not finish"
+                )
+            worker.join(timeout=3)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(result, ["terminal-error"])
+            self.assertEqual(member._quiet_path(member_id).read_bytes(), previous)
+            replies = [
+                json.loads(path.read_text())
+                for path in core.bucket_dir(member_id, "outbox").glob("*.json")
+            ]
+            self.assertTrue(
+                any(
+                    row.get("re") == ident
+                    and "type terminal-error: Timed out waiting for quiet"
+                    in row["text"]
+                    for row in replies
+                )
+            )
+            self.assertEqual(
+                self.handle("", TypeOptions(hold_only=True, quiet=quiet), ident=ident),
+                "duplicate",
+            )
+        self.assertEqual(self.transport.frames, [])
+
+    def test_unexpected_state_errors_do_not_disclose_paths_in_receipts(self):
+        with mock.patch.object(
+            member,
+            "_set_quiet",
+            side_effect=core.OrchestraError("Cannot read /invented/private/state"),
+        ):
+            self.assertEqual(self.handle("/inert"), "terminal-error")
+        replies = [
+            json.loads(path.read_text())["text"]
+            for path in core.bucket_dir(self.seat["member_id"], "outbox").glob("*.json")
+        ]
+        self.assertTrue(any("terminal control failed" in text for text in replies))
+        self.assertFalse(any("/invented/private/state" in text for text in replies))
+        self.assertEqual(self.transport.frames, [])
+
     def test_held_menu_key_cannot_use_unrelated_transcript_as_confirmation(self):
         self.seat["provider"] = "codex"
         self.transport.codex = self.transport.popup = self.transport.hold = (

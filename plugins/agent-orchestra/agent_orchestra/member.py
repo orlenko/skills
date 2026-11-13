@@ -1778,6 +1778,10 @@ def _quiet_path(member_id: str) -> Path:
     return runtime_dir() / f"{member_id}.quiet.json"
 
 
+class _QuietMutationTimeout(OrchestraError):
+    """A bounded, safe-to-report failure before acquiring the mutation lock."""
+
+
 @contextmanager
 def _quiet_mutation(member_id: str) -> Iterator[None]:
     """Serialize short local mutations, never terminal/network operations."""
@@ -1788,7 +1792,7 @@ def _quiet_mutation(member_id: str) -> Iterator[None]:
                 yield
                 return
         if time.monotonic() >= deadline:
-            raise OrchestraError("Timed out waiting for quiet state mutation")
+            raise _QuietMutationTimeout("Timed out waiting for quiet state mutation")
         time.sleep(0.01)
 
 
@@ -1906,14 +1910,18 @@ def _type_into_pane(
     if options.hold_only:
         # The hub holds this member's mail already; this mirrors it here for
         # the hooks, the Codex wake and agent-nudge.
-        if options.quiet:
-            _set_quiet(member_id, options, task, message_id)
-            until = time.strftime("%H:%M:%SZ", time.gmtime(now() + options.quiet))
-            ends = "STATE started" if options.until == "started" else "done or block"
-            scope = f" on {task}" if task else ""
-            return "held", f"quiet until {until} or its {ends}{scope}", None
-        clear_quiet(member_id)
-        return "released", "quiet lifted; held mail flows now", None
+        try:
+            if options.quiet:
+                _set_quiet(member_id, options, task, message_id)
+                until = time.strftime("%H:%M:%SZ", time.gmtime(now() + options.quiet))
+                ends = "STATE started" if options.until == "started" else "done or block"
+                scope = f" on {task}" if task else ""
+                return "held", f"quiet until {until} or its {ends}{scope}", None
+            clear_quiet(member_id)
+            return "released", "quiet lifted; held mail flows now", None
+        except (OrchestraError, OSError) as exc:
+            detail = str(exc) if isinstance(exc, _QuietMutationTimeout) else "quiet state mutation failed"
+            return "terminal-error", detail, None
     owner = _as_pid(member.get("owner_pid"))
     if owner is None or not _pid_alive(owner):
         return "no-pane", "no live agent session holds this seat", None
@@ -1953,7 +1961,7 @@ def _type_into_pane(
                 _rollback_quiet(member_id, message_id, previous_quiet)
             except (OrchestraError, OSError):
                 pass  # Leave state intact if rollback cannot be established.
-        detail = str(exc)[:300] if isinstance(exc, (keys.KeysError, OrchestraError)) else "terminal control failed"
+        detail = str(exc)[:300] if isinstance(exc, (keys.KeysError, _QuietMutationTimeout)) else "terminal control failed"
         return "tmux-error" if pane.backend == "tmux" else "terminal-error", detail, pane.id
     if options.keys:
         return "typed", f"pressed {' '.join(options.keys)} in {pane.session}", pane.id
