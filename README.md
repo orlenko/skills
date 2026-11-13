@@ -394,6 +394,40 @@ Both send content to that third party.
 
 `AGENT_ORCHESTRA_JEV_SHADOW=1`, the 0.2.3 name, still works.
 
+### Interactive terminal input
+
+The conductor's `type --to MEMBER -- TEXT` reaches the member's actual CLI
+composer, so Claude commands and Codex skills use their normal interactive
+dispatch path. Local monitors support tmux and direct native Herdr terminals
+on macOS/Linux (qualified with Herdr Core 0.1.21). A nested tmux member keeps
+its precise tmux pane target. Different members may use different transports.
+
+Native discovery uses an owning-session binding, the connected Unix peer's
+identity, terminal incarnation, process ancestry, controlling TTY and process
+start times. It does not select by directory or client `HC_SOCKET`. Existing
+members record a native binding on their next owning CLI command/hook; after
+an upgrade, restart that member's monitor from its session. Account replacement
+follows normal membership adoption before a new operation binds its target.
+
+Native input preserves composer checks, multiline paste, `--no-enter`, explicit
+keys and quiet holds. Unknown screen/key modes refuse. This is checked input
+at operation boundaries, not atomic process-generation fencing. A possibly
+delayed or partial input returns `delivery-uncertain`, retains its configured
+quiet/hold and is never replayed automatically; it may still reach the pinned
+terminal later. Inspect that session before issuing another input operation.
+
+Optional regressions run real interactive CLIs against a local mock model and
+private Herdr state, without accounts or existing panes. Set executable paths
+to real binaries rather than account-routing shims:
+
+```sh
+AGENT_TEST_HERDR_BIN=/path/to/hc \
+AGENT_TEST_CODEX_BIN=/path/to/codex \
+AGENT_TEST_CLAUDE_BIN=/path/to/claude \
+python3 -W error::ResourceWarning -m unittest discover \
+  -s plugins/agent-orchestra/tests -p test_herdr_cli.py -v
+```
+
 ## Agent Nudge
 
 Coding agents often stop short of their goal. They report and stop, or they
