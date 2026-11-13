@@ -548,6 +548,9 @@ class Screen:
         first = (
             ""
             if keys._ghost_cursor_only(text[start:], mask[start:], reverse[start:])
+            and not any(
+                c in "│┃" and not dim for c, dim in zip(text[start:], mask[start:])
+            )
             else "".join(
                 c for c, dim in zip(text[start:], mask[start:]) if not dim
             ).strip()
@@ -1072,6 +1075,29 @@ class Herdr:
             )
         keys.sleep(seconds)
 
+    def _observe(
+        self, agent: str, confirmed: Callable[[Screen], bool], *, idle: bool = False
+    ) -> Screen:
+        """Read a partial repaint again; never retry any input or its target."""
+        for _ in range(20):
+            _time_check(self.deadline)
+            after = self.snapshot()  # Each sample closes; same 12s owner fence.
+            prompt = after.prompt(agent)
+            if after.status in ("blocked", "error"):
+                raise keys.KeysError("dialog input refused")
+            if (
+                idle
+                and not self.anytime
+                and (prompt.working or after.status == "working")
+            ):
+                raise keys.KeysError("a turn started before input confirmation")
+            if confirmed(after):
+                return after
+            self._pause(0.1)
+        raise keys.KeysError(
+            "input effect unconfirmed; input may still arrive, do not resend"
+        )
+
     @staticmethod
     def _inserted(
         old: str, new: str, text: str, *, deadline: float = float("inf")
@@ -1130,7 +1156,14 @@ class Herdr:
             payload = b"\x1b[200~" + payload + b"\x1b[201~"
         self._write(payload, agent, before)
         self._pause(keys.SUBMIT_PAUSE_SECONDS)
-        inserted = self.snapshot()
+        inserted = self._observe(
+            agent,
+            lambda screen: screen.prompt(agent).shown
+            and self._inserted(
+                previous.typed, screen.prompt(agent).typed, text, deadline=self.deadline
+            ),
+            idle=True,
+        )
         draft = self._eligible(inserted, agent).typed
         if not self._inserted(previous.typed, draft, text, deadline=self.deadline):
             raise keys.KeysError(
@@ -1141,7 +1174,13 @@ class Herdr:
         if agent == "codex" and inserted.completion():
             self._write(encode("Enter", inserted), agent, inserted)
             self._pause(keys.SUBMIT_PAUSE_SECONDS)
-            selected = self.snapshot()
+            selected = self._observe(
+                agent,
+                lambda screen: screen.prompt(agent).shown
+                and _rendered_text(screen.prompt(agent).typed) == _rendered_text(draft)
+                and not screen.completion(),
+                idle=True,
+            )
             prompt = self._eligible(selected, agent)
             if (
                 _rendered_text(prompt.typed) != _rendered_text(draft)
@@ -1153,7 +1192,9 @@ class Herdr:
             inserted = selected
         self._write(encode("Enter", inserted), agent, inserted)
         self._pause(keys.SUBMIT_CHECK_SECONDS)
-        after = self.snapshot()
+        after = self._observe(
+            agent, lambda screen: self._submitted(inserted, screen, draft, agent)
+        )
         if self._submitted(inserted, after, draft, agent):
             return True
         raise keys.KeysError(
@@ -1224,11 +1265,9 @@ class Herdr:
                 if KEY_ALIASES.get(name, name) == "Enter"
                 else 0.1
             )
-            after = self.snapshot()
-            if not self._key_effect(name, before, after, agent):
-                raise keys.KeysError(
-                    "key effect unconfirmed; input may still arrive, do not resend"
-                )
+            self._observe(
+                agent, lambda screen: self._key_effect(name, before, screen, agent)
+            )
 
 
 def resolve(

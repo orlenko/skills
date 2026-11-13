@@ -53,6 +53,14 @@ def composer(draft: str = "", *, codex: bool = False, popup: bool = False) -> st
 
 
 class ScreenTests(unittest.TestCase):
+    def test_ghost_cursor_cannot_erase_a_literal_border_draft(self):
+        screen = native.render(
+            paint(composer("│\x1b[7m/\x1b[0;2mqc\x1b[0m", codex=True), cursor=(3, 0)),
+            100,
+            20,
+        )
+        self.assertIn("│", screen.prompt("codex").typed)
+
     def test_codex_footer_only_idle_layout_and_user_footer_lookalike(self):
         for draft in ("", "\n  ? for shortcuts\nsecret human draft"):
             body = (
@@ -188,6 +196,7 @@ class Transport:
         self.finish_turn_on_held_key = False
         self.held_key_prose = ""
         self.footer_only = False
+        self.partial_after_paste = self.partial_paints = 0
         self.terminal = {
             "address": "t1",
             "pid": 100,
@@ -221,6 +230,12 @@ class Transport:
                 assert params["resumed"] is True and "display" not in params
 
             def paint(self, _channel):
+                if transport.partial_paints:
+                    transport.partial_paints -= 1
+                    return paint(
+                        "invented partial repaint\r\n› " + transport.draft,
+                        cursor=(2, 1),
+                    )
                 if transport.unrelated_output:
                     transport.transcript += "unrelated tick\r\n"
                 prefix = transport.transcript
@@ -275,6 +290,7 @@ class Transport:
                     text = data[6:-6].decode()
                     transport.draft = draft[:at] + text + draft[at:]
                     transport.cursor = at + len(text)
+                    transport.partial_paints = transport.partial_after_paste
                     if transport.block_after_paste:
                         transport.state = "blocked"
                     if transport.after_paste_state:
@@ -419,6 +435,41 @@ class NativeOperationTests(unittest.TestCase):
                 member._quiet_path(self.seat["member_id"]).read_bytes(), quiet
             )
         self.assertEqual(len(self.transport.frames), 1)
+
+    def test_partial_repaint_confirmation_reads_again_without_resending(self):
+        self.transport.partial_after_paste = 3
+        self.assertEqual(self.handle("/inert"), "typed")
+        self.assertEqual(self.transport.frames, [b"\x1b[200~/inert\x1b[201~", b"\r"])
+
+    def test_blocked_partial_repaint_stops_confirmation_before_enter(self):
+        self.transport.partial_after_paste = 3
+        self.transport.block_after_paste = True
+        self.assertEqual(self.handle("/inert"), "delivery-uncertain")
+        self.assertEqual(len(self.transport.frames), 1)
+        self.assertIsNotNone(member.quiet_until(self.seat["member_id"]))
+
+    def test_confirmation_sampling_keeps_operation_deadline_and_sample_bound(self):
+        from itertools import count
+
+        screen = native.render(paint(composer()), 100, 20)
+        for ticks, expected_max in ((count(0, 0.3), 2), (count(0, 0), 20)):
+            control = native.Herdr(
+                self.seat, self.seat["terminal_control"], lambda: self.seat, deadline=1
+            )
+            with (
+                mock.patch.object(control, "snapshot", return_value=screen) as snapshot,
+                mock.patch.object(
+                    native.Screen, "prompt", return_value=keys.Prompt(True, "", False)
+                ),
+                mock.patch.object(
+                    native.time, "monotonic", side_effect=lambda: next(ticks)
+                ),
+            ):
+                with self.assertRaises(keys.KeysError):
+                    control._observe("claude", lambda _screen: False)
+            self.assertLessEqual(snapshot.call_count, expected_max)
+            self.assertFalse(control.possibly_sent)
+        self.assertEqual(self.transport.frames, [])
 
     def test_held_menu_key_cannot_use_unrelated_transcript_as_confirmation(self):
         self.seat["provider"] = "codex"
