@@ -65,6 +65,8 @@ class MemberTestCase(unittest.TestCase):
 
         # No desktop notifications and no real monitor subprocesses: tests drive
         # monitor_loop in daemon threads instead.
+        self._patch(member_module.core, "agent_ancestor_pid", lambda *args, **kwargs: None)
+        self._patch(member_module.terminal_control, "capture_binding", lambda owner: None)
         self._patch(member_module, "_notify", lambda *args, **kwargs: None)
         # Kept so one test can check the real spawn guard, not the stub.
         self.real_start_monitor = member_module.start_monitor

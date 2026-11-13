@@ -21,7 +21,7 @@ class AdoptTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.cwd = Path(temp.name) / "ops"
         self.cwd.mkdir()
-        patcher = mock.patch.dict(os.environ, {"AGENT_ORCHESTRA_HOME": str(Path(temp.name) / "state")})
+        patcher = mock.patch.dict(os.environ, {"AGENT_ORCHESTRA_HOME": str(Path(temp.name) / "state"), "HC_TERMINAL_SOCKET": "", "HC_TERMINAL_ID": ""})
         patcher.start()
         self.addCleanup(patcher.stop)
         atomic_write_json(member_path(MEMBER), {

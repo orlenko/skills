@@ -393,6 +393,21 @@ class NativeOperationTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.serial = 0
 
+    def test_native_binding_versions_keep_the_legacy_reader_and_refuse_unknown(self):
+        binding = self.seat["terminal_control"]
+        for version in (None, 0, 1):
+            if version is None:
+                binding.pop("version", None)
+            else:
+                binding["version"] = version
+            self.assertIsInstance(
+                native.resolve(self.seat, lambda: self.seat), native.Herdr
+            )
+        for version in (2, "1", True):
+            binding["version"] = version
+            self.assertEqual(self.handle("/inert"), "no-pane")
+        self.assertEqual(self.transport.frames, [])
+
     def test_anytime_selection_refuses_before_input(self):
         with mock.patch.object(native.Screen, "selection", return_value=True):
             self.assertEqual(

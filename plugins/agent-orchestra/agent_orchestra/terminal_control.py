@@ -803,6 +803,7 @@ def capture_binding(owner: int) -> dict[str, Any] | None:
             if terminal.get("state") != "live" or terminal.get("address") != address:
                 return None
             return {
+                "version": 1,
                 "socket": endpoint,
                 "core": session.identity,
                 "address": address,
@@ -903,6 +904,9 @@ class Herdr:
         current: Callable[[], dict[str, Any]],
         deadline: float | None = None,
     ):
+        version = binding.get("version", 0)
+        if type(version) is not int or version not in (0, 1):
+            raise keys.KeysError("unsupported native terminal binding version")
         self.binding, self.current, self.owner = (
             copy.deepcopy(binding),
             current,

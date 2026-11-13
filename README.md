@@ -424,6 +424,9 @@ at operation boundaries, not atomic process-generation fencing. A possibly
 delayed or partial input returns `delivery-uncertain`, retains its configured
 quiet/hold and is never replayed automatically; it may still reach the pinned
 terminal later. Inspect that session before issuing another input operation.
+A later positive-quiet conductor request supersedes the hub's single hold,
+including when that later input is refused. A local pre-input rollback can
+retain an older local quiet; it does not recreate the hub's previous hold.
 An interrupt that only ends a busy turn cannot be distinguished from natural
 completion, so it remains uncertain unless it also clears an existing draft or
 dismisses the recognized completion menu.

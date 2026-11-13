@@ -76,8 +76,10 @@ belong to several, one session each.
   run `monitor --restart --json` from that session to load the new code.
   Native control supports common Enter/Escape, control/meta letter, navigation,
   tab/backspace and F1–F12 keys; unsupported names/modes refuse before text.
-  Uncertain native input keeps the configured quiet/hold until its normal end
-  or an explicit `quiet --off`; inspect the session before deciding any new action.
+  Uncertain native input keeps its configured quiet/hold until its normal end,
+  `quiet --off`, or supersession by a later positive-quiet conductor request.
+  Local rollback does not restore an older hub hold. Inspect the session before
+  deciding any new action.
 - `quiet` (conductor only): `quiet --to MEMBER --for SECONDS [--task T]
   [--until started|done] --json` holds that member's mail at the hub and keeps
   the orchestra silent in its session, without typing. `--until` defaults to

@@ -58,6 +58,7 @@ class CodexWakeTests(unittest.TestCase):
             "CODEX_THREAD_ID": self.thread, "CODEX_HOME": str(self.root / "account"),
             "QUEUE_LOG": str(self.log), "QUEUE_STATE": str(self.root / "queue-state.json"),
             "AGENT_CODEX_WAKE_HOME": str(self.root / "wake-state"),
+            "HC_TERMINAL_SOCKET": "", "HC_TERMINAL_ID": "",
         })
         patcher.start()
         self.addCleanup(patcher.stop)
