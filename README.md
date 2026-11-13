@@ -443,7 +443,8 @@ python3 -W error::ResourceWarning -m unittest discover \
 The parent owns a private core/root and stops it even after a fixture timeout.
 Children start with isolated Python imports, a private `HOME`, provider config
 and XDG state, and an allowlisted environment; no auth/routing variables carry
-over. The fixture uses Codex `--no-daemon` with hooks disabled, or Claude
+over. The fixture uses Codex `--no-daemon` with hooks and plugin bootstrap disabled (an invented
+workspace skill supplies the dispatch check), or Claude
 `--bare` with only the invented plugin, no tools and no MCP servers. It sends
 model requests only to the local mock. Its output records the running core
 version. Supply a trusted native provider executable (a Node launcher may need

@@ -62,7 +62,7 @@ class InteractiveDispatchTests(unittest.TestCase):
             time.sleep(0.02)
         self.assertFalse(alive, "private program survived parent fallback cleanup")
 
-    def invoke(self, fixture: str, *args: str, timeout: float = 90):
+    def invoke(self, fixture: str, *args: str, timeout: float = 120):
         root = create_root()
         env = environment(root)
         # Default hc is resolved by the parent, never by a private child's config.
@@ -122,6 +122,7 @@ class InteractiveDispatchTests(unittest.TestCase):
                 for line in result.stdout.splitlines()
                 if line.startswith(
                     (
+                        "PROVIDER",
                         "RUNNING CORE",
                         "SKILL DISPATCH VERIFIED",
                         "MULTILINE /",

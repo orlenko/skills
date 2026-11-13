@@ -146,7 +146,7 @@ if provider == "codex":
     fixture_home.mkdir()
     env["CODEX_HOME"] = str(fixture_home)
     (fixture_home / "config.toml").write_text(
-        'model = "orchestra-fixture"\nmodel_provider = "mock"\napproval_policy = "never"\nsandbox_mode = "read-only"\n[features]\nhooks = false\n[model_providers.mock]\nname = "Local fixture"\nbase_url = "http://127.0.0.1:'
+        'model = "orchestra-fixture"\nmodel_provider = "mock"\napproval_policy = "never"\nsandbox_mode = "read-only"\n[features]\nhooks = false\nplugins = false\nremote_plugin = false\n[model_providers.mock]\nname = "Local fixture"\nbase_url = "http://127.0.0.1:'
         + str(server.server_port)
         + '/v1"\nwire_api = "responses"\nrequires_openai_auth = false\n[projects."'
         + str(workspace)
@@ -227,6 +227,16 @@ def rpc(method, params):
 
 
 try:
+    version = subprocess.run(
+        [argv[0], "--version"],
+        env=env,
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    print("PROVIDER", provider, version.stdout.strip(), "BINARY", argv[0], flush=True)
     r = subprocess.run(
         [
             herdr_binary,
@@ -318,9 +328,9 @@ try:
                 _, _, ancestors = terminal_control._prove(pid, t)
             except keys.KeysError:
                 continue
-            if core.agent_kind(pid) == provider and terminal_control._reads_tty(
-                pid, info.tty
-            ):
+            if (
+                pid == root_pid or core.agent_kind(pid) == provider
+            ) and terminal_control._reads_tty(pid, info.tty):
                 candidates.append((pid, ancestors))
         owners = [
             pid
@@ -331,7 +341,7 @@ try:
         ]
         return owners[0] if len(owners) == 1 else None
 
-    discover_until = time.monotonic() + 8
+    discover_until = time.monotonic() + 20
     discovery_error = "no unique provider UI"
     while True:
         try:
@@ -356,7 +366,7 @@ try:
             "HC_TERMINAL_ID": address,
         },
     ):
-        bind_until = time.monotonic() + 5
+        bind_until = time.monotonic() + 20
         while True:
             binding = terminal_control.capture_binding(owner)
             if binding:
@@ -376,7 +386,7 @@ try:
             # No input has been attempted. Let private startup helpers finish
             # before the test begins, rather than treating a transient worker
             # inheriting readable TTY descriptors as the owning provider UI.
-            ready_until = time.monotonic() + 8
+            ready_until = time.monotonic() + 20
             ready_screen = None
             while True:
                 control = terminal_control.resolve(

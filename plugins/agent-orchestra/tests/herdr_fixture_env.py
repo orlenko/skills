@@ -58,7 +58,7 @@ def environment(root: Path) -> dict[str, str]:
             binary = shutil.which(os.environ[key])
             if not binary:
                 raise ValueError(f"fixture binary unavailable: {key}")
-            env[key] = str(Path(binary).absolute())
+            env[key] = str(Path(binary).resolve())
     return env
 
 
