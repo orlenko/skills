@@ -108,25 +108,58 @@ def find_pane(pid: int) -> Pane | None:
     return None
 
 
-def _plain_and_dim(line: str) -> tuple[str, list[bool]]:
+def _plain_and_dim(line: str) -> tuple[str, list[bool], list[bool]]:
+    """The line's text, which cells are dim, and which are reverse video.
+
+    Reverse video is how Claude draws the cursor cell.
+    """
     line = _OTHER_ESC.sub("", line)
     text: list[str] = []
     dim_mask: list[bool] = []
-    dim, pos = False, 0
+    reverse_mask: list[bool] = []
+    dim = reverse = False
+    pos = 0
     for match in _SGR.finditer(line):
         chunk = line[pos:match.start()]
         text.append(chunk)
         dim_mask.extend([dim] * len(chunk))
+        reverse_mask.extend([reverse] * len(chunk))
         for code in [c for c in match.group(1).split(";") if c != ""] or ["0"]:
-            if code in {"0", "22"}:
+            if code == "0":
+                dim = reverse = False
+            elif code == "22":
                 dim = False
             elif code == "2":
                 dim = True
+            elif code == "7":
+                reverse = True
+            elif code == "27":
+                reverse = False
         pos = match.end()
     chunk = line[pos:]
     text.append(chunk)
     dim_mask.extend([dim] * len(chunk))
-    return "".join(text), dim_mask
+    reverse_mask.extend([reverse] * len(chunk))
+    return "".join(text), dim_mask, reverse_mask
+
+
+def _ghost_cursor_only(text: str, dim: list[bool], reverse: list[bool]) -> bool:
+    """Whether the box holds only a suggestion with the cursor on its first character.
+
+    Claude draws the cursor as one reverse-video cell. Over a dim suggestion
+    it sits on the suggestion's first character and takes that cell out of the
+    dim run (`❯\xa0ESC[7m/ESC[0;2mqc 6860`, Goose's pane on 2026-11-12), so the
+    lone `/` read as typed and `type` refused an empty box. The box counts as
+    empty only when that one cell is the sole non-dim content and dim text
+    follows it directly; typed text, with or without a cursor cell after it,
+    still reads as typed.
+    """
+    plain = [index for index, (ch, d) in enumerate(zip(text, dim))
+             if not d and ch not in " \xa0│┃"]
+    if len(plain) != 1:
+        return False
+    cell = plain[0]
+    return reverse[cell] and cell + 1 < len(text) and dim[cell + 1]
 
 
 def read_prompt(raw: str, agent: str = "") -> Prompt:
@@ -158,13 +191,16 @@ def read_prompt(raw: str, agent: str = "") -> Prompt:
             break
     if prompt_at is None or glyph is None:
         return Prompt(shown=False, typed="", working=False)
-    text, dim = parsed[prompt_at]
+    text, dim, reverse = parsed[prompt_at]
     start = text.index(glyph) + len(glyph)
-    typed = "".join(ch for ch, d in zip(text[start:], dim[start:]) if not d)
-    typed = typed.replace("\xa0", " ").strip(" │┃").strip()
-    above = [line for line, _ in parsed[:prompt_at]]
+    if _ghost_cursor_only(text[start:], dim[start:], reverse[start:]):
+        typed = ""
+    else:
+        typed = "".join(ch for ch, d in zip(text[start:], dim[start:]) if not d)
+        typed = typed.replace("\xa0", " ").strip(" │┃").strip()
+    above = [line for line, _, _ in parsed[:prompt_at]]
     tail = "\n".join(line for line in above[-40:] if line.strip())
-    footer = "\n".join(line for line, _ in parsed[prompt_at + 1:])
+    footer = "\n".join(line for line, _, _ in parsed[prompt_at + 1:])
     working = (
         bool(_WORKING.search(tail[-600:] + "\n" + footer) or _FOOTER_WORKING.search(footer))
         or any(_SPINNER.match(line) for line in above[-6:])

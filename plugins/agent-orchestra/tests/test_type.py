@@ -115,6 +115,29 @@ class ReadPromptTests(unittest.TestCase):
         self.assertTrue(prompt.idle)
         self.assertEqual(prompt.typed, "")
 
+    def test_a_cursor_cell_on_a_suggestion_is_an_empty_box(self):
+        # 2026-11-12, Goose's pane: the cursor's reverse-video cell sits on the
+        # suggestion's first character, then reset + dim runs the rest. The
+        # lone `/` made `type` refuse an empty box as already holding text.
+        line = "\x1b[39m❯\xa0\x1b[7m/\x1b[0;2mqc 6860\x1b[0m"
+        prompt = keys.read_prompt(claude_screen(line), "claude")
+        self.assertTrue(prompt.shown)
+        self.assertEqual(prompt.typed, "")
+        self.assertTrue(prompt.idle)
+
+    def test_typed_text_still_reads_as_typed_beside_a_cursor_cell(self):
+        cases = {
+            "❯ /qc 6860": "/qc 6860",
+            "❯ /qc 6860\x1b[7m \x1b[0m": "/qc 6860",
+            "❯ /qc\x1b[7m \x1b[0;2m6860\x1b[0m": "/qc",
+            "❯ /q\x1b[7mc\x1b[0;2m 6860\x1b[0m": "/qc",
+        }
+        for line, typed in cases.items():
+            with self.subTest(line=line):
+                prompt = keys.read_prompt(claude_screen(line), "claude")
+                self.assertEqual(prompt.typed, typed)
+                self.assertFalse(prompt.idle)
+
     def test_codex_draws_its_own_glyph(self):
         self.assertTrue(keys.read_prompt("output\n› \n  footer", "codex").idle)
 
