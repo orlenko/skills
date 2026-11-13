@@ -1942,7 +1942,7 @@ def _type_into_pane(
         if body:
             submitted = pane.type_text(agent, body, submit=options.submit and not options.keys)
         pane.send_keys(options.keys)
-    except (keys.KeysError, OSError, ValueError, KeyError, TypeError) as exc:
+    except (keys.KeysError, OrchestraError, OSError, ValueError, KeyError, TypeError) as exc:
         if pane.backend == "herdr" and pane.possibly_sent:
             return "delivery-uncertain", "input may still arrive at the pinned terminal; do not resend", pane.id
         if quiet_installed:
@@ -1953,7 +1953,7 @@ def _type_into_pane(
                 _rollback_quiet(member_id, message_id, previous_quiet)
             except (OrchestraError, OSError):
                 pass  # Leave state intact if rollback cannot be established.
-        detail = str(exc)[:300] if isinstance(exc, keys.KeysError) else "terminal control failed"
+        detail = str(exc)[:300] if isinstance(exc, (keys.KeysError, OrchestraError)) else "terminal control failed"
         return "tmux-error" if pane.backend == "tmux" else "terminal-error", detail, pane.id
     if options.keys:
         return "typed", f"pressed {' '.join(options.keys)} in {pane.session}", pane.id

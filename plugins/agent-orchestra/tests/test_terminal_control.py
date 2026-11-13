@@ -555,6 +555,45 @@ class NativeOperationTests(unittest.TestCase):
         self.assertTrue(finished.is_set())
         self.assertFalse(member._quiet_path(member_id).exists())
 
+    def test_quiet_lock_timeout_gets_a_receipt_without_input_or_losing_prior_hold(self):
+        import threading
+
+        member_id = self.seat["member_id"]
+        member._set_quiet(member_id, TypeOptions(), None, "m_previous00001")
+        previous = member._quiet_path(member_id).read_bytes()
+        finished = threading.Event()
+        result, errors = [], []
+
+        def blocked_operation():
+            try:
+                result.append(self.handle("/inert", ident="m_contended00001"))
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                finished.set()
+
+        worker = threading.Thread(target=blocked_operation)
+        with member._quiet_mutation(member_id):
+            worker.start()
+            self.assertTrue(finished.wait(6), "bounded lock failure did not finish")
+        worker.join(timeout=3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(result, ["terminal-error"])
+        self.assertEqual(self.transport.frames, [])
+        self.assertEqual(member._quiet_path(member_id).read_bytes(), previous)
+        replies = [
+            json.loads(path.read_text())["text"]
+            for path in core.bucket_dir(member_id, "outbox").glob("*.json")
+        ]
+        self.assertTrue(
+            any(
+                "type terminal-error: Timed out waiting for quiet" in reply
+                for reply in replies
+            )
+        )
+        self.assertEqual(self.handle("/inert", ident="m_contended00001"), "duplicate")
+
     def test_held_menu_key_cannot_use_unrelated_transcript_as_confirmation(self):
         self.seat["provider"] = "codex"
         self.transport.codex = self.transport.popup = self.transport.hold = (
