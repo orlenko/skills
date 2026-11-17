@@ -481,6 +481,38 @@ Older loaded code does not participate in that lock: keep its writers quiescent
 or reload them normally before relying on serialized hold rollback. Installing
 the plugin and refreshing a monitor alone does not reload a provider's old hooks.
 
+## Herdr collaboration sidebar
+
+The optional [Orchestras & Pairs mod](integrations/herdr/README.md) groups
+participating terminals across Herdr's connected machines. Click a member to
+focus his pane or peek at his terminal. It is a navigation view of visible
+terminals, not a complete roster; Pair and Orchestra still own messaging.
+
+Publication is **off by default**. From each participating agent's own terminal,
+enable display for an existing membership or pair:
+
+```sh
+agent-orchestra herdr-display enable --json
+agent-pair herdr-display enable --provider codex --endpoint-id ENDPOINT_ID --json
+```
+
+Use `disable` to stop publishing. Alternatively launch an agent with
+`ORLENKO_HERDR_DISPLAY=1` to opt new relationships into display. Private opt-in
+survives monitor restarts and verified ownership adoption; explicit disable
+overrides that launch environment until explicitly enabled again. Existing
+monitors need the usual owning-session `monitor --restart` after upgrade to
+renew labels. No restart or installation happens automatically.
+
+The labels expose relationship ids, display names and roles to **every client
+authorized to access that Herdr core**, even without the mod. They contain no
+mail, credentials or invites. A publisher renews only its verified local terminal;
+the viewer uses Herdr's existing machine connections, with no new remote service.
+Labels expire from the view within two minutes without renewal (plus the
+sidebar's fifteen-second expiry refresh).
+
+Install the mod on the machine running the Herdr window using the explicit-home
+installer in the linked guide. Installation is separate from host-side opt-in.
+
 ## Agent Nudge
 
 Coding agents often stop short of their goal. They report and stop, or they

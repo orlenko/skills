@@ -97,5 +97,17 @@ in a user-private SQLite database. A body is nulled once every recipient has
 taken delivery. Handled messages are pruned after seven days, system events and
 spent invites after one day.
 
+The optional Herdr collaboration display is explicitly opted into on each
+publishing session. Relationship ids, member names and roles then become core
+terminal labels readable by all clients authorized for that core. No token,
+invite, message body, socket path or provider account is published. Labels are
+untrusted display claims, never proof of membership or authority for terminal
+input. Publishers use only same-user local socket metadata and label operations,
+pin terminal/process incarnations, and retire expiring, disjoint publications on
+close or ownership change. The viewer validates leases and incarnations and
+navigates only to addresses from Herdr's current terminal records. It performs no
+remote commands, messaging, enrollment or credential access. Expiry hides a
+stale label; unreachable cleanup may leave its inert value in core storage.
+
 This initial release has no internet relay, NAT traversal, remote shell, file
 transfer, discovery broadcast, or conductor election.
