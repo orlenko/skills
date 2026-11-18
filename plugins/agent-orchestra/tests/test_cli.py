@@ -67,6 +67,9 @@ DOCUMENTED = [
     ["nick", "aiq", "--add", "Harp"],
     ["nick", "mb_9d3aa5bcd065", "--add", "Harp", "--add", "Lyre", "--remove", "Old", "--json"],
     ["hub", "nick", "aiq", "--add", "Harp", "--orchestra-id", "orc_1"],
+    ["rename", "aiq", "Harp"],
+    ["rename", "mb_9d3aa5bcd065", "Maestro", "--drop-old", "--json"],
+    ["hub", "rename", "aiq", "Harp", "--orchestra-id", "orc_1"],
     ["kick", "Harp", "--reason", "done"],
     ["conductor", "Harp"],
     ["podium", "status", "--json"],
@@ -208,7 +211,7 @@ class ParserTest(unittest.TestCase):
             self.parser.parse_args(["--version"])
         self.assertEqual(caught.exception.code, 0)
         self.assertEqual(out.getvalue().strip(), f"agent-orchestra {__version__}")
-        self.assertEqual(__version__, "0.2.30")
+        self.assertEqual(__version__, "0.2.31")
 
     def test_unknown_command_exits_non_zero(self) -> None:
         err = io.StringIO()

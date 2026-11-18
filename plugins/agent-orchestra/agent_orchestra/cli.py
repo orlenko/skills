@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__, codex_wake
-from .core import OrchestraError, normalize_provider
+from .core import APIError, OrchestraError, normalize_provider
 from .protocol import DEFAULT_TYPE_QUIET_SECONDS, TypeOptions
 
 
@@ -74,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="command",
         required=True,
         metavar="{hub,join,invite,send,inbox,show,wait,finish,status,members,tasks,"
-        "events,message,conductor,kick,nick,leave,close,monitor,podium,herdr-display}",
+        "events,message,conductor,kick,nick,rename,leave,close,monitor,podium,herdr-display}",
     )
 
     hub = commands.add_parser("hub", help="Run and administer the hub on the always-on machine")
@@ -119,6 +119,10 @@ def build_parser() -> argparse.ArgumentParser:
     hub_nick = hub_commands.add_parser("nick", help="Add or remove a member's nicknames")
     _hub_common(hub_nick)
     _nick_arguments(hub_nick)
+
+    hub_rename = hub_commands.add_parser("rename", help="Rename a member in place")
+    _hub_common(hub_rename)
+    _rename_arguments(hub_rename)
 
     hub_close = hub_commands.add_parser("close", help="Close the orchestra for every member")
     _hub_common(hub_close)
@@ -287,6 +291,12 @@ def build_parser() -> argparse.ArgumentParser:
     _common(nick)
     _nick_arguments(nick)
 
+    rename = commands.add_parser(
+        "rename", help="Conductor: rename a member in place; its tasks, mail and seat stay"
+    )
+    _common(rename)
+    _rename_arguments(rename)
+
     leave = commands.add_parser("leave", help="Leave the orchestra")
     _common(leave)
 
@@ -353,6 +363,13 @@ def _bind(value: str | None) -> str | None:
     if not bound:
         raise OrchestraError("--bind needs an address or a hostname")
     return bound
+
+
+def _rename_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("target", metavar="MEMBER", help="Member id, name, or nickname")
+    parser.add_argument("name", metavar="NAME", help="The member's new name")
+    parser.add_argument("--drop-old", action="store_true",
+                        help="Do not keep the old name as a nickname")
 
 
 def _nick_arguments(parser: argparse.ArgumentParser) -> None:
@@ -625,6 +642,17 @@ def _run_hub(args: argparse.Namespace) -> int:
         _print(api_request(connection, "POST", "/v1/nicks", {
             "member": args.target, "add": args.add, "remove": args.remove,
         }), args.as_json)
+        return 0
+    if args.hub_command == "rename":
+        try:
+            result = api_request(connection, "POST", "/v1/rename", {
+                "member": args.target, "name": args.name, "keep_old": not args.drop_old,
+            })
+        except APIError as exc:
+            if exc.status != 404:
+                raise
+            raise OrchestraError("This hub predates rename (agent-orchestra 0.2.31). Restart it on 0.2.31 or later") from exc
+        _print(result, args.as_json)
         return 0
     if args.hub_command == "close":
         _print(api_request(connection, "POST", "/v1/close", {}), args.as_json)
@@ -934,6 +962,9 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command == "nick":
         _print(member_api.set_nicks(member, args.target, args.add, args.remove), args.as_json)
+        return 0
+    if args.command == "rename":
+        _print(member_api.rename(member, args.target, args.name, keep_old=not args.drop_old), args.as_json)
         return 0
     if args.command == "leave":
         _print(member_api.leave(member), args.as_json)

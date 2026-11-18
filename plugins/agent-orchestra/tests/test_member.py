@@ -494,6 +494,45 @@ class MemberTestCase(unittest.TestCase):
         with self.assertRaises(OrchestraError):
             member_module.select_member(provider="test", cwd=self._cwd("player-a"))
 
+    def test_rename_updates_the_roster_and_each_member_file(self):
+        created = self._create_hub()
+        orchestra_id = created["orchestra_id"]
+        conductor = self._join(created["conductor_invite"], "conductor", "Conductor", monitor=False)
+        admin = hub_module.admin_connection(orchestra_id)
+        minted = api_request(admin, "POST", "/v1/invite", {"role": "player", "parent": None})
+        player = self._join(minted["invite"], "player-a", "Player A", monitor=False)
+
+        # The conductor renaming itself shows in its own member.json at once.
+        own = member_module.rename(conductor, "Conductor", "Maestro")
+        # "Conductor" reads as the `conductor` alias, so it is not kept as a nickname.
+        self.assertEqual((own["name"], own["nicks"], own["kept_old"]), ("Maestro", [], False))
+        self.assertEqual(member_module.load_member(conductor["member_id"])["name"], "Maestro")
+
+        # Another member's file follows from its next roster pass.
+        other = member_module.rename(conductor, "Player A", "Harp", keep_old=False)
+        self.assertEqual((other["name"], other["nicks"]), ("Harp", []))
+        self.assertEqual(member_module.load_member(player["member_id"])["name"], "Player A")
+        roster = api_request(player, "GET", "/v1/members")
+        stored = member_module.load_member(player["member_id"])
+        member_module._apply_self_row(stored, member_module._self_row(roster, player["member_id"]))
+        self.assertEqual(member_module.load_member(player["member_id"])["name"], "Harp")
+
+        with self.assertRaises(APIError) as refused:
+            member_module.rename(member_module.load_member(player["member_id"]), "Maestro", "Boss")
+        self.assertEqual(refused.exception.status, 403)
+
+    def test_rename_against_an_older_hub_explains_the_upgrade(self):
+        member = {"member_id": "mb_123456", "orchestra_id": "orc_1"}
+        self._patch(member_module, "ensure_hub_if_local", lambda member: None)
+
+        def missing(*_args, **_kwargs):
+            raise APIError(404, "Endpoint not found")
+        self._patch(member_module, "api_request", missing)
+        with self.assertRaises(OrchestraError) as caught:
+            member_module.rename(member, "aiq", "Harp")
+        self.assertIn("predates rename", str(caught.exception))
+        self.assertNotIsInstance(caught.exception, APIError)
+
     def test_close_reaches_a_running_player_monitor(self):
         created = self._create_hub()
         conductor = self._join(created["conductor_invite"], "conductor", "Conductor")
