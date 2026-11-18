@@ -44,7 +44,15 @@ function claim(kind, value, terminal, now) {
   return data;
 }
 
-export function collaborationGroups(terminals, machines, now = Date.now() / 1000) {
+// Herdr owns terminal titles (what the program set, e.g. a renamed Claude session).
+// They are display text only, like label names, and never a navigation target.
+function sessionTitle(terminal, titles, name) {
+  const raw = typeof terminal.title === "string" && terminal.title ? terminal.title : titles?.get(terminal.address);
+  const title = cleanText(raw);
+  return title && title !== name ? title : null;
+}
+
+export function collaborationGroups(terminals, machines, now = Date.now() / 1000, titles = new Map()) {
   const groups = new Map();
   for (const terminal of terminals) {
     if (!available(terminal, machines) || !terminal.labels || typeof terminal.labels !== "object") continue;
@@ -62,11 +70,16 @@ export function collaborationGroups(terminals, machines, now = Date.now() / 1000
       const key = `${groupKey}:${data.participant}:${terminal.address}`;
       const old = group.rows.get(key);
       if (old && old.issued_at > data.issued_at) continue;
+      const name = cleanText(data.name, data.participant);
+      const title = sessionTitle(terminal, titles, name);
       const status = ["working", "blocked", "error", "done", "idle"].includes(terminal.status) ? terminal.status : null;
       group.rows.set(key, {
         key, publication, participant: data.participant,
         address: terminal.address, created_ms: terminal.created_ms,
-        issued_at: data.issued_at, name: cleanText(data.name, data.participant),
+        issued_at: data.issued_at, name, title,
+        // Pair names default to the host name, which the machine column already says;
+        // an Orchestra nick is the member's identity, so it wins over the title.
+        display: kind === "pair" ? title || name : name,
         role: data.role, machine: cleanText(machineOf(terminal.address), "local"), status,
       });
     }
@@ -76,9 +89,15 @@ export function collaborationGroups(terminals, machines, now = Date.now() / 1000
     name: g.names.sort()[0] || g.id,
     rows: [...g.rows.values()].sort((a, b) =>
       (a.role === "conductor" ? -1 : 0) - (b.role === "conductor" ? -1 : 0)
-      || a.name.localeCompare(b.name) || a.address.localeCompare(b.address)
+      || a.display.localeCompare(b.display) || a.address.localeCompare(b.address)
       || a.participant.localeCompare(b.participant)),
   })).sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+}
+
+// A person's local name for a group wins, then a published group name, then the kind.
+export function groupLabel(group, names) {
+  const custom = names && typeof names === "object" ? cleanText(names[group.key], "", 60) : "";
+  return custom || (group.name !== group.id ? group.name : group.kind === "orchestra" ? "Orchestra" : "Pair");
 }
 
 export function navigationFor(row, terminals, panes, machines, now = Date.now() / 1000) {
