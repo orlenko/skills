@@ -179,7 +179,10 @@ class HerdrDisplayLifecycleTests(unittest.TestCase):
 
     def test_one_shot_processes_cannot_adopt_display(self) -> None:
         for args in ("claude -p task", "claude --print task", "claude --print=task", "codex exec task", "codex review",
-                     "agy -p task", "agy --prompt task", "agy --prompt=task"):
+                     "agy -p task", "agy --prompt task", "agy --prompt=task",
+                     "agy -print task", "agy -prompt task", "agy -p=task",
+                     "codex -i shot.png exec task", "node /x/bin/codex.js exec task",
+                     "aiq run agy -- --prompt task", "aiq run claude -- -i x -p task"):
             with self.subTest(args=args), \
                     mock.patch.object(client, "agent_ancestor_pid", return_value=101), \
                     mock.patch.object(core, "_ps_field", return_value=args):

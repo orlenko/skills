@@ -558,9 +558,10 @@ def _herdr_display_current(endpoint_id: str) -> dict[str, Any] | None:
 
 _ONE_SHOT_CLAUDE = frozenset({"-p", "--print"})
 _ONE_SHOT_CODEX = frozenset({"exec", "review"})
-_ONE_SHOT_AGY = frozenset({"-p", "--print", "--prompt"})
-# Everything after these is the interactive prompt: text, not this process's flags.
-_PROMPT_VALUE_FLAGS = frozenset({"-i", "--prompt-interactive"})
+# agy parses flags the Go way: one or two dashes, `=` values on either.
+_ONE_SHOT_AGY = frozenset({"p", "print", "prompt"})
+# For agy, everything after this is the interactive prompt: text, not flags.
+_AGY_PROMPT_VALUE_FLAGS = frozenset({"i", "prompt-interactive"})
 
 
 def _is_one_shot(args: str) -> bool:
@@ -574,14 +575,14 @@ def _is_one_shot(args: str) -> bool:
         return True
     names = [Path(word).name.lower().removesuffix(".js") for word in words[:2]]
     if any("codex" in name for name in names):
-        vocabulary = _ONE_SHOT_CODEX
+        kinds = ("codex",)
     elif any("claude" in name for name in names):
-        vocabulary = _ONE_SHOT_CLAUDE
+        kinds = ("claude",)
     elif "agy" in names:
-        vocabulary = _ONE_SHOT_AGY
+        kinds = ("agy",)
     else:
         # A wrapper (`aiq run claude -- -p …`) says nothing by its own name.
-        vocabulary = _ONE_SHOT_CLAUDE | _ONE_SHOT_CODEX | _ONE_SHOT_AGY
+        kinds = ("claude", "codex", "agy")
     depth = 0
     for word in words[1:]:
         if depth or word.startswith("{"):
@@ -590,10 +591,16 @@ def _is_one_shot(args: str) -> bool:
             depth = max(0, depth + word.count("{") - word.count("}"))
             continue
         flag = word.split("=", 1)[0]
-        if flag in _PROMPT_VALUE_FLAGS:
-            return False
-        if word in vocabulary or (word.startswith("--") and flag in vocabulary):
+        if "claude" in kinds and flag in _ONE_SHOT_CLAUDE:
             return True
+        if "codex" in kinds and word in _ONE_SHOT_CODEX:
+            return True
+        if "agy" in kinds and flag.startswith("-"):
+            name = flag[2:] if flag.startswith("--") else flag[1:]
+            if name in _ONE_SHOT_AGY:
+                return True
+            if kinds == ("agy",) and name in _AGY_PROMPT_VALUE_FLAGS:
+                return False
     return False
 
 
