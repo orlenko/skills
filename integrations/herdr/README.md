@@ -1,11 +1,18 @@
 # Orchestras & Pairs in Herdr
 
 This sidebar groups visible participating terminals by Orchestra or Pair across
-machines. Click a member to focus his pane; a terminal without a pane opens in
-Herdr's peek view. Machine badges stay beside names. Under each name the
-row shows the terminal's title, such as a renamed Claude session, when Herdr
-knows one and it differs from the name. A terminal can appear in
+machines. Each member is one line: name, role and machine (`local` for this
+computer). A Pair member is named by its terminal's title, such as a renamed
+Claude session, because a Pair's own name is the host name; an Orchestra member
+keeps its nick. Hover a row for the rest. Click a member to focus his pane; a
+terminal without a pane opens in Herdr's peek view. A terminal can appear in
 both kinds of group, or in several relationships of one kind.
+
+Groups read `Pair · 2` or `Orchestra · 5`. Hover a group heading and click the
+pen to give it a name; Enter saves, an empty name restores the default, and Esc
+or clicking away cancels. Names live in this Herdr app's shared state, not in
+the Pair or Orchestra. The chevron on the `Orchestras & Pairs` heading folds the
+whole section down to that heading.
 
 The panel is a navigation view of terminals already available to your Herdr app,
 not a roster. Missing rows can mean a machine disconnected or a publication lease
@@ -58,6 +65,15 @@ or clone the layout so new mods dock automatically:
 
 ```sh
 herdr-app do layout.clone '{"name":"main","as":"mine"}'
+```
+
+To put it in the left sidebar between Spaces and Agents, clone `main` as above,
+then add this block to the `sidebar-lists` column in `layouts/mine.json`, after
+the `spaces` block. A `min` of 41 lets the section fold to its heading.
+
+```json
+{ "id": "collaborations", "type": "block", "size": { "weight": 1 }, "min": 41,
+  "content": { "mod": "collaborations" } }
 ```
 
 Herdr's layout controls can move or hide the panel afterwards. The installer refuses to

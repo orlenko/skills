@@ -61,14 +61,15 @@ application configuration, monitor or terminal is modified during verification.
    and opaque group id. Display names are plain text. Use the app's returned
    machine-qualified terminal address for navigation; never interpolate a name
    into shell commands. No exec, fetch, hub client or credential access in the UI.
-9. Group headings say Orchestra or Pair with an available display name and short
-   id; member rows show name, role, machine and terminal activity. Duplicate names
+9. Group headings say Orchestra or Pair (or a published or locally chosen name)
+   with a member count; member rows are one line of name, role, machine and
+   terminal activity. A Pair row is named by Herdr's terminal title. Duplicate names
    remain separate. A terminal may appear in both relationship kinds. Sanitize display strings to bounded single-line text, removing control and bidi
    override characters. Ignore expired, malformed, oversized, far-future,
    unknown-version and incarnation-mismatched labels. Navigation never trusts a
    label-provided target; machine badges come from the Herdr terminal address.
 10. Groups are a navigation view of visible, connected terminals, not a complete
-   roster. The panel explains that a missing terminal is not proof a member left.
+   roster. The section heading's tooltip explains that a missing terminal is not proof a member left.
    Re-resolve address and incarnation at click time; focus an existing pane,
    otherwise use `terminal.peek`. Do not infer a complete roster from visible rows.
 11. Use theme colors and normal Herdr focus/keyboard behavior. Update from native

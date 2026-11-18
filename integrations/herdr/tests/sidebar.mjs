@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 const sourceURL = new URL("../collaborations/", import.meta.url);
 const dataURL = (source) => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const modelURL = dataURL(readFileSync(new URL("model.js", sourceURL), "utf8"));
-const { cleanText, collaborationGroups, navigationFor } = await import(modelURL);
+const { cleanText, collaborationGroups, groupLabel, navigationFor } = await import(modelURL);
 const NOW = 1800000000;
 const machines = [{ name: null, layout: "ready" }, { name: "v", layout: "ready" }, { name: "ubuntu", layout: "ready" }];
 const publication = (kind, token = "b".repeat(32)) => `orlenko.${kind}.${"a".repeat(16)}.${token}`;
@@ -57,6 +57,21 @@ assert.equal(titled([terminal("v/t2", { title: 7 })]), null);
 assert.equal(titled([terminal("v/t2", { title: "a\nb\u202ec" + "x".repeat(200) })]).length, 80);
 assert.equal(titled([terminal("v/t2", { title: "a\nb\u202ec" })]), "a b c");
 
+// Pair names default to the host name, so a Pair row shows the session title; an
+// Orchestra row keeps the member's nick.
+const pairRow = (overrides) => collaborationGroups([terminal("v/t2", overrides, { [publication("pair")]: JSON.stringify(body({ group: "pair_one", role: "host", name: "Vs-Mac-Mini.local" })) })], machines, NOW)[0].rows[0];
+assert.equal(pairRow({ title: "skills-v" }).display, "skills-v");
+assert.equal(pairRow({}).display, "Vs-Mac-Mini.local");
+assert.equal(collaborationGroups([terminal("v/t2", { title: "skills-v" })], machines, NOW)[0].rows[0].display, "Reviewer");
+
+const named = { key: "pair:pair_one", kind: "pair", id: "pair_one", name: "pair_one" };
+assert.equal(groupLabel(named, {}), "Pair");
+assert.equal(groupLabel({ ...named, kind: "orchestra", key: "orchestra:pair_one" }, undefined), "Orchestra");
+assert.equal(groupLabel({ ...named, name: "Skills" }, {}), "Skills", "a published group name beats the kind");
+assert.equal(groupLabel({ ...named, name: "Skills" }, { "pair:pair_one": "Herdr\nwork\u202e" }), "Herdr work", "a local name wins, sanitized");
+assert.equal(groupLabel(named, { "pair:pair_one": 5 }), "Pair");
+assert.equal(groupLabel(named, { "pair:pair_one": "x".repeat(100) }).length, 60);
+
 const invalidBodies = [
   "{", "null", "[]", "x".repeat(2049), JSON.stringify(body({ v: 2 })),
   JSON.stringify(body({ v: true })), JSON.stringify(body({ group: "../escape" })),
@@ -98,7 +113,7 @@ assert.deepEqual(navigationFor(spoofRow, [spoofed], [], machines, NOW), { comman
 
 // Load the actual main.js with small native-module doubles, rather than inventing
 // a parallel UI implementation. The mock records the description and callbacks.
-globalThis.__sidebar = { all: [live], panes: [{ terminal: "v/t2", pane: "v/p2", title: "pane title" }], agents: [{ address: "v/t2", title: "skills-v" }], machines, calls: [], timers: [], now: NOW };
+globalThis.__sidebar = { shared: {}, layout: { id: "root", type: "column", children: [{ id: "sidebar", type: "column", size: { px: 268 }, children: [{ id: "collab", type: "block", size: { weight: 2 }, content: { mod: "collaborations" } }] }] }, all: [live], panes: [{ terminal: "v/t2", pane: "v/p2", title: "pane title" }], agents: [{ address: "v/t2", title: "skills-v" }], machines, calls: [], timers: [], now: NOW };
 const uiURL = dataURL(`
 export class View {}
 export function div() {
@@ -106,6 +121,7 @@ export function div() {
   const proxy = new Proxy(node, { get(t, key) {
     if (key in t) return t[key];
     return (...args) => {
+      if (key === "when") return args[0] ? args[1](proxy) : proxy;
       if (key === "child") t.nodes.push(args[0]);
       else if (key === "children") t.nodes.push(...args[0]);
       else if (key === "on_click") t.click = args[0];
@@ -115,14 +131,24 @@ export function div() {
   }});
   return proxy;
 }
+export const svg = (path) => div().child(\`svg:\${path}\`);
 `);
-const flexURL = dataURL(`import { div } from ${JSON.stringify(uiURL)}; export const v_flex = div; export const h_flex = div;`);
+const flexURL = dataURL(`import { div } from ${JSON.stringify(uiURL)}; export const v_flex = div; export const h_flex = div;
+export class InputState {
+  static new({ value }) { const s = new InputState(); s.text = value; s.handlers = {}; globalThis.__sidebar.input = s; return s; }
+  set_selected_range() {} focus() {} value() { return this.text; }
+  on(name, handler) { this.handlers[name] = handler; }
+}
+export const Input = { new: () => div().child("input") };`);
 const herdrURL = dataURL(`
 export const terminals = () => globalThis.__sidebar.all;
 export const panes = () => globalThis.__sidebar.panes;
 export const agents = () => globalThis.__sidebar.agents;
 export const machines = () => globalThis.__sidebar.machines;
 export const run = (command,args) => globalThis.__sidebar.calls.push({command,args});
+export const shared = (key) => globalThis.__sidebar.shared[key];
+export const setShared = (key, value) => { globalThis.__sidebar.shared[key] = value; };
+export const layout = () => globalThis.__sidebar.layout;
 export const theme = () => ({ foreground:"#fff",dim:"#888",hover:"#222",working:"#0f0" });
 `);
 let main = readFileSync(new URL("main.js", sourceURL), "utf8");
@@ -145,11 +171,15 @@ const texts = (node) => typeof node === "string" ? [node] : node && Array.isArra
 let tree = view.render();
 assert.ok(texts(tree).includes("Orchestras & Pairs"));
 assert.ok(texts(tree).includes("Reviewer"));
+assert.ok(texts(tree).includes("player"));
 assert.ok(texts(tree).includes("v"));
-assert.ok(texts(tree).includes("Working"));
-assert.ok(texts(tree).includes("skills-v"), "agents() title wins over the pane title");
-assert.ok(!texts(tree).includes("pane title"));
-walk(tree).find((n) => n.props.id?.[0] === `member-${row.key}`).click();
+assert.ok(texts(tree).includes("Skills · 1"));
+assert.ok(texts(tree).includes("svg:mods/workspace-chrome/spinner.svg"), "working shows Herdr's spinner");
+assert.ok(!texts(tree).includes("v/t2"), "terminal addresses stay out of the row");
+const memberNode = (t) => walk(t).find((n) => n.props.id?.[0] === `member-${row.key}`);
+assert.match(memberNode(tree).props.tooltip[0], /skills-v/, "agents() title wins over the pane title");
+assert.doesNotMatch(memberNode(tree).props.tooltip[0], /pane title/);
+memberNode(tree).click();
 assert.deepEqual(state.calls.pop(), { command: "pane.focus", args: { pane: "v/p2" } });
 state.panes = [];
 view.activate(row);
@@ -157,7 +187,7 @@ assert.deepEqual(state.calls.pop(), { command: "terminal.peek", args: { terminal
 state.all = [];
 view.activate(row);
 assert.equal(state.calls.length, 0);
-assert.ok(texts(view.render()).includes("No published collaborations"));
+assert.ok(texts(view.render()).some((s) => s.startsWith("No published collaborations")));
 state.all = [live];
 tree = view.render();
 walk(tree).find((n) => n.props.id?.[0] === "toggle-orchestra:orch_one").click(null, cx);
@@ -165,6 +195,43 @@ assert.equal(notifications, 1);
 assert.ok(!texts(view.render()).includes("Reviewer"));
 state.timers[0].callback(cx);
 assert.equal(notifications, 2);
+walk(view.render()).find((n) => n.props.id?.[0] === "toggle-orchestra:orch_one").click(null, cx);
+
+// Naming a group: Enter saves a sanitized local name, empty resets, leaving the field cancels.
+const group = collaborationGroups([live], machines, NOW)[0];
+view.startRename(group, "Skills", cx);
+assert.ok(walk(view.render()).some((n) => n.props.id?.[0] === "rename-orchestra:orch_one"));
+state.input.handlers.submit(null, cx);
+assert.deepEqual(state.shared["collaborations.names"], { "orchestra:orch_one": "Skills" });
+view.startRename(group, "Skills", cx);
+state.input.text = "Night\nshift";
+state.input.handlers.submit(null, cx);
+assert.ok(texts(view.render()).includes("Night shift · 1"));
+view.startRename(group, "Night shift", cx);
+state.input.text = "discarded";
+state.input.handlers.blur(null, cx);
+assert.equal(state.shared["collaborations.names"]["orchestra:orch_one"], "Night shift");
+view.startRename(group, "Night shift", cx);
+state.input.text = "  ";
+state.input.handlers.submit(null, cx);
+assert.deepEqual(state.shared["collaborations.names"], {});
+
+// Folding the section shrinks this mod's own layout block to its header, then restores it.
+const header = () => walk(view.render()).find((n) => n.props.id?.[0] === "collaborations-header");
+header().click();
+assert.equal(state.shared["collaborations.folded"], true);
+assert.deepEqual(state.calls.pop(), { command: "layout.resize", args: { id: "collab", px: 41 } });
+assert.ok(!texts(view.render()).includes("Reviewer"));
+header().click();
+assert.equal(state.shared["collaborations.folded"], false);
+assert.deepEqual(state.calls.pop(), { command: "layout.resize", args: { id: "collab", weight: 2 } });
+assert.ok(texts(view.render()).includes("Reviewer"));
+state.layout = { id: "root", type: "column", children: [] };
+header().click();
+assert.equal(state.calls.length, 0, "a pane or tab copy folds without resizing anything");
+header().click();
+state.layout.children.push({ id: "sidebar", size: { px: 76 } });
+assert.equal(walk(view.render()).length, 1, "the rail is too narrow for rows");
 Date.now = oldNow;
 delete globalThis.__sidebar;
 console.log(`Herdr sidebar model, navigation and rendering passed (${fileURLToPath(sourceURL)})`);
