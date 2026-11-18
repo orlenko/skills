@@ -556,20 +556,54 @@ def _herdr_display_current(endpoint_id: str) -> dict[str, Any] | None:
     }
 
 
+_ONE_SHOT_CLAUDE = frozenset({"-p", "--print"})
+_ONE_SHOT_CODEX = frozenset({"exec", "review"})
+_ONE_SHOT_AGY = frozenset({"-p", "--print", "--prompt"})
+# Everything after these is the interactive prompt: text, not this process's flags.
+_PROMPT_VALUE_FLAGS = frozenset({"-i", "--prompt-interactive"})
+
+
+def _is_one_shot(args: str) -> bool:
+    """True when this agent command line runs one task and exits.
+
+    `ps` drops argv quoting, so the words are split on whitespace, never parsed
+    as shell: an apostrophe in a handed-over prompt must not refuse ownership.
+    """
+    words = args.split()
+    if not words:
+        return True
+    names = [Path(word).name.lower().removesuffix(".js") for word in words[:2]]
+    if any("codex" in name for name in names):
+        vocabulary = _ONE_SHOT_CODEX
+    elif any("claude" in name for name in names):
+        vocabulary = _ONE_SHOT_CLAUDE
+    elif "agy" in names:
+        vocabulary = _ONE_SHOT_AGY
+    else:
+        # A wrapper (`aiq run claude -- -p …`) says nothing by its own name.
+        vocabulary = _ONE_SHOT_CLAUDE | _ONE_SHOT_CODEX | _ONE_SHOT_AGY
+    depth = 0
+    for word in words[1:]:
+        if depth or word.startswith("{"):
+            # An inline settings blob (`claude --settings {...}`) is data; its hook
+            # commands carry flags that are not this process's. Skip to its end.
+            depth = max(0, depth + word.count("{") - word.count("}"))
+            continue
+        flag = word.split("=", 1)[0]
+        if flag in _PROMPT_VALUE_FLAGS:
+            return False
+        if word in vocabulary or (word.startswith("--") and flag in vocabulary):
+            return True
+    return False
+
+
 def _herdr_display_owner() -> int | None:
     owner = agent_ancestor_pid()
     if owner is None:
         return None
     # One-shot children must not adopt their parent's display publication.
     args = core._ps_field("args=", owner)
-    if not args:
-        return None
-    try:
-        words = shlex.split(args)
-    except ValueError:
-        return None
-    if any(word in {"-p", "--print", "--prompt", "exec", "review"}
-           or word.startswith(("--print=", "--prompt=")) for word in words):
+    if not args or _is_one_shot(args):
         return None
     return owner
 

@@ -185,6 +185,26 @@ class HerdrDisplayLifecycleTests(unittest.TestCase):
                     mock.patch.object(core, "_ps_field", return_value=args):
                 self.assertIsNone(client._herdr_display_owner())
 
+    def test_interactive_sessions_with_prompt_text_own_display(self) -> None:
+        settings = '{"hooks":{"Stop":[{"hooks":[{"command":"aiq hook -p x"}]}]}}'
+        for args in (
+            "agy --dangerously-skip-permissions --model m --prompt-interactive aiq is "
+            "handing the previous session's work -p review exec over",
+            "agy -i review the PR",
+            f"claude --settings {settings} --model opus carry on with the session's review",
+            "codex --model m 'fix it'",
+        ):
+            with self.subTest(args=args), \
+                    mock.patch.object(client, "agent_ancestor_pid", return_value=101), \
+                    mock.patch.object(core, "_ps_field", return_value=args):
+                self.assertEqual(client._herdr_display_owner(), 101)
+
+    def test_one_shot_flags_after_settings_blob_are_still_seen(self) -> None:
+        args = 'claude --settings {"hooks":{"x":"y"}} -p task'
+        with mock.patch.object(client, "agent_ancestor_pid", return_value=101), \
+                mock.patch.object(core, "_ps_field", return_value=args):
+            self.assertIsNone(client._herdr_display_owner())
+
     def test_interactive_agy_session_owns_display(self) -> None:
         self.assertTrue(core._is_agent_command("/Users/me/.local/bin/agy"))
         with mock.patch.object(client, "agent_ancestor_pid", return_value=101), \
