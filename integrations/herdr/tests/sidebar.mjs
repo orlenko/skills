@@ -46,6 +46,17 @@ const cleaned = groups([terminal("t1", {}, { [publication("orchestra")]: JSON.st
 assert.equal(cleaned[0].name, "My Orchestra");
 assert.equal(cleaned[0].rows[0].name, "Reviewer vps: boss");
 
+const titled = (items, titles) => collaborationGroups(items, machines, NOW, titles)[0].rows[0].title;
+assert.equal(titled([terminal("v/t2", { title: "skills-v" })]), "skills-v", "terminal record title");
+assert.equal(titled([terminal("v/t2")], new Map([["v/t2", "skills-v"]])), "skills-v", "pane/agent title fallback");
+assert.equal(titled([terminal("v/t2", { title: "own" })], new Map([["v/t2", "other"]])), "own");
+assert.equal(titled([terminal("v/t2")], new Map([["ubuntu/t2", "elsewhere"]])), null, "titles match by exact address");
+assert.equal(titled([terminal("v/t2", { title: "Reviewer" })]), null, "a title equal to the name is not repeated");
+assert.equal(titled([terminal("v/t2", { title: "  \n\u202e " })]), null);
+assert.equal(titled([terminal("v/t2", { title: 7 })]), null);
+assert.equal(titled([terminal("v/t2", { title: "a\nb\u202ec" + "x".repeat(200) })]).length, 80);
+assert.equal(titled([terminal("v/t2", { title: "a\nb\u202ec" })]), "a b c");
+
 const invalidBodies = [
   "{", "null", "[]", "x".repeat(2049), JSON.stringify(body({ v: 2 })),
   JSON.stringify(body({ v: true })), JSON.stringify(body({ group: "../escape" })),
@@ -87,7 +98,7 @@ assert.deepEqual(navigationFor(spoofRow, [spoofed], [], machines, NOW), { comman
 
 // Load the actual main.js with small native-module doubles, rather than inventing
 // a parallel UI implementation. The mock records the description and callbacks.
-globalThis.__sidebar = { all: [live], panes: [{ terminal: "v/t2", pane: "v/p2" }], machines, calls: [], timers: [], now: NOW };
+globalThis.__sidebar = { all: [live], panes: [{ terminal: "v/t2", pane: "v/p2", title: "pane title" }], agents: [{ address: "v/t2", title: "skills-v" }], machines, calls: [], timers: [], now: NOW };
 const uiURL = dataURL(`
 export class View {}
 export function div() {
@@ -109,6 +120,7 @@ const flexURL = dataURL(`import { div } from ${JSON.stringify(uiURL)}; export co
 const herdrURL = dataURL(`
 export const terminals = () => globalThis.__sidebar.all;
 export const panes = () => globalThis.__sidebar.panes;
+export const agents = () => globalThis.__sidebar.agents;
 export const machines = () => globalThis.__sidebar.machines;
 export const run = (command,args) => globalThis.__sidebar.calls.push({command,args});
 export const theme = () => ({ foreground:"#fff",dim:"#888",hover:"#222",working:"#0f0" });
@@ -135,6 +147,8 @@ assert.ok(texts(tree).includes("Orchestras & Pairs"));
 assert.ok(texts(tree).includes("Reviewer"));
 assert.ok(texts(tree).includes("v"));
 assert.ok(texts(tree).includes("Working"));
+assert.ok(texts(tree).includes("skills-v"), "agents() title wins over the pane title");
+assert.ok(!texts(tree).includes("pane title"));
 walk(tree).find((n) => n.props.id?.[0] === `member-${row.key}`).click();
 assert.deepEqual(state.calls.pop(), { command: "pane.focus", args: { pane: "v/p2" } });
 state.panes = [];

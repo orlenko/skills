@@ -2,7 +2,9 @@
 
 This sidebar groups visible participating terminals by Orchestra or Pair across
 machines. Click a member to focus his pane; a terminal without a pane opens in
-Herdr's peek view. Machine badges stay beside names. A terminal can appear in
+Herdr's peek view. Machine badges stay beside names. Under each name the
+row shows the terminal's title, such as a renamed Claude session, when Herdr
+knows one and it differs from the name. A terminal can appear in
 both kinds of group, or in several relationships of one kind.
 
 The panel is a navigation view of terminals already available to your Herdr app,

@@ -44,7 +44,15 @@ function claim(kind, value, terminal, now) {
   return data;
 }
 
-export function collaborationGroups(terminals, machines, now = Date.now() / 1000) {
+// Herdr owns terminal titles (what the program set, e.g. a renamed Claude session).
+// They are display text only, like label names, and never a navigation target.
+function sessionTitle(terminal, titles, name) {
+  const raw = typeof terminal.title === "string" && terminal.title ? terminal.title : titles?.get(terminal.address);
+  const title = cleanText(raw);
+  return title && title !== name ? title : null;
+}
+
+export function collaborationGroups(terminals, machines, now = Date.now() / 1000, titles = new Map()) {
   const groups = new Map();
   for (const terminal of terminals) {
     if (!available(terminal, machines) || !terminal.labels || typeof terminal.labels !== "object") continue;
@@ -62,11 +70,12 @@ export function collaborationGroups(terminals, machines, now = Date.now() / 1000
       const key = `${groupKey}:${data.participant}:${terminal.address}`;
       const old = group.rows.get(key);
       if (old && old.issued_at > data.issued_at) continue;
+      const name = cleanText(data.name, data.participant);
       const status = ["working", "blocked", "error", "done", "idle"].includes(terminal.status) ? terminal.status : null;
       group.rows.set(key, {
         key, publication, participant: data.participant,
         address: terminal.address, created_ms: terminal.created_ms,
-        issued_at: data.issued_at, name: cleanText(data.name, data.participant),
+        issued_at: data.issued_at, name, title: sessionTitle(terminal, titles, name),
         role: data.role, machine: cleanText(machineOf(terminal.address), "local"), status,
       });
     }

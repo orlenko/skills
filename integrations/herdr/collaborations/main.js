@@ -1,7 +1,19 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { terminals, panes, machines, run, theme } from "herdr";
+import { terminals, panes, agents, machines, run, theme } from "herdr";
 import { collaborationGroups, navigationFor } from "./model.js";
+
+// Titles by terminal address, for when terminals() records omit them.
+function titleMap() {
+  const titles = new Map();
+  for (const item of [...agents(), ...panes()]) {
+    const address = item?.address ?? item?.terminal;
+    if (typeof address === "string" && typeof item.title === "string" && item.title && !titles.has(address)) {
+      titles.set(address, item.title);
+    }
+  }
+  return titles;
+}
 
 const ACTIVITY = { working: "Working", blocked: "Needs you", error: "Error", done: "Done", idle: "Idle" };
 
@@ -24,6 +36,7 @@ export default class Collaborations extends View {
       .child(h_flex().gap(6).items_center()
         .child(div().flex_1().min_w(0).truncate().text_color(colors.foreground).child(row.name))
         .child(div().text_size(10).text_color(colors[row.status] ?? colors.dim).child(ACTIVITY[row.status] ?? "No activity")))
+      .children(row.title ? [div().truncate().text_size(11).text_color(colors.foreground).opacity(0.8).child(row.title)] : [])
       .child(h_flex().gap(6).items_center().text_size(10.5).text_color(colors.dim)
         .child(div().child(row.role))
         .child(div().child("·"))
@@ -52,7 +65,7 @@ export default class Collaborations extends View {
 
   render() {
     const colors = theme();
-    const groups = collaborationGroups(terminals(), machines());
+    const groups = collaborationGroups(terminals(), machines(), Date.now() / 1000, titleMap());
     return v_flex().id("collaborations-root").size_full().min_h(0).text_size(12).text_color(colors.foreground)
       .child(v_flex().px(12).pt(12).pb(8).gap(4)
         .child(div().font_semibold().child("Orchestras & Pairs"))
