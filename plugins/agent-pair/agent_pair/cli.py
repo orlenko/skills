@@ -13,6 +13,7 @@ from .client import (
     DEFAULT_TTL_SECONDS,
     accept_pair,
     close_pair,
+    configure_herdr_display,
     create_pair,
     finish_messages,
     hook_context,
@@ -88,6 +89,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     close = commands.add_parser("close", help="Close the pair for both peers")
     _common(close)
+
+    display = commands.add_parser("herdr-display", help="Enable or disable this endpoint's Herdr labels")
+    _common(display)
+    display.add_argument("action", choices=("enable", "disable"))
 
     monitor = commands.add_parser("monitor", help="Ensure the inbox monitor is running")
     _common(monitor)
@@ -214,7 +219,13 @@ def run(args: argparse.Namespace) -> int:
         _print(result, args.as_json)
         return 0
 
+    if args.command == "herdr-display" and not args.endpoint_id:
+        raise AgentPairError("herdr-display requires an explicit --endpoint-id")
     endpoint = _endpoint(args)
+    if args.command == "herdr-display":
+        result = configure_herdr_display(endpoint, enabled=args.action == "enable")
+        _print(result, args.as_json)
+        return 0 if result["ok"] else 1
     if args.command == "send":
         text = sys.stdin.read() if args.stdin else " ".join(args.text)
         result = send_message(endpoint, text)

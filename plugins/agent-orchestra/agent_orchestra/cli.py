@@ -74,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="command",
         required=True,
         metavar="{hub,join,invite,send,inbox,show,wait,finish,status,members,tasks,"
-        "events,message,conductor,kick,nick,leave,close,monitor,podium}",
+        "events,message,conductor,kick,nick,leave,close,monitor,podium,herdr-display}",
     )
 
     hub = commands.add_parser("hub", help="Run and administer the hub on the always-on machine")
@@ -224,6 +224,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = commands.add_parser("status", help="Show membership, hub, monitor, and inbox state")
     _common(status)
+
+    display = commands.add_parser("herdr-display", help="Opt this terminal into the Herdr collaboration sidebar")
+    _common(display)
+    display.add_argument("action", choices=("enable", "disable"))
 
     members = commands.add_parser("members", help="List every member and its presence")
     _common(members)
@@ -813,6 +817,10 @@ def run(args: argparse.Namespace) -> int:
     member = member_api.select_member(
         provider=args.provider, cwd=args.cwd, member_id=args.member_id
     )
+
+    if args.command == "herdr-display":
+        _print(member_api.set_herdr_display(member, args.action == "enable"), args.as_json)
+        return 0
 
     if args.command == "invite":
         _print(

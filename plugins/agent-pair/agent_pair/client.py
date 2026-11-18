@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import codex_wake, monitor_lock
+from . import codex_wake, core, herdr_display, monitor_lock
 from .core import (
     APIError,
     MAX_MESSAGE_BYTES,
@@ -290,6 +290,7 @@ def create_pair(
         "server_pid": server_pid,
     }
     atomic_write_json(endpoint_path(endpoint_id), endpoint)
+    _bind_herdr_display(endpoint)
     if provider == "codex":
         codex_wake.register(endpoint_id, prefix="AGENT_PAIR")
     invite = encode_invite(
@@ -358,6 +359,7 @@ def accept_pair(
         "closed_at": None,
     }
     atomic_write_json(endpoint_path(endpoint_id), endpoint)
+    _bind_herdr_display(endpoint)
     if provider == "codex":
         codex_wake.register(endpoint_id, prefix="AGENT_PAIR")
     monitor_pid = start_monitor(endpoint) if start_background_monitor else None
@@ -533,6 +535,156 @@ def _endpoint_ended(endpoint: dict[str, Any]) -> bool:
         return True
 
 
+def _herdr_display_path(endpoint_id: str) -> Path:
+    # A returned id never becomes a new path component in display state.
+    suffix = hashlib.sha256(endpoint_id.encode("utf-8")).hexdigest()[:32]
+    return runtime_dir() / f"pair-display-{suffix}.json"
+
+
+def _herdr_display_current(endpoint_id: str) -> dict[str, Any] | None:
+    endpoint = load_endpoint(endpoint_id)
+    if _endpoint_ended(endpoint):
+        return None
+    if not isinstance(endpoint.get("pair_id"), str) or not isinstance(endpoint.get("peer_id"), str):
+        return None
+    return {
+        "group": endpoint["pair_id"],
+        "participant": endpoint["peer_id"],
+        "name": endpoint.get("name") or endpoint["peer_id"],
+        "group_name": "",
+        "role": endpoint.get("role") or "",
+    }
+
+
+_ONE_SHOT_CLAUDE = frozenset({"-p", "--print"})
+_ONE_SHOT_CODEX = frozenset({"exec", "review"})
+# agy parses flags the Go way: one or two dashes, `=` values on either.
+_ONE_SHOT_AGY = frozenset({"p", "print", "prompt"})
+# For agy, everything after this is the interactive prompt: text, not flags.
+_AGY_PROMPT_VALUE_FLAGS = frozenset({"i", "prompt-interactive"})
+
+
+def _is_one_shot(args: str) -> bool:
+    """True when this agent command line runs one task and exits.
+
+    `ps` drops argv quoting, so the words are split on whitespace, never parsed
+    as shell: an apostrophe in a handed-over prompt must not refuse ownership.
+    """
+    words = args.split()
+    if not words:
+        return True
+    names = [Path(word).name.lower().removesuffix(".js") for word in words[:2]]
+    if names[0] in {"agy", "claude", "codex"}:
+        # The program's own name decides; a later `--model=claude-…` is a value.
+        kinds = (names[0],)
+    elif any("codex" in name for name in names):
+        kinds = ("codex",)
+    elif any("claude" in name for name in names):
+        kinds = ("claude",)
+    elif "agy" in names:
+        kinds = ("agy",)
+    else:
+        # A wrapper (`aiq run claude -- -p …`) says nothing by its own name.
+        kinds = ("claude", "codex", "agy")
+    depth = 0
+    for word in words[1:]:
+        if depth or word.startswith("{"):
+            # An inline settings blob (`claude --settings {...}`) is data; its hook
+            # commands carry flags that are not this process's. Skip to its end.
+            depth = max(0, depth + word.count("{") - word.count("}"))
+            continue
+        flag = word.split("=", 1)[0]
+        if "claude" in kinds and flag in _ONE_SHOT_CLAUDE:
+            return True
+        if "codex" in kinds and word in _ONE_SHOT_CODEX:
+            return True
+        if "agy" in kinds and flag.startswith("-"):
+            name = flag[2:] if flag.startswith("--") else flag[1:]
+            if name in _ONE_SHOT_AGY:
+                return True
+            if kinds == ("agy",) and name in _AGY_PROMPT_VALUE_FLAGS:
+                return False
+    return False
+
+
+def _herdr_display_owner() -> int | None:
+    owner = agent_ancestor_pid()
+    if owner is None:
+        return None
+    # One-shot children must not adopt their parent's display publication.
+    args = core._ps_field("args=", owner)
+    if not args or _is_one_shot(args):
+        return None
+    return owner
+
+
+def _bind_herdr_display(
+    endpoint: dict[str, Any], *, enabled: bool | None = None, enrolled_only: bool = False,
+) -> bool:
+    """Enroll only an explicit endpoint action or its already enrolled owner."""
+    try:
+        endpoint_id = str(endpoint["endpoint_id"])
+        path = _herdr_display_path(endpoint_id)
+        if enrolled_only and not path.is_file():
+            return False
+        if (enabled is None and os.environ.get("ORLENKO_HERDR_DISPLAY") not in {"0", "1"}
+                and not path.is_file()):
+            return False
+        owner = _herdr_display_owner()
+        if owner is None:
+            return False
+        for _, binding in binding_records():
+            if str(binding.get("endpoint_id") or "") != endpoint_id:
+                continue
+            recorded = _as_pid(binding.get("owner_pid"))
+            if recorded is not None and recorded != owner and _pid_alive(recorded):
+                return False
+        bound = herdr_display.bind(
+            path, kind="pair", participant=str(endpoint["peer_id"]), owner=owner,
+            enabled=enabled, current=lambda: _herdr_display_current(endpoint_id) is not None,
+        )
+        if bound:
+            herdr_display.refresh(path, lambda: _herdr_display_current(endpoint_id))
+        return bound
+    except Exception:
+        # Optional display metadata cannot break a mailbox, hook or close.
+        return False
+
+
+def _refresh_herdr_display(endpoint_id: str) -> None:
+    try:
+        herdr_display.refresh(
+            _herdr_display_path(endpoint_id), lambda: _herdr_display_current(endpoint_id),
+        )
+    except Exception:
+        pass
+
+
+def _retire_herdr_display(endpoint_id: str) -> None:
+    try:
+        herdr_display.invalidate(_herdr_display_path(endpoint_id), disable=True)
+    except Exception:
+        pass
+
+
+def configure_herdr_display(endpoint: dict[str, Any], *, enabled: bool) -> dict[str, Any]:
+    result = _bind_herdr_display(endpoint, enabled=enabled)
+    if result and enabled:
+        # Only a concrete process that the display binder just verified may
+        # mark a prior hook binding as eligible for later account rollover.
+        owner = _herdr_display_owner()
+        for path, binding in binding_records():
+            if (binding.get("endpoint_id") == endpoint["endpoint_id"]
+                    and binding.get("owner_pid") == owner):
+                binding.update(version=2, herdr_display=True)
+                atomic_write_json(path, binding)
+    return {
+        "ok": result,
+        "enabled": enabled if result else False,
+        **({} if result else {"reason": "Herdr display is unavailable or ownership was refused"}),
+    }
+
+
 def start_monitor(endpoint: dict[str, Any]) -> int:
     endpoint_id = str(endpoint["endpoint_id"])
     if _endpoint_ended(endpoint):
@@ -703,6 +855,7 @@ def _monitor_loop(endpoint_id: str) -> None:
     )
     delay = 0.25
     while float(endpoint.get("expires_at", 0)) > now() and not endpoint.get("closed_at"):
+        _refresh_herdr_display(endpoint_id)
         try:
             _wake_codex(endpoint)
             flush_handled(endpoint)
@@ -740,6 +893,12 @@ def _monitor_loop(endpoint_id: str) -> None:
             )
         except APIError as exc:
             if exc.status == 410:
+                # A later owning hook must not re-advertise a pair the server
+                # has already ended, even while its original TTL is unspent.
+                fresh = load_endpoint(endpoint_id)
+                fresh["closed_at"] = fresh.get("closed_at") or now()
+                atomic_write_json(endpoint_path(endpoint_id), fresh)
+                _retire_herdr_display(endpoint_id)
                 return
             _record_monitor_error(state_path, exc)
             time.sleep(delay)
@@ -753,6 +912,7 @@ def _monitor_loop(endpoint_id: str) -> None:
             time.sleep(delay)
             delay = min(delay * 2, 15)
         endpoint = load_endpoint(endpoint_id)
+    _retire_herdr_display(endpoint_id)
 
 
 def _record_monitor_error(path: Path, error: Exception) -> None:
@@ -1026,6 +1186,7 @@ def close_pair(endpoint: dict[str, Any]) -> dict[str, Any]:
     closed_at = (remote or {}).get("closed_at") or now()
     endpoint["closed_at"] = closed_at
     atomic_write_json(endpoint_path(str(endpoint["endpoint_id"])), endpoint)
+    _retire_herdr_display(str(endpoint["endpoint_id"]))
     result: dict[str, Any] = {
         "ok": True,
         "closed_at": closed_at,
@@ -1113,17 +1274,25 @@ def _bound_endpoint_ids() -> set[str]:
 
 def _write_binding(
     path: Path, endpoint: dict[str, Any], provider: str, cwd: str, session_id: str,
-    owner: int | None,
+    owner: int | None, *, display_authorized: bool = False,
 ) -> None:
+    try:
+        display_authorized = display_authorized or herdr_display.owned_by(
+            _herdr_display_path(str(endpoint["endpoint_id"])), owner,
+        )
+    except Exception:
+        pass
     atomic_write_json(
         path,
         {
+            "version": 2,
             "endpoint_id": endpoint["endpoint_id"],
             "provider": normalize_provider(provider),
             "cwd": str(Path(cwd).resolve()),
             "session_id": session_id,
             "owner_pid": owner,
             "bound_at": now(),
+            "herdr_display": display_authorized,
         },
     )
 
@@ -1144,7 +1313,10 @@ def _keep_binding(
         return
     owner = agent_ancestor_pid()
     if owner != recorded or _binding_age(binding) > _BINDING_REFRESH_SECONDS:
-        _write_binding(path, endpoint, provider, cwd, session_id, owner)
+        _write_binding(
+            path, endpoint, provider, cwd, session_id, owner,
+            display_authorized=(binding.get("version") == 2 and binding.get("herdr_display") is True),
+        )
 
 
 def _bound_hook_endpoint(provider: str, cwd: str, session_id: str) -> dict[str, Any]:
@@ -1158,6 +1330,11 @@ def _bound_hook_endpoint(provider: str, cwd: str, session_id: str) -> dict[str, 
             endpoint.get("instance_key") == instance_key(provider, cwd)
             and not _endpoint_ended(endpoint)
         ):
+            # A cwd-only selection is never enough to advertise a terminal.
+            # Version-1 bindings keep their existing mailbox behavior but need
+            # an explicit display enable action to gain this provenance.
+            if binding.get("version") == 2 and binding.get("herdr_display") is True:
+                _bind_herdr_display(endpoint, enrolled_only=True)
             _keep_binding(path, binding, endpoint, provider, cwd, session_id)
             return endpoint
     except (AgentPairError, KeyError):

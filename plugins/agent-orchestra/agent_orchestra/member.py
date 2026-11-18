@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from . import __version__, codex_wake, core, jev, jev_shadow, keys, monitor_lock, terminal_control
+from . import __version__, codex_wake, core, herdr_display, jev, jev_shadow, keys, monitor_lock, terminal_control
 from .core import (
     APIError,
     MAX_MESSAGE_BYTES,
@@ -235,6 +235,7 @@ def join(
         if thread_id:
             member["session_id"] = thread_id
             save_member(member)
+    _bind_display(member)
     monitor_pid = start_monitor(member) if start_background_monitor else None
     return {
         "member_id": member_id,
@@ -275,7 +276,62 @@ def _bound_to_another_session(member_id: str, pid: int) -> bool:
     return False
 
 
+def _display_path(member_id: str) -> Path:
+    return runtime_dir() / f"{member_id}.herdr-display.json"
+
+
+def _display_metadata(member_id: str) -> dict[str, Any] | None:
+    member = load_member(member_id)
+    if member.get("closed_at"):
+        return None
+    return {"group": member["orchestra_id"], "participant": member_id,
+            "name": member.get("name"), "group_name": member.get("hub_name"),
+            "role": member.get("role"), "_owner_pid": member.get("owner_pid")}
+
+
+def _refresh_display(member_id: str) -> None:
+    try:
+        herdr_display.refresh(_display_path(member_id), lambda: _display_metadata(member_id))
+    except (OrchestraError, OSError):
+        pass
+
+
+def _bind_display(member: dict[str, Any], *, enabled: bool | None = None) -> bool:
+    member_id = str(member["member_id"])
+    path = _display_path(member_id)
+    if enabled is None and os.environ.get("ORLENKO_HERDR_DISPLAY") not in {"0", "1"} and not path.exists():
+        return False
+    owner = core.agent_session_pid()
+    if not owner or owner != member.get("owner_pid"):
+        return False
+
+    def current() -> bool:
+        fresh = load_member(member_id)
+        return not fresh.get("closed_at") and fresh.get("owner_pid") == owner
+
+    try:
+        bound = herdr_display.bind(path, kind="orchestra", participant=member_id,
+                                   owner=owner, enabled=enabled, current=current, replace=True)
+        if bound:
+            _refresh_display(member_id)
+        return bound
+    except (OrchestraError, OSError):
+        return False
+
+
+def set_herdr_display(member: dict[str, Any], enabled: bool) -> dict[str, Any]:
+    ok = _bind_display(member, enabled=enabled)
+    return {"member_id": member["member_id"], "enabled": bool(ok and enabled), "ok": ok,
+            "state": ("enabled" if enabled else "disabled") if ok else "unavailable-or-refused"}
+
+
 def claim_ownership(member: dict[str, Any]) -> dict[str, Any]:
+    member = _claim_ownership(member)
+    _bind_display(member)
+    return member
+
+
+def _claim_ownership(member: dict[str, Any]) -> dict[str, Any]:
     """Point a membership at the agent session that is running right now.
 
     Wake-up matches `owner_pid` against the hook's own agent ancestor, and
@@ -382,6 +438,7 @@ def adopt(member_id: str, *, provider: str, cwd: str) -> dict[str, Any]:
         member.pop("terminal_control", None)
         member["adopted"] = {**before, "at": now()}
         save_member(member)
+        herdr_display.invalidate(_display_path(member_id))
     if provider != "codex":
         for suffix in (".codex-session.json", ".codex-wake.json"):
             (runtime_dir() / f"{member_id}{suffix}").unlink(missing_ok=True)
@@ -1696,6 +1753,7 @@ def _close_locally(member_id: str, reason: str) -> dict[str, Any] | None:
     member["closed_at"] = now()
     member["closed_reason"] = str(reason)[:300]
     save_member(member)
+    herdr_display.invalidate(_display_path(member_id), disable=True)
     _append_local_event(member, member["closed_reason"])
     return member
 
@@ -1708,6 +1766,7 @@ def leave(member: dict[str, Any]) -> dict[str, Any]:
     member["closed_at"] = left_at
     member["closed_reason"] = "left"
     save_member(member)
+    herdr_display.invalidate(_display_path(str(member["member_id"])), disable=True)
 
     remote: dict[str, Any] | None = None
     detail: str | None = None
@@ -1760,6 +1819,7 @@ def close(member: dict[str, Any]) -> dict[str, Any]:
     member["closed_at"] = closed_at
     member["closed_reason"] = "closed"
     save_member(member)
+    herdr_display.invalidate(_display_path(str(member["member_id"])), disable=True)
     result: dict[str, Any] = {
         "ok": True,
         "member_id": member["member_id"],
@@ -2185,6 +2245,7 @@ def _monitor_loop(member_id: str) -> None:
     delay = 0.25
     next_prune = 0.0
     while not member.get("closed_at"):
+        _refresh_display(member_id)
         try:
             _wake_codex(member)
             _wake_agy(member)
@@ -2232,6 +2293,7 @@ def _monitor_loop(member_id: str) -> None:
             api_request(member, "POST", "/v1/heartbeat", {"seat": seat}, timeout=5)
             roster = api_request(member, "GET", "/v1/members", timeout=10)
             _apply_self_row(member, _self_row(roster, member_id), roster.get("conductor_id", _MISSING))
+            _refresh_display(member_id)
             _save_roster_snapshot(member, roster)
             if new_count:
                 _notify(member, new_count)
