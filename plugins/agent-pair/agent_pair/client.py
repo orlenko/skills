@@ -574,7 +574,10 @@ def _is_one_shot(args: str) -> bool:
     if not words:
         return True
     names = [Path(word).name.lower().removesuffix(".js") for word in words[:2]]
-    if any("codex" in name for name in names):
+    if names[0] in {"agy", "claude", "codex"}:
+        # The program's own name decides; a later `--model=claude-…` is a value.
+        kinds = (names[0],)
+    elif any("codex" in name for name in names):
         kinds = ("codex",)
     elif any("claude" in name for name in names):
         kinds = ("claude",)
