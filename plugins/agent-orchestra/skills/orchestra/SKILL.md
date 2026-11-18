@@ -128,11 +128,14 @@ belong to several, one session each.
 - `rename` (conductor only): `rename MEMBER NAME --json` changes a member's
   name in place, the conductor's own included. Its id, tasks, mail, seat and
   membership stay, so use it instead of `leave` and a new join while the
-  orchestra is busy. The old name becomes a nickname, so mail addressed to it
-  still arrives; `--drop-old` skips that. The same rules as `nick` apply to
-  the new name. The renamed member's monitor picks the name up on its next
-  pass, and its Herdr sidebar row follows. `hub rename` does the same with the
-  admin token. A hub older than 0.2.31 refuses it: use `nick` there.
+  orchestra is busy. The new name follows the same rules as `nick`. The old
+  name becomes a nickname so mail addressed to it still arrives, unless
+  `--drop-old`, or it is reserved, another member's, or the member already has
+  the most nicknames; `kept_old` in the result says which. A session that
+  later joins under that old name takes it, and the nickname is dropped.
+  Each member's own file and Herdr sidebar row follow on its monitor's next
+  pass once that monitor runs 0.2.31 or later. `hub rename` does the same with
+  the admin token. A hub older than 0.2.31 refuses it: use `nick` there.
 - `leave`: run `leave --json`. `close`: run `close --json`, and only when the
   user asked to end the orchestra for every member.
 - `podium` (for the conductor): the Podium is a page with the conductor's work

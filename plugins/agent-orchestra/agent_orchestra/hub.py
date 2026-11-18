@@ -459,13 +459,23 @@ class HubStore:
             # A conductor has no parent, so an invite that carries one (minted
             # by the member who then handed the seat over) never stores it.
             parent = None if role == "conductor" else row["parent"]
+            joined_name = sanitize_name(row["name"] or clean_name)
+            # A real name outranks a nickname: an old name kept by `rename`
+            # must not make the next session that joins with it ambiguous.
+            claimed = []
+            for other in self._members(active_only=True):
+                nicks = member_nicks(other)
+                kept = [nick for nick in nicks if nick.casefold() != joined_name.casefold()]
+                if kept != nicks:
+                    self.db.execute("UPDATE members SET nicks=? WHERE id=?", (json.dumps(kept), other["id"]))
+                    claimed.append(other)
             self.db.execute(
                 "INSERT INTO members (id, name, provider, role, parent, token_hash, joined_at,"
                 " last_seen_at, presence, presence_changed_at, revoked_at, revoked_reason)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'connected', ?, NULL, NULL)",
                 (
                     member_id,
-                    sanitize_name(row["name"] or clean_name),
+                    joined_name,
                     clean_provider,
                     role,
                     parent,
@@ -483,6 +493,8 @@ class HubStore:
                 self._set("conductor_id", member_id)
             member = self._member(member_id) or {}
             self._emit(f"presence {member_id} {member['name']} joined", member_id)
+            for other in claimed:
+                self._emit(f"nick {other['id']} {other['name']} lost {member['name']} to {member_id}", member_id)
             self.db.commit()
             self.changed.notify_all()
             info = self.hub_info()
@@ -1262,6 +1274,10 @@ class HubStore:
             self._live(_principal_id(principal))
             self._require_command(principal)
             active = {row["id"]: row for row in self._members(active_only=True)}
+            if not isinstance(name, str):
+                raise APIError(400, "Name must be a string")
+            if not isinstance(keep_old, bool):
+                raise APIError(400, "keep_old must be true or false")
             member_id = self._lookup(str(member), active)
             row = active[member_id]
             new = _check_nick(name, "Name")
@@ -1272,15 +1288,15 @@ class HubStore:
                 raise APIError(409, f"Name {new!r} already names {taken[0]} ({_label(active[taken[0]])})")
             nicks = [nick for nick in member_nicks(row) if nick.casefold() != new.casefold()]
             kept_old = False
-            if keep_old is not False and old.casefold() != new.casefold() and len(nicks) < MAX_NICKS:
+            if keep_old and old.casefold() != new.casefold() and len(nicks) < MAX_NICKS:
                 try:
-                    _check_nick(old)
-                    shared = any(other != member_id and old.casefold() in _handles(other_row)
+                    old_nick = _check_nick(old)
+                    shared = any(other != member_id and old_nick.casefold() in _handles(other_row)
                                  for other, other_row in active.items())
                 except APIError:
                     shared = True
-                if not shared:
-                    nicks.append(old)
+                if not shared and old_nick.casefold() != new.casefold():
+                    nicks.append(old_nick)
                     kept_old = True
             result = {"member_id": member_id, "name": new, "was": old, "nicks": nicks, "kept_old": kept_old}
             if new == old and nicks == member_nicks(row):

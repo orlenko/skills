@@ -885,6 +885,36 @@ class HubStoreTests(TempHomeTests):
         reserved = self.store.rename(admin, twin["member_id"], "Flute")
         self.assertEqual((reserved["nicks"], reserved["kept_old"]), ([], False))
 
+    def test_a_session_joining_with_a_kept_old_name_takes_it_from_the_nickname(self):
+        conductor, player_a, player_b, _d = self._orchestra()
+        self.store.rename({"kind": "admin"}, "A", "Harp")
+        self._drain(player_b)
+        newcomer = self._join("a")
+        self.assertEqual(hub.member_nicks(self.store._member(player_a["member_id"])), [])
+        self.assertEqual(self._recipients(self._send(conductor, ["A"])), [newcomer["member_id"]])
+        self.assertEqual(self._recipients(self._send(conductor, ["Harp"])), [player_a["member_id"]])
+        events = self._drain(player_b)
+        self.assertIn(f"nick {player_a['member_id']} Harp lost a to {newcomer['member_id']}", events)
+
+    def test_rename_takes_only_a_string_name_and_a_boolean_keep_old(self):
+        _c, player_a, _b, _d = self._orchestra()
+        admin = {"kind": "admin"}
+        for name, keep_old in ((123, True), ({"a": 1}, True), (["Harp"], True),
+                               ("Harp", "false"), ("Harp", 0), ("Harp", None)):
+            with self.subTest(name=name, keep_old=keep_old):
+                with self.assertRaises(APIError) as caught:
+                    self.store.rename(admin, "A", name, keep_old)
+                self.assertEqual(caught.exception.status, 400)
+        self.assertEqual(self.store._member(player_a["member_id"])["name"], "A")
+
+    def test_a_stored_unsanitized_old_name_is_kept_sanitized(self):
+        _c, player_a, _b, _d = self._orchestra()
+        with self.store.lock:
+            self.store.db.execute("UPDATE members SET name='aiq ' WHERE id=?", (player_a["member_id"],))
+            self.store.db.commit()
+        renamed = self.store.rename({"kind": "admin"}, player_a["member_id"], "Harp")
+        self.assertEqual(renamed["nicks"], ["aiq"])
+
     def test_the_conductor_renames_itself(self):
         conductor, _a, _b, _d = self._orchestra()
         renamed = self.store.rename({"kind": "member", **conductor["row"]}, conductor["member_id"], "Maestro")

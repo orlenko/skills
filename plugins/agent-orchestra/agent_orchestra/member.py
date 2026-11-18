@@ -1287,31 +1287,30 @@ def _apply_self_row(
     A rename, promotion or reparenting decided elsewhere would otherwise never
     reach member.json, and a promoted conductor would keep reporting itself a player.
     """
-    changed = False
+    updates: dict[str, Any] = {}
     if isinstance(row, dict):
         for key in ("name", "role", "parent"):
             if key in row and row.get(key) != member.get(key):
-                member[key] = row.get(key)
-                changed = True
+                updates[key] = row.get(key)
     if conductor_id is not _MISSING and conductor_id != member.get("conductor_id"):
-        member["conductor_id"] = conductor_id
-        changed = True
-    if changed:
+        updates["conductor_id"] = conductor_id
+    if updates:
         try:
             # Roster I/O can overlap a hook adopting a new account process.
             # Merge hub-owned fields under the same lock as ownership changes;
             # never publish the monitor's stale owner/binding back over them.
+            # Only the fields that changed are written, and the caller's copy
+            # changes only once they are saved: a busy lock leaves it stale, so
+            # the next roster pass sees the difference and tries again.
             with pid_lock(runtime_dir() / f"{member['member_id']}.owner.lock") as acquired:
                 if acquired:
                     fresh = load_member(str(member["member_id"]))
-                    for key in ("name", "role", "parent", "conductor_id"):
-                        if key in member:
-                            fresh[key] = member[key]
+                    fresh.update(updates)
                     save_member(fresh)
                     member.update(fresh)
         except OrchestraError:
-            return changed
-    return changed
+            pass
+    return bool(updates)
 
 
 def members(member: dict[str, Any]) -> dict[str, Any]:

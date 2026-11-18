@@ -521,6 +521,26 @@ class MemberTestCase(unittest.TestCase):
             member_module.rename(member_module.load_member(player["member_id"]), "Maestro", "Boss")
         self.assertEqual(refused.exception.status, 403)
 
+    def test_a_name_from_the_roster_is_retried_when_the_owner_lock_is_busy(self):
+        from agent_orchestra import monitor_lock
+        from agent_orchestra.core import runtime_dir
+        member_id = "mb_123456abcdef"
+        member_module.save_member({"member_id": member_id, "orchestra_id": "orc_1", "name": "aiq",
+                                   "role": "player", "parent": None})
+        member = member_module.load_member(member_id)
+        row = {"id": member_id, "name": "Harp", "role": "player", "parent": None}
+        with monitor_lock.hold_path(runtime_dir() / f"{member_id}.owner.lock.guard"):
+            self.assertTrue(member_module._apply_self_row(member, row))
+        self.assertEqual((member["name"], member_module.load_member(member_id)["name"]), ("aiq", "aiq"))
+        self.assertTrue(member_module._apply_self_row(member, row), "the next pass tries again")
+        self.assertEqual((member["name"], member_module.load_member(member_id)["name"]), ("Harp", "Harp"))
+        self.assertFalse(member_module._apply_self_row(member, row))
+
+        # Only changed fields are written: a stale caller cannot put back an older name.
+        stale = dict(member, name="Old", role="player")
+        member_module._apply_self_row(stale, {"id": member_id, "role": "conductor"})
+        self.assertEqual(member_module.load_member(member_id)["name"], "Harp")
+
     def test_rename_against_an_older_hub_explains_the_upgrade(self):
         member = {"member_id": "mb_123456", "orchestra_id": "orc_1"}
         self._patch(member_module, "ensure_hub_if_local", lambda member: None)

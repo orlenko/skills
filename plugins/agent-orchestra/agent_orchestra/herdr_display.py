@@ -55,10 +55,50 @@ def _process(pid: int) -> tuple[int, int, tuple[int, ...]]:
     raise ValueError("unsupported platform")
 
 
+_NO_TTY = (0, -1, 0xFFFFFFFF)
+# Agents whose session can be owned by a detached server process: Codex runs
+# its app-server daemon without a controlling terminal, under the frontend.
+_DAEMON_AGENTS = frozenset({"codex"})
+
+
+def _command(pid: int) -> str:
+    """The process's short command name (`comm`), for daemon-chain checks only."""
+    if sys.platform == "darwin":
+        raw = ctypes.create_string_buffer(136)
+        if ctypes.CDLL(None).proc_pidinfo(pid, 3, ctypes.c_uint64(0), raw, 136) != 136:
+            raise ValueError("unavailable process")
+        return raw.raw[48:64].split(b"\0", 1)[0].decode("utf-8", "replace")
+    if sys.platform.startswith("linux"):
+        raw = (Path("/proc") / str(pid) / "stat").read_text()
+        return raw[raw.index("(") + 1:raw.rindex(")")]
+    raise ValueError("unsupported platform")
+
+
+def _frontend_on(owner: int, tty: int) -> bool:
+    """A tty-less owner belongs to the terminal only through an unbroken chain of
+    the same agent program up to a frontend on that terminal's tty."""
+    name = _command(owner)
+    if name not in _DAEMON_AGENTS:
+        return False
+    current = owner
+    for _ in range(8):
+        current = _process(current)[0]
+        if current <= 1 or _command(current) != name:
+            return False
+        here = _process(current)[1]
+        if here == tty:
+            return True
+        if here not in _NO_TTY:
+            return False
+    return False
+
+
 def _proof(owner: int, terminal: dict[str, Any]) -> dict[str, Any]:
     root = int(terminal["pid"])
     agent, shell = _process(owner), _process(root)
-    if agent[1] in (0, -1, 0xFFFFFFFF) or agent[1] != shell[1]:
+    if shell[1] in _NO_TTY:
+        raise ValueError("different terminal")
+    if agent[1] != shell[1] and not (agent[1] in _NO_TTY and _frontend_on(owner, shell[1])):
         raise ValueError("different terminal")
     current = owner
     for _ in range(32):

@@ -196,6 +196,35 @@ class DisplayTest(unittest.TestCase):
                 self.refresh()
                 self.assertEqual(self.server.terminal["labels"], {})
 
+    def test_a_detached_codex_daemon_owns_through_its_frontend_on_the_terminal(self):
+        # shell 200 (tty 10) -> codex frontend 300 (tty 10) -> daemon 310 -> app-server 320 (no tty)
+        none = 0xFFFFFFFF
+        base = {200: (1, 10, (20,)), 300: (200, 10, (30,)), 310: (300, none, (31,)), 320: (310, none, (32,)),
+                400: (1, 11, (40,)), 410: (400, 11, (41,)), 420: (410, none, (42,))}
+        names = {200: "zsh", 300: "codex", 310: "codex", 320: "codex", 400: "zsh", 410: "codex", 420: "codex"}
+        commands = patch.object(display, "_command", side_effect=lambda pid: names[pid])
+        commands.start()
+        self.addCleanup(commands.stop)
+        cases = {
+            "daemon": ({}, {}, 320, True),
+            "frontend-on-another-terminal": ({}, {}, 420, False),
+            "frontend-tty-moved": ({300: (200, 11, (30,))}, {}, 320, False),
+            "chain-through-a-non-agent": ({}, {310: "node"}, 320, False),
+            "not-a-daemon-agent": ({}, {320: "claude", 310: "claude", 300: "claude"}, 320, False),
+            "no-frontend-above": ({310: (1, none, (31,))}, {}, 320, False),
+            "frontend-outside-the-shell": ({300: (1, 10, (30,))}, {}, 320, False),
+        }
+        for scenario, (processes, renamed, owner, bound) in cases.items():
+            with self.subTest(scenario=scenario):
+                self.server.terminal.update(address="t1", pid=200, created_ms=1234, state="live", labels={})
+                self.processes = {**base, **processes}
+                names.update({200: "zsh", 300: "codex", 310: "codex", 320: "codex"})
+                names.update(renamed)
+                self.path.unlink(missing_ok=True)
+                self.assertEqual(self.bind(owner=owner), bound)
+                self.refresh()
+                self.assertEqual(bool(self.server.terminal["labels"]), bound)
+
     def test_owner_metadata_fences_stale_adoption_callback(self):
         self.bind()
         self.refresh(metadata={**self.metadata, "_owner_pid": 301})
