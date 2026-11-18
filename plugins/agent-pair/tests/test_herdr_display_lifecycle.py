@@ -178,11 +178,18 @@ class HerdrDisplayLifecycleTests(unittest.TestCase):
         bind.assert_not_called()
 
     def test_one_shot_processes_cannot_adopt_display(self) -> None:
-        for args in ("claude -p task", "claude --print task", "claude --print=task", "codex exec task", "codex review"):
+        for args in ("claude -p task", "claude --print task", "claude --print=task", "codex exec task", "codex review",
+                     "agy -p task", "agy --prompt task", "agy --prompt=task"):
             with self.subTest(args=args), \
                     mock.patch.object(client, "agent_ancestor_pid", return_value=101), \
                     mock.patch.object(core, "_ps_field", return_value=args):
                 self.assertIsNone(client._herdr_display_owner())
+
+    def test_interactive_agy_session_owns_display(self) -> None:
+        self.assertTrue(core._is_agent_command("/Users/me/.local/bin/agy"))
+        with mock.patch.object(client, "agent_ancestor_pid", return_value=101), \
+                mock.patch.object(core, "_ps_field", return_value="/Users/me/.local/bin/agy"):
+            self.assertEqual(client._herdr_display_owner(), 101)
 
     def test_refresh_uses_current_disk_metadata_and_retires_ended_states(self) -> None:
         with mock.patch.object(herdr_display, "refresh") as refresh:

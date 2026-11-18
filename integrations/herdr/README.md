@@ -41,8 +41,24 @@ python3 integrations/herdr/install.py --home "$HOME/.config/herdr-app"
 
 `--home` is required; custom Herdr homes are supported. The installer adds only
 `mods/collaborations/`. It does not edit layouts, shipped mods, terminal labels,
-agent configuration or machine connections. A newly discovered mod docks on the
-left; Herdr's layout controls can move or hide it. The installer refuses to
+agent configuration or machine connections.
+
+Herdr docks a newly discovered mod on the left only in a personal layout. Its
+shipped layouts (`main`, the default, plus `win98` and `terminals`) are read-only
+and skip the mod. On a shipped layout, either open the mod as a pane or tab:
+
+```sh
+herdr-app do pane.split --direction right --mod collaborations
+herdr-app do tab.new --mod collaborations
+```
+
+or clone the layout so new mods dock automatically:
+
+```sh
+herdr-app do layout.clone '{"name":"main","as":"mine"}'
+```
+
+Herdr's layout controls can move or hide the panel afterwards. The installer refuses to
 overwrite locally edited managed files. Repeat it to update an unedited install;
 unrelated files are preserved. To customize, copy the mod under another name.
 

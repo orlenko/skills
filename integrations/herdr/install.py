@@ -104,7 +104,8 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         parser.exit(1, f"Not installed: {exc}\n")
     print(f"Installed {destination}")
-    print("Herdr docks the new mod on the left when it discovers the folder.")
+    print("A personal Herdr layout docks it on the left. Shipped layouts such as 'main' do not;")
+    print("open it with: herdr-app do tab.new --mod collaborations")
     return 0
 
 

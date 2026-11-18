@@ -21,7 +21,7 @@ from urllib.parse import urlencode, urlsplit
 PROTOCOL_VERSION = 1
 MAX_MESSAGE_BYTES = 256 * 1024
 AGENT_ANCESTOR_LEVELS = 20
-AGENT_COMMAND_MARKERS = ("claude", "codex")
+AGENT_COMMAND_MARKERS = ("claude", "codex", "agy")
 # A tool call runs its command in a shell whose own command line carries the
 # agent's plugin, state, and snapshot paths, so "claude" appears in the args of
 # a process that exits with the command. Anchoring a binding there records a pid

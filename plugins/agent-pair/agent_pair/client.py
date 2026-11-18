@@ -568,7 +568,8 @@ def _herdr_display_owner() -> int | None:
         words = shlex.split(args)
     except ValueError:
         return None
-    if any(word in {"-p", "--print", "exec", "review"} or word.startswith("--print=") for word in words):
+    if any(word in {"-p", "--print", "--prompt", "exec", "review"}
+           or word.startswith(("--print=", "--prompt=")) for word in words):
         return None
     return owner
 
