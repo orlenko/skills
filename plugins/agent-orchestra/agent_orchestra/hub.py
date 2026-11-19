@@ -460,15 +460,6 @@ class HubStore:
             # by the member who then handed the seat over) never stores it.
             parent = None if role == "conductor" else row["parent"]
             joined_name = sanitize_name(row["name"] or clean_name)
-            # A real name outranks a nickname: an old name kept by `rename`
-            # must not make the next session that joins with it ambiguous.
-            claimed = []
-            for other in self._members(active_only=True):
-                nicks = member_nicks(other)
-                kept = [nick for nick in nicks if nick.casefold() != joined_name.casefold()]
-                if kept != nicks:
-                    self.db.execute("UPDATE members SET nicks=? WHERE id=?", (json.dumps(kept), other["id"]))
-                    claimed.append(other)
             self.db.execute(
                 "INSERT INTO members (id, name, provider, role, parent, token_hash, joined_at,"
                 " last_seen_at, presence, presence_changed_at, revoked_at, revoked_reason)"
@@ -493,8 +484,6 @@ class HubStore:
                 self._set("conductor_id", member_id)
             member = self._member(member_id) or {}
             self._emit(f"presence {member_id} {member['name']} joined", member_id)
-            for other in claimed:
-                self._emit(f"nick {other['id']} {other['name']} lost {member['name']} to {member_id}", member_id)
             self.db.commit()
             self.changed.notify_all()
             info = self.hub_info()

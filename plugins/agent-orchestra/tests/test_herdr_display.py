@@ -200,14 +200,19 @@ class DisplayTest(unittest.TestCase):
         # shell 200 (tty 10) -> codex frontend 300 (tty 10) -> daemon 310 -> app-server 320 (no tty)
         none = 0xFFFFFFFF
         base = {200: (1, 10, (20,)), 300: (200, 10, (30,)), 310: (300, none, (31,)), 320: (310, none, (32,)),
-                400: (1, 11, (40,)), 410: (400, 11, (41,)), 420: (410, none, (42,))}
-        names = {200: "zsh", 300: "codex", 310: "codex", 320: "codex", 400: "zsh", 410: "codex", 420: "codex"}
+                330: (320, none, (33,)), 500: (1, none, (50,))}
+        other = {400: (1, 11, (40,)), 410: (400, 11, (41,)), 420: (410, none, (42,))}
+        names = {}
         commands = patch.object(display, "_command", side_effect=lambda pid: names[pid])
+        listing = patch.object(display, "_pids", side_effect=lambda: list(self.processes))
         commands.start()
+        listing.start()
         self.addCleanup(commands.stop)
+        self.addCleanup(listing.stop)
         cases = {
             "daemon": ({}, {}, 320, True),
-            "frontend-on-another-terminal": ({}, {}, 420, False),
+            "frontend-on-another-terminal": (other, {}, 420, False),
+            "second-frontend-elsewhere": (other, {}, 320, False),
             "frontend-tty-moved": ({300: (200, 11, (30,))}, {}, 320, False),
             "chain-through-a-non-agent": ({}, {310: "node"}, 320, False),
             "not-a-daemon-agent": ({}, {320: "claude", 310: "claude", 300: "claude"}, 320, False),
@@ -218,7 +223,9 @@ class DisplayTest(unittest.TestCase):
             with self.subTest(scenario=scenario):
                 self.server.terminal.update(address="t1", pid=200, created_ms=1234, state="live", labels={})
                 self.processes = {**base, **processes}
-                names.update({200: "zsh", 300: "codex", 310: "codex", 320: "codex"})
+                names.clear()
+                names.update({200: "zsh", 300: "codex", 310: "codex", 320: "codex", 330: "codex-code-mode",
+                              500: "codex", 400: "zsh", 410: "codex", 420: "codex"})
                 names.update(renamed)
                 self.path.unlink(missing_ok=True)
                 self.assertEqual(self.bind(owner=owner), bound)

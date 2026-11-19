@@ -74,20 +74,52 @@ def _command(pid: int) -> str:
     raise ValueError("unsupported platform")
 
 
+def _pids() -> list[int]:
+    if sys.platform == "darwin":
+        libc = ctypes.CDLL(None)
+        count = libc.proc_listallpids(None, 0)
+        if count <= 0:
+            raise ValueError("unavailable process list")
+        buffer = (ctypes.c_int * (count + 64))()
+        count = libc.proc_listallpids(buffer, ctypes.sizeof(buffer))
+        if count <= 0:
+            raise ValueError("unavailable process list")
+        return [int(pid) for pid in buffer[:count]]
+    if sys.platform.startswith("linux"):
+        return [int(entry.name) for entry in Path("/proc").iterdir() if entry.name.isdigit()]
+    raise ValueError("unsupported platform")
+
+
+def _other_frontend(name: str, chain: set[int]) -> bool:
+    """Another live frontend of this agent holding a terminal, outside the chain."""
+    for pid in _pids():
+        if pid <= 1 or pid in chain:
+            continue
+        try:
+            if _process(pid)[1] not in _NO_TTY and _command(pid) == name:
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
 def _frontend_on(owner: int, tty: int) -> bool:
     """A tty-less owner belongs to the terminal only through an unbroken chain of
-    the same agent program up to a frontend on that terminal's tty."""
+    the same agent program up to a frontend on that terminal's tty. A Codex
+    daemon can serve several frontends and hands them all its first frontend's
+    environment, so a second frontend anywhere makes the owner unprovable."""
     name = _command(owner)
     if name not in _DAEMON_AGENTS:
         return False
-    current = owner
+    current, chain = owner, {owner}
     for _ in range(8):
         current = _process(current)[0]
         if current <= 1 or _command(current) != name:
             return False
+        chain.add(current)
         here = _process(current)[1]
         if here == tty:
-            return True
+            return not _other_frontend(name, chain)
         if here not in _NO_TTY:
             return False
     return False

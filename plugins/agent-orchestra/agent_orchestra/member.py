@@ -1636,6 +1636,10 @@ def status(member: dict[str, Any]) -> dict[str, Any]:
         _apply_self_row(
             member, remote.get("self"), remote.get("conductor_id", _MISSING)
         )
+    # Report what the hub just said even if a busy owner lock deferred the save.
+    shown = dict(member)
+    if remote is not None and isinstance(remote.get("self"), dict):
+        shown.update({key: remote["self"][key] for key in ("name", "role", "parent") if key in remote["self"]})
 
     rows = local_messages(member, claim=False)
     inbox_by_act: dict[str, int] = {}
@@ -1662,9 +1666,9 @@ def status(member: dict[str, Any]) -> dict[str, Any]:
     return {
         "orchestra_id": member.get("orchestra_id"),
         "member_id": member_id,
-        "role": member.get("role"),
-        "parent": member.get("parent"),
-        "name": member.get("name"),
+        "role": shown.get("role"),
+        "parent": shown.get("parent"),
+        "name": shown.get("name"),
         "conductor": conductor,
         "hub": {
             "reachable": remote is not None,

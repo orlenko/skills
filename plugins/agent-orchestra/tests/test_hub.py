@@ -885,16 +885,22 @@ class HubStoreTests(TempHomeTests):
         reserved = self.store.rename(admin, twin["member_id"], "Flute")
         self.assertEqual((reserved["nicks"], reserved["kept_old"]), ([], False))
 
-    def test_a_session_joining_with_a_kept_old_name_takes_it_from_the_nickname(self):
+    def test_a_join_never_takes_a_nickname_so_a_shared_name_is_refused_not_misdelivered(self):
         conductor, player_a, player_b, _d = self._orchestra()
         self.store.rename({"kind": "admin"}, "A", "Harp")
-        self._drain(player_b)
         newcomer = self._join("a")
-        self.assertEqual(hub.member_nicks(self.store._member(player_a["member_id"])), [])
-        self.assertEqual(self._recipients(self._send(conductor, ["A"])), [newcomer["member_id"]])
+        self.assertEqual(hub.member_nicks(self.store._member(player_a["member_id"])), ["A"])
+        with self.assertRaises(APIError) as ambiguous:
+            self._send(conductor, ["A"])
+        self.assertIn(newcomer["member_id"], str(ambiguous.exception))
         self.assertEqual(self._recipients(self._send(conductor, ["Harp"])), [player_a["member_id"]])
-        events = self._drain(player_b)
-        self.assertIn(f"nick {player_a['member_id']} Harp lost a to {newcomer['member_id']}", events)
+        # A nickname the conductor set is not for any invite holder to claim.
+        self.store.set_nicks({"kind": "admin"}, "B", add=["Oboe"])
+        thief = self._join("Oboe", parent=player_b["member_id"])
+        with self.assertRaises(APIError):
+            self._send(conductor, ["Oboe"])
+        self.assertEqual(hub.member_nicks(self.store._member(player_b["member_id"])), ["Oboe"])
+        self.assertNotIn(thief["member_id"], self._recipients(self._send(conductor, [player_b["member_id"]])))
 
     def test_rename_takes_only_a_string_name_and_a_boolean_keep_old(self):
         _c, player_a, _b, _d = self._orchestra()

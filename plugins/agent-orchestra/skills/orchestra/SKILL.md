@@ -131,8 +131,9 @@ belong to several, one session each.
   orchestra is busy. The new name follows the same rules as `nick`. The old
   name becomes a nickname so mail addressed to it still arrives, unless
   `--drop-old`, or it is reserved, another member's, or the member already has
-  the most nicknames; `kept_old` in the result says which. A session that
-  later joins under that old name takes it, and the nickname is dropped.
+  the most nicknames; `kept_old` in the result says which. If a session later
+  joins under that old name, the name is ambiguous and the hub refuses mail to
+  it: run `nick MEMBER --remove OLD` to give it to the newcomer.
   Each member's own file and Herdr sidebar row follow on its monitor's next
   pass once that monitor runs 0.2.31 or later. `hub rename` does the same with
   the admin token. A hub older than 0.2.31 refuses it: use `nick` there.
