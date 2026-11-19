@@ -34,6 +34,12 @@ Herdr core. Enable this only where that audience is appropriate. No invite,
 credential, message body, process argument or workdir is published. Installing
 the viewing mod does not enable publication or enroll any session.
 
+Codex sessions backed by its app-server daemon publish only while they are the
+only Codex frontend holding a terminal on that machine. The daemon can serve
+several frontends and hands them all the first one's terminal ids, so with two
+or more the publisher cannot tell which terminal a session is in, and it
+publishes nothing rather than a row on the wrong terminal.
+
 Existing private enablement survives monitor restart and normal account adoption.
 Labels are leases: if an owner exits or a monitor cannot refresh, its row expires
 within two minutes, plus the sidebar's 15-second expiry refresh. Herdr must already
