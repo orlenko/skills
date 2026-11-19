@@ -189,13 +189,18 @@ def _label(row: dict[str, Any]) -> str:
     return f"{row['name']} ({', '.join(nicks)})" if nicks else str(row["name"])
 
 
-def _check_nick(value: Any) -> str:
+def _check_nick(value: Any, what: str = "Nickname") -> str:
     nick = sanitize_name(value, fallback="")
     if not nick or "," in nick:
-        raise APIError(400, f"Nickname {value!r} must be a non-empty name without commas")
+        raise APIError(400, f"{what} {value!r} must be a non-empty name without commas")
     if nick.casefold() in ALIASES or _MEMBER_ID.fullmatch(nick):
-        raise APIError(400, f"Nickname {nick!r} is reserved: it reads as an alias or a member id")
+        raise APIError(400, f"{what} {nick!r} is reserved: it reads as an alias or a member id")
     return nick
+
+
+def _handles(row: dict[str, Any]) -> set[str]:
+    """Every word that addresses a member: its name and nicknames, casefolded."""
+    return {str(row["name"]).casefold(), *(nick.casefold() for nick in member_nicks(row))}
 
 
 def clamp_ttl(ttl: Any) -> int:
@@ -454,13 +459,14 @@ class HubStore:
             # A conductor has no parent, so an invite that carries one (minted
             # by the member who then handed the seat over) never stores it.
             parent = None if role == "conductor" else row["parent"]
+            joined_name = sanitize_name(row["name"] or clean_name)
             self.db.execute(
                 "INSERT INTO members (id, name, provider, role, parent, token_hash, joined_at,"
                 " last_seen_at, presence, presence_changed_at, revoked_at, revoked_reason)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'connected', ?, NULL, NULL)",
                 (
                     member_id,
-                    sanitize_name(row["name"] or clean_name),
+                    joined_name,
                     clean_provider,
                     role,
                     parent,
@@ -1245,6 +1251,52 @@ class HubStore:
             self.changed.notify_all()
             return {"member_id": member_id, "name": active[member_id]["name"], "nicks": nicks}
 
+    def rename(
+        self, principal: dict[str, Any], member: str, name: Any, keep_old: Any = True,
+    ) -> dict[str, Any]:
+        """Give an active member a new name in place. Its id, token, role, tasks,
+        mail and seat stay, so a busy orchestra keeps playing. The old name
+        becomes a nickname unless `keep_old` is false, so mail addressed to it
+        still reaches the member; it is dropped when another member claims it
+        or the nickname list is full."""
+        with self.changed:
+            self._live(_principal_id(principal))
+            self._require_command(principal)
+            active = {row["id"]: row for row in self._members(active_only=True)}
+            if not isinstance(name, str):
+                raise APIError(400, "Name must be a string")
+            if not isinstance(keep_old, bool):
+                raise APIError(400, "keep_old must be true or false")
+            member_id = self._lookup(str(member), active)
+            row = active[member_id]
+            new = _check_nick(name, "Name")
+            old = str(row["name"])
+            taken = [other for other, other_row in active.items()
+                     if other != member_id and new.casefold() in _handles(other_row)]
+            if taken:
+                raise APIError(409, f"Name {new!r} already names {taken[0]} ({_label(active[taken[0]])})")
+            nicks = [nick for nick in member_nicks(row) if nick.casefold() != new.casefold()]
+            kept_old = False
+            if keep_old and old.casefold() != new.casefold() and len(nicks) < MAX_NICKS:
+                try:
+                    old_nick = _check_nick(old)
+                    shared = any(other != member_id and old_nick.casefold() in _handles(other_row)
+                                 for other, other_row in active.items())
+                except APIError:
+                    shared = True
+                if not shared and old_nick.casefold() != new.casefold():
+                    nicks.append(old_nick)
+                    kept_old = True
+            result = {"member_id": member_id, "name": new, "was": old, "nicks": nicks, "kept_old": kept_old}
+            if new == old and nicks == member_nicks(row):
+                return result
+            self.db.execute("UPDATE members SET name=?, nicks=? WHERE id=?", (new, json.dumps(nicks), member_id))
+            # The renamed member hears it too: its monitor copies the name into member.json.
+            self._emit(f"rename {member_id} {new} (was {old})", member_id, include_subject=True)
+            self.db.commit()
+            self.changed.notify_all()
+            return result
+
     def close(self, principal: dict[str, Any]) -> dict[str, Any]:
         with self.changed:
             self._require_command(principal)
@@ -1504,6 +1556,12 @@ class OrchestraHandler(BaseHTTPRequestHandler):
                 body = self._read_body()
                 self._respond(200, store.set_nicks(
                     principal, str(body.get("member", "")), body.get("add"), body.get("remove"),
+                ))
+                return
+            if self.command == "POST" and parsed.path == "/v1/rename":
+                body = self._read_body()
+                self._respond(200, store.rename(
+                    principal, str(body.get("member", "")), body.get("name"), body.get("keep_old", True),
                 ))
                 return
             if self.command == "POST" and parsed.path == "/v1/close":

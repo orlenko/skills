@@ -125,6 +125,18 @@ belong to several, one session each.
   nickname that is already another member's name or nickname, a `TO` alias,
   or anything shaped like a member id. On the hub machine with no membership,
   `hub nick` does the same with the admin token.
+- `rename` (conductor only): `rename MEMBER NAME --json` changes a member's
+  name in place, the conductor's own included. Its id, tasks, mail, seat and
+  membership stay, so use it instead of `leave` and a new join while the
+  orchestra is busy. The new name follows the same rules as `nick`. The old
+  name becomes a nickname so mail addressed to it still arrives, unless
+  `--drop-old`, or it is reserved, another member's, or the member already has
+  the most nicknames; `kept_old` in the result says which. If a session later
+  joins under that old name, the name is ambiguous and the hub refuses mail to
+  it: run `nick MEMBER --remove OLD` to give it to the newcomer.
+  Each member's own file and Herdr sidebar row follow on its monitor's next
+  pass once that monitor runs 0.2.31 or later. `hub rename` does the same with
+  the admin token. A hub older than 0.2.31 refuses it: use `nick` there.
 - `leave`: run `leave --json`. `close`: run `close --json`, and only when the
   user asked to end the orchestra for every member.
 - `podium` (for the conductor): the Podium is a page with the conductor's work
@@ -186,7 +198,7 @@ Report these CLI states exactly as they come back:
 - **Conductor.** Exactly one member at a time, and where the human sits. It
   owns the `conductor` alias, mints invites of any role and parent, reassigns
   the role with `conductor MEMBER`, revokes with `kick`, names members with
-  `nick`, and closes the
+  `nick`, renames them with `rename`, and closes the
   orchestra. Otherwise it is a member with a mailbox.
 - **Player.** Every other member. A player may mint invites only for its own
   children (`--role player --parent self`). It may not close the orchestra.
@@ -205,7 +217,7 @@ certificate, database, log, and supervisor unit.
   orchestra this machine already hosts, mint an invite from that hub.
 - `hub list --json` names every unclosed hub on this machine.
 - Every other `hub` subcommand — `status`, `ensure`, `unit`, `invite`,
-  `conductor`, `kick`, `nick`, `close` — takes `--orchestra-id ID`. With one hub the
+  `conductor`, `kick`, `nick`, `rename`, `close` — takes `--orchestra-id ID`. With one hub the
   flag is optional. With two the command refuses and names the ids; read one
   from that error or from `hub list --json` and run the command again with the
   flag.

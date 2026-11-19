@@ -817,6 +817,118 @@ class HubStoreTests(TempHomeTests):
         self.assertEqual(self.store.set_nicks(admin, "B", add=["b"])["nicks"], [])
         self.assertEqual(self.store.set_nicks(admin, "B", add=["Oboe"])["nicks"], ["Oboe"])
 
+    # ---- rename ---------------------------------------------------------------
+
+    def test_rename_keeps_the_membership_and_the_old_name_still_addresses_it(self):
+        conductor, player_a, player_b, _d = self._orchestra()
+        principal = {"kind": "member", **conductor["row"]}
+        renamed = self.store.rename(principal, "a", "Harp")
+        self.assertEqual(renamed, {"member_id": player_a["member_id"], "name": "Harp", "was": "A",
+                                   "nicks": ["A"], "kept_old": True})
+        for token in ("Harp", "harp", "A", player_a["member_id"]):
+            with self.subTest(token=token):
+                self.assertEqual(self._recipients(self._send(conductor, [token])), [player_a["member_id"]])
+        row = self.store._member(player_a["member_id"])
+        self.assertEqual((row["name"], row["token_hash"], row["role"], row["parent"]),
+                         ("Harp", player_a["row"]["token_hash"], "player", conductor["member_id"]))
+        # Every active member hears it, the renamed one included.
+        for member in (conductor, player_a, player_b):
+            with self.subTest(member=member["member_id"]):
+                self.assertIn(f"rename {player_a['member_id']} Harp (was A)", self._drain(member))
+
+    def test_rename_to_its_own_nickname_swaps_and_drop_old_forgets(self):
+        conductor, player_a, _b, _d = self._orchestra()
+        admin = {"kind": "admin"}
+        self.store.set_nicks(admin, "A", add=["Maestro"])
+        swapped = self.store.rename(admin, "maestro", "Maestro", keep_old=False)
+        self.assertEqual((swapped["name"], swapped["nicks"], swapped["kept_old"]), ("Maestro", [], False))
+        recased = self.store.rename(admin, "Maestro", "MAESTRO")
+        self.assertEqual((recased["name"], recased["nicks"], recased["kept_old"]), ("MAESTRO", [], False))
+        self._drain(conductor)
+        unchanged = self.store.rename(admin, "MAESTRO", "MAESTRO")
+        self.assertEqual(unchanged["name"], "MAESTRO")
+        self.assertEqual(self._drain(conductor), [], "a rename that changes nothing says nothing")
+
+    def test_rename_refuses_a_taken_reserved_or_blank_name_and_changes_nothing(self):
+        conductor, player_a, player_b, _d = self._orchestra()
+        admin = {"kind": "admin"}
+        self.store.set_nicks(admin, "B", add=["Oboe"])
+        refused = {"b": 409, "OBOE": 409, "c": 409, "all": 400, "Children": 400,
+                   "mb_abcdef": 400, "  ": 400, "a,b": 400, None: 400}
+        for name, status in refused.items():
+            with self.subTest(name=name):
+                with self.assertRaises(APIError) as caught:
+                    self.store.rename(admin, "A", name)
+                self.assertEqual(caught.exception.status, status)
+        row = self.store._member(player_a["member_id"])
+        self.assertEqual((row["name"], hub.member_nicks(row)), ("A", []))
+        with self.assertRaises(APIError) as player:
+            self.store.rename({"kind": "member", **player_a["row"]}, "A", "Harp")
+        self.assertEqual(player.exception.status, 403)
+        with self.assertRaises(APIError) as unknown:
+            self.store.rename(admin, "Nobody", "Harp")
+        self.assertEqual(unknown.exception.status, 400)
+
+    def test_rename_does_not_keep_an_old_name_that_is_shared_reserved_or_over_the_limit(self):
+        conductor, player_a, _b, _d = self._orchestra()
+        admin = {"kind": "admin"}
+        twin = self._join("A")
+        shared = self.store.rename(admin, player_a["member_id"], "Harp")
+        self.assertEqual((shared["nicks"], shared["kept_old"]), ([], False))
+        self.assertEqual(self._recipients(self._send(conductor, ["A"])), [twin["member_id"]])
+        self.store.set_nicks(admin, "Harp", add=[f"n{i}" for i in range(hub.MAX_NICKS)])
+        full = self.store.rename(admin, "Harp", "Lyre")
+        self.assertEqual((len(full["nicks"]), full["kept_old"]), (hub.MAX_NICKS, False))
+        with self.store.lock:
+            self.store.db.execute("UPDATE members SET name='children', nicks='[]' WHERE id=?", (twin["member_id"],))
+            self.store.db.commit()
+        reserved = self.store.rename(admin, twin["member_id"], "Flute")
+        self.assertEqual((reserved["nicks"], reserved["kept_old"]), ([], False))
+
+    def test_a_join_never_takes_a_nickname_so_a_shared_name_is_refused_not_misdelivered(self):
+        conductor, player_a, player_b, _d = self._orchestra()
+        self.store.rename({"kind": "admin"}, "A", "Harp")
+        newcomer = self._join("a")
+        self.assertEqual(hub.member_nicks(self.store._member(player_a["member_id"])), ["A"])
+        with self.assertRaises(APIError) as ambiguous:
+            self._send(conductor, ["A"])
+        self.assertIn(newcomer["member_id"], str(ambiguous.exception))
+        self.assertEqual(self._recipients(self._send(conductor, ["Harp"])), [player_a["member_id"]])
+        # A nickname the conductor set is not for any invite holder to claim.
+        self.store.set_nicks({"kind": "admin"}, "B", add=["Oboe"])
+        thief = self._join("Oboe", parent=player_b["member_id"])
+        with self.assertRaises(APIError):
+            self._send(conductor, ["Oboe"])
+        self.assertEqual(hub.member_nicks(self.store._member(player_b["member_id"])), ["Oboe"])
+        self.assertNotIn(thief["member_id"], self._recipients(self._send(conductor, [player_b["member_id"]])))
+
+    def test_rename_takes_only_a_string_name_and_a_boolean_keep_old(self):
+        _c, player_a, _b, _d = self._orchestra()
+        admin = {"kind": "admin"}
+        for name, keep_old in ((123, True), ({"a": 1}, True), (["Harp"], True),
+                               ("Harp", "false"), ("Harp", 0), ("Harp", None)):
+            with self.subTest(name=name, keep_old=keep_old):
+                with self.assertRaises(APIError) as caught:
+                    self.store.rename(admin, "A", name, keep_old)
+                self.assertEqual(caught.exception.status, 400)
+        self.assertEqual(self.store._member(player_a["member_id"])["name"], "A")
+
+    def test_a_stored_unsanitized_old_name_is_kept_sanitized(self):
+        _c, player_a, _b, _d = self._orchestra()
+        with self.store.lock:
+            self.store.db.execute("UPDATE members SET name='aiq ' WHERE id=?", (player_a["member_id"],))
+            self.store.db.commit()
+        renamed = self.store.rename({"kind": "admin"}, player_a["member_id"], "Harp")
+        self.assertEqual(renamed["nicks"], ["aiq"])
+
+    def test_the_conductor_renames_itself(self):
+        conductor, _a, _b, _d = self._orchestra()
+        renamed = self.store.rename({"kind": "member", **conductor["row"]}, conductor["member_id"], "Maestro")
+        self.assertEqual((renamed["name"], renamed["nicks"]), ("Maestro", ["C"]))
+        roster = {row["id"]: row for row in self.store.members()["members"]}
+        self.assertEqual(roster[conductor["member_id"]]["name"], "Maestro")
+        self.assertEqual(self.store._conductor_id(), conductor["member_id"])
+
     def test_kick_conductor_and_type_take_a_nickname(self):
         conductor, player_a, player_b, _d = self._orchestra()
         admin = {"kind": "admin"}
@@ -1072,6 +1184,23 @@ class HubServerTests(TempHomeTests):
         self.assertEqual([row["id"] for row in sent["recipients"]], [player["member_id"]])
         roster = {row["id"]: row for row in api_request(conductor_conn, "GET", "/v1/members")["members"]}
         self.assertEqual(roster[player["member_id"]]["nicks"], ["Harp"])
+
+    def test_rename_over_https_is_the_conductors(self):
+        created = self._create()
+        conductor, conductor_conn = self._join(created["conductor_invite"], "Conductor")
+        admin = admin_connection(created["orchestra_id"])
+        player, player_conn = self._join(
+            api_request(admin, "POST", "/v1/invite", {"role": "player"})["invite"], "aiq"
+        )
+        with self.assertRaises(APIError) as refused:
+            api_request(player_conn, "POST", "/v1/rename", {"member": "aiq", "name": "Harp"})
+        self.assertEqual(refused.exception.status, 403)
+        renamed = api_request(conductor_conn, "POST", "/v1/rename", {"member": "aiq", "name": "Harp"})
+        self.assertEqual((renamed["member_id"], renamed["name"], renamed["nicks"]), (player["member_id"], "Harp", ["aiq"]))
+        dropped = api_request(admin, "POST", "/v1/rename", {"member": "Conductor", "name": "Maestro", "keep_old": False})
+        self.assertEqual((dropped["name"], dropped["nicks"]), ("Maestro", []))
+        roster = {row["id"]: row for row in api_request(player_conn, "GET", "/v1/members")["members"]}
+        self.assertEqual((roster[player["member_id"]]["name"], roster[conductor["member_id"]]["name"]), ("Harp", "Maestro"))
 
     def test_join_invites_and_long_poll_over_https(self):
         created = self._create()

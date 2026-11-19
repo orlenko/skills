@@ -1282,36 +1282,35 @@ def _self_row(payload: dict[str, Any], member_id: str) -> dict[str, Any] | None:
 def _apply_self_row(
     member: dict[str, Any], row: Any, conductor_id: Any = _MISSING
 ) -> bool:
-    """Copy role, parent, and conductor_id from the hub's view of this member.
+    """Copy name, role, parent, and conductor_id from the hub's view of this member.
 
-    A promotion or a reparenting decided elsewhere would otherwise never reach
-    member.json, and a promoted conductor would keep reporting itself a player.
+    A rename, promotion or reparenting decided elsewhere would otherwise never
+    reach member.json, and a promoted conductor would keep reporting itself a player.
     """
-    changed = False
+    updates: dict[str, Any] = {}
     if isinstance(row, dict):
-        for key in ("role", "parent"):
+        for key in ("name", "role", "parent"):
             if key in row and row.get(key) != member.get(key):
-                member[key] = row.get(key)
-                changed = True
+                updates[key] = row.get(key)
     if conductor_id is not _MISSING and conductor_id != member.get("conductor_id"):
-        member["conductor_id"] = conductor_id
-        changed = True
-    if changed:
+        updates["conductor_id"] = conductor_id
+    if updates:
         try:
             # Roster I/O can overlap a hook adopting a new account process.
             # Merge hub-owned fields under the same lock as ownership changes;
             # never publish the monitor's stale owner/binding back over them.
+            # Only the fields that changed are written, and the caller's copy
+            # changes only once they are saved: a busy lock leaves it stale, so
+            # the next roster pass sees the difference and tries again.
             with pid_lock(runtime_dir() / f"{member['member_id']}.owner.lock") as acquired:
                 if acquired:
                     fresh = load_member(str(member["member_id"]))
-                    for key in ("role", "parent", "conductor_id"):
-                        if key in member:
-                            fresh[key] = member[key]
+                    fresh.update(updates)
                     save_member(fresh)
                     member.update(fresh)
         except OrchestraError:
-            return changed
-    return changed
+            pass
+    return bool(updates)
 
 
 def members(member: dict[str, Any]) -> dict[str, Any]:
@@ -1637,6 +1636,10 @@ def status(member: dict[str, Any]) -> dict[str, Any]:
         _apply_self_row(
             member, remote.get("self"), remote.get("conductor_id", _MISSING)
         )
+    # Report what the hub just said even if a busy owner lock deferred the save.
+    shown = dict(member)
+    if remote is not None and isinstance(remote.get("self"), dict):
+        shown.update({key: remote["self"][key] for key in ("name", "role", "parent") if key in remote["self"]})
 
     rows = local_messages(member, claim=False)
     inbox_by_act: dict[str, int] = {}
@@ -1663,9 +1666,9 @@ def status(member: dict[str, Any]) -> dict[str, Any]:
     return {
         "orchestra_id": member.get("orchestra_id"),
         "member_id": member_id,
-        "role": member.get("role"),
-        "parent": member.get("parent"),
-        "name": member.get("name"),
+        "role": shown.get("role"),
+        "parent": shown.get("parent"),
+        "name": shown.get("name"),
         "conductor": conductor,
         "hub": {
             "reachable": remote is not None,
@@ -1731,6 +1734,28 @@ def set_nicks(
     return api_request(member, "POST", "/v1/nicks", {
         "member": target, "add": add or [], "remove": remove or [],
     })
+
+
+def rename(member: dict[str, Any], target: str, name: str, *, keep_old: bool = True) -> dict[str, Any]:
+    """Conductor: rename `target` in place at the hub. Its id, token, tasks and
+    mail stay; the old name stays a nickname unless `keep_old` is false."""
+    ensure_hub_if_local(member)
+    try:
+        result = api_request(member, "POST", "/v1/rename", {
+            "member": target, "name": name, "keep_old": bool(keep_old),
+        })
+    except APIError as exc:
+        if exc.status == 404:
+            raise OrchestraError(
+                "This hub predates rename (agent-orchestra 0.2.31). Restart the hub on 0.2.31 or later, "
+                "or add a nickname with `nick` instead"
+            ) from exc
+        raise
+    if str(result.get("member_id")) == str(member["member_id"]) and isinstance(result.get("name"), str):
+        # Renaming yourself shows at once; other members learn it from their next roster pass.
+        _apply_self_row(member, {"name": result["name"]})
+        _refresh_display(str(member["member_id"]))
+    return result
 
 
 def kick(member: dict[str, Any], member_id: str, reason: str | None = None) -> dict[str, Any]:
