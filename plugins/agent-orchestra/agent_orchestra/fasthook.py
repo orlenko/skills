@@ -54,16 +54,20 @@ def payload_cwd(payload: dict) -> str:
     return str(payload.get("cwd") or workspace or os.getcwd())
 
 
-def _member_here(key: str) -> bool:
+def _member_here(key: str, aiq_terminal: str) -> bool:
     for path in (state_root() / "members").glob("*/member.json"):
         try:
             member = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             # Unreadable is not proof of absence: let the full path decide.
             return True
-        if isinstance(member, dict) and member.get("instance_key") == key \
-                and not member.get("closed_at"):
-            return True
+        if isinstance(member, dict) and not member.get("closed_at"):
+            if member.get("instance_key") == key:
+                return True
+            if aiq_terminal:
+                binding = member.get("terminal_control") or {}
+                if (binding.get("aiq_herdr") or {}).get("terminal") == aiq_terminal:
+                    return True
     return False
 
 
@@ -75,7 +79,10 @@ def nothing_to_do(argv: list[str]) -> bool:
         sys.stdin = io.StringIO(raw)
         payload = json.loads(raw) if raw.strip() else {}
         cwd = payload_cwd(payload) if isinstance(payload, dict) else os.getcwd()
-        if _member_here(instance_key(_provider(argv), cwd)):
+        # A native takeover can find a seat under the predecessor's provider.
+        aiq_terminal = (os.environ.get("AIQ_TERMINAL", "")
+                        if argv[1] == "hook-context" and os.environ.get("AIQ_LONG") == "1" else "")
+        if _member_here(instance_key(_provider(argv), cwd), aiq_terminal):
             return False
     except Exception:  # noqa: BLE001 - any doubt goes to the full path
         return False

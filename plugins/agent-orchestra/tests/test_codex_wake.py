@@ -84,6 +84,13 @@ class CodexWakeTests(unittest.TestCase):
     def calls(self):
         return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
 
+    def test_observation_cannot_restore_a_retired_receipt(self):
+        binding = codex_wake.target(self.mailbox)
+        with mock.patch.object(codex_wake, "target", side_effect=[binding, {}]):
+            codex_wake.observed(self.mailbox, ["m_aaaaaaaa"], label="Agent Orchestra")
+        self.assertFalse((core.runtime_dir() / f"{self.mailbox}.codex-wake.json").exists())
+        self.assertFalse(codex_wake._session_path(binding).exists())
+
     def test_idle_mail_queues_exact_thread_and_home_without_claiming(self):
         row = self.mail()
         with mock.patch.dict(os.environ, {"CODEX_HOME": "/wrong-account"}):

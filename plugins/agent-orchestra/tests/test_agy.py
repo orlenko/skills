@@ -69,6 +69,13 @@ class ProcessTests(unittest.TestCase):
 
 
 class HookContractTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="orchestra-agy-hook-")
+        self.addCleanup(temp.cleanup)
+        env = mock.patch.dict(os.environ, {"AGENT_ORCHESTRA_HOME": temp.name})
+        env.start()
+        self.addCleanup(env.stop)
+
     def test_the_payload_reads_as_claudes(self):
         payload = hooks._common_payload(dict(STOP), "Stop")
         self.assertEqual(payload["cwd"], "/srv/project")
@@ -86,6 +93,7 @@ class HookContractTests(unittest.TestCase):
 
     def test_context_goes_in_as_a_system_message(self):
         member = {"member_id": "mb_agy00001"}
+        member_module.save_member(member)
         with mock.patch.object(hooks, "hook_member", return_value=member), \
                 mock.patch.object(hooks, "quiet_until", return_value=None), \
                 mock.patch.object(hooks, "_attention_lines", return_value=[]), \
@@ -101,7 +109,9 @@ class HookContractTests(unittest.TestCase):
         hook_member.assert_not_called()
 
     def test_stop_continues_with_the_mail_and_not_twice(self):
-        with mock.patch.object(hooks, "hook_member", return_value={"member_id": "mb_agy00001"}), \
+        member = {"member_id": "mb_agy00001"}
+        member_module.save_member(member)
+        with mock.patch.object(hooks, "hook_member", return_value=member), \
                 mock.patch.object(hooks, "quiet_until", return_value=None), \
                 mock.patch.object(hooks, "_hook_message_nudge", return_value="mail"):
             self.assertEqual(hooks.hook_stop("agy", hooks._common_payload(dict(STOP))),

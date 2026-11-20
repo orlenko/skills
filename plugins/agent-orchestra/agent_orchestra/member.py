@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -125,9 +125,9 @@ def _as_pid(value: Any) -> int | None:
 
 
 @contextmanager
-def pid_lock(path: Path) -> Iterator[bool]:
+def pid_lock(path: Path, *, wait: float = 0) -> Iterator[bool]:
     """Kernel ownership plus transient PID metadata for older waiters."""
-    with monitor_lock.hold_path(path.with_name(path.name + ".guard")) as guard:
+    with monitor_lock.hold_path(path.with_name(path.name + ".guard"), wait=wait) as guard:
         if guard is None:
             yield False
             return
@@ -248,19 +248,20 @@ def join(
     }
 
 
-def iter_members(*, provider: str, cwd: str) -> list[dict[str, Any]]:
+def iter_members(*, provider: str, cwd: str | None) -> list[dict[str, Any]]:
     provider = normalize_provider(provider)
     root = state_root() / "members"
     if not root.exists():
         return []
-    key = instance_key(provider, cwd)
+    key = instance_key(provider, cwd) if cwd is not None else None
     rows: list[dict[str, Any]] = []
     for path in root.glob("*/member.json"):
         try:
             item = read_json(path)
         except OrchestraError:
             continue
-        if item.get("instance_key") == key and not item.get("closed_at"):
+        matches = item.get("provider") == provider if key is None else item.get("instance_key") == key
+        if matches and not item.get("closed_at"):
             rows.append(item)
     return sorted(rows, key=lambda item: float(item.get("joined_at", 0)), reverse=True)
 
@@ -296,7 +297,9 @@ def _refresh_display(member_id: str) -> None:
         pass
 
 
-def _bind_display(member: dict[str, Any], *, enabled: bool | None = None) -> bool:
+def _bind_display(
+    member: dict[str, Any], *, enabled: bool | None = None, retry: bool = False
+) -> bool:
     member_id = str(member["member_id"])
     path = _display_path(member_id)
     if enabled is None and os.environ.get("ORLENKO_HERDR_DISPLAY") not in {"0", "1"} and not path.exists():
@@ -310,11 +313,19 @@ def _bind_display(member: dict[str, Any], *, enabled: bool | None = None) -> boo
         return not fresh.get("closed_at") and fresh.get("owner_pid") == owner
 
     try:
-        bound = herdr_display.bind(path, kind="orchestra", participant=member_id,
-                                   owner=owner, enabled=enabled, current=current, replace=True)
-        if bound:
-            _refresh_display(member_id)
-        return bound
+        deadline = time.monotonic() + (2 if retry else 0)
+        while True:
+            if herdr_display.bind(path, kind="orchestra", participant=member_id,
+                                  owner=owner, enabled=enabled, current=current, replace=True):
+                _refresh_display(member_id)
+                return True
+            # A concurrent monitor may hold the display lock while the seat
+            # moves. Establish the new binding before this startup hook ends.
+            if time.monotonic() >= deadline or not current():
+                return False
+            if path.exists() and read_json(path).get("enabled") is False:
+                return False
+            time.sleep(0.05)
     except (OrchestraError, OSError):
         return False
 
@@ -351,14 +362,17 @@ def _claim_ownership(member: dict[str, Any]) -> dict[str, Any]:
     if current is not None and _pid_alive(current):
         # Old memberships need a binding made by their owning CLI, not a
         # monitor guessing from inherited selectors or a possibly reused PID.
-        if (not member.get("terminal_control") and os.environ.get("HC_TERMINAL_SOCKET")
+        old_binding = member.get("terminal_control")
+        if (os.environ.get("HC_TERMINAL_SOCKET")
+                and (not old_binding or (not (old_binding.get("aiq_herdr") or {}).get("launch")
+                                         and terminal_control.aiq_herdr_context(current)))
                 and core.agent_session_pid() == current):
             binding = terminal_control.capture_binding(current)
             if binding:
                 with pid_lock(runtime_dir() / f"{member['member_id']}.owner.lock") as acquired:
                     if acquired:
                         fresh = load_member(str(member["member_id"]))
-                        if fresh.get("owner_pid") == current and not fresh.get("terminal_control"):
+                        if fresh.get("owner_pid") == current and fresh.get("terminal_control") == old_binding:
                             fresh["terminal_control"] = binding
                             save_member(fresh)
                             return fresh
@@ -378,7 +392,9 @@ def _claim_ownership(member: dict[str, Any]) -> dict[str, Any]:
             current = _as_pid(fresh.get("owner_pid"))
             if current == pid or (current is not None and _pid_alive(current)):
                 return fresh
-            if fresh.get("closed_at") or _bound_to_another_session(member_id, pid):
+            if (fresh.get("closed_at") or fresh.get("instance_key") != member.get("instance_key")
+                    or fresh.get("adopted") != member.get("adopted")
+                    or _bound_to_another_session(member_id, pid)):
                 return fresh
             fresh["owner_pid"] = pid
             fresh.pop("terminal_control", None)
@@ -407,7 +423,49 @@ def _other_agent(member: dict[str, Any], pid: int) -> bool:
     return kind is not None and kind != provider
 
 
-def adopt(member_id: str, *, provider: str, cwd: str) -> dict[str, Any]:
+def _aiq_predecessor(member: dict[str, Any], context: dict[str, Any]) -> bool:
+    binding = member.get("terminal_control") or {}
+    previous = binding.get("aiq_herdr") or {}
+    owner = _as_pid(member.get("owner_pid"))
+    return bool(
+        owner and binding.get("owner_pid") == owner
+        and previous.get("terminal") == context["terminal"]
+        and previous.get("generation") == context["generation"] - 1
+        and type(context["previous_launch"]) is int and context["previous_launch"] > 1
+        and previous.get("launch") == context["previous_launch"]
+        and not _pid_alive(owner)
+    )
+
+
+def adopt_aiq_herdr(
+    provider: str, cwd: str, owner: int | None, session_id: str
+) -> dict[str, Any] | None:
+    """Follow exactly one replaced seat in the verified native terminal."""
+    context = terminal_control.aiq_herdr_context(owner)
+    provider = normalize_provider(provider)
+    if (not context or not session_id or owner != core.agent_session_pid()
+            or provider not in core.AGENT_PROVIDERS or core.agent_kind(owner) != provider
+            or not Path(cwd).resolve().is_relative_to(Path(context["workspace"]).resolve())):
+        return None
+    candidates = [
+        row for other in core.AGENT_PROVIDERS if other != provider
+        for row in iter_members(provider=other, cwd=None)
+        if _aiq_predecessor(row, context)
+    ]
+    if len(candidates) != 1:
+        return None
+    binding = terminal_control.capture_binding(owner)
+    if not binding or binding.get("aiq_herdr") != context:
+        return None
+    member_id = str(candidates[0]["member_id"])
+    adopt(member_id, provider=provider, cwd=cwd, successor_binding=binding, session_id=session_id)
+    return load_member(member_id)
+
+
+def adopt(
+    member_id: str, *, provider: str, cwd: str, successor_binding: dict[str, Any] | None = None,
+    session_id: str = "",
+) -> dict[str, Any]:
     """Move a seat to the agent running this command, in this directory.
 
     For a session that replaced the agent a seat was joined by: a Claude session
@@ -423,26 +481,53 @@ def adopt(member_id: str, *, provider: str, cwd: str) -> dict[str, Any]:
         # No Claude process may own a Codex seat, so that unlinked the seat
         # from the session and hid two messages from its hooks.
         raise OrchestraError(f"This session is {kind}; run adopt with --provider {kind}")
+    if not session_id and provider == kind == "codex":
+        session_id = os.environ.get("CODEX_THREAD_ID") or ""
+    binding = successor_binding or (terminal_control.capture_binding(caller) if caller else None)
     lock_path = runtime_dir() / f"{member_id}.owner.lock"
-    with pid_lock(lock_path) as acquired:
+    with pid_lock(lock_path, wait=2) as acquired:
         if not acquired:
             raise OrchestraError("Another command is changing this seat; try again")
         member = load_member(member_id)
         if member.get("closed_at"):
             raise OrchestraError(f"Membership is closed ({member.get('closed_reason') or 'closed'})")
+        if successor_binding is not None:
+            old = member.get("terminal_control") or {}
+            terminal_fields = ("core", "address", "pid", "created_ms", "root_start")
+            if (not session_id or member.get("provider") not in core.AGENT_PROVIDERS
+                    or member.get("provider") == provider or successor_binding["owner_pid"] != caller
+                    or not _aiq_predecessor(member, successor_binding["aiq_herdr"])
+                    or any(old.get(key) != successor_binding[key] for key in terminal_fields)
+                    or _bound_to_another_session(member_id, caller)):
+                raise OrchestraError("The aiq predecessor no longer matches this Herdr session")
+        wake_binding = codex_wake.target(member_id)
+        wake_lock = (codex_wake._session_lock(wake_binding, wait=True)
+                     if wake_binding.get("executable") else nullcontext(True))
+        # The queue monitor holds this lock through dispatch and receipt writes.
+        with wake_lock as acquired:
+            if not acquired:
+                raise OrchestraError("The previous Codex wake target is busy; try again")
+            for suffix in (".codex-session.json", ".codex-wake.json"):
+                (runtime_dir() / f"{member_id}{suffix}").unlink(missing_ok=True)
         before = {"provider": member.get("provider"), "cwd": member.get("cwd")}
         member["provider"] = provider
         member["cwd"] = str(Path(cwd).expanduser().resolve())
         member["instance_key"] = instance_key(provider, cwd)
-        member["owner_pid"] = None
+        member["owner_pid"] = caller
         member.pop("terminal_control", None)
+        member.pop("session_id", None)
+        if session_id:
+            member["session_id"] = session_id
+        if binding:
+            member["terminal_control"] = binding
         member["adopted"] = {**before, "at": now()}
         save_member(member)
+        for path, hook_binding in core.binding_records():
+            if hook_binding.get("member_id") == member_id:
+                path.unlink(missing_ok=True)
         herdr_display.invalidate(_display_path(member_id))
-    if provider != "codex":
-        for suffix in (".codex-session.json", ".codex-wake.json"):
-            (runtime_dir() / f"{member_id}{suffix}").unlink(missing_ok=True)
-    member = claim_ownership(member)
+    member = _claim_ownership(member)
+    _bind_display(member, retry=True)
     return {"member_id": member_id, "provider": provider, "cwd": member["cwd"],
             "owner_pid": member.get("owner_pid"), "was": before}
 
@@ -455,13 +540,22 @@ def select_member(*, provider: str, cwd: str, member_id: str | None = None) -> d
         if member.get("closed_at"):
             reason = member.get("closed_reason") or "closed"
             raise OrchestraError(f"Membership is closed ({reason})")
-        return claim_ownership(member)
-    rows = iter_members(provider=provider, cwd=cwd)
-    if not rows:
-        raise OrchestraError(
-            f"No open orchestra membership for {normalize_provider(provider)} in this directory"
-        )
-    return claim_ownership(_own_member(rows))
+    else:
+        rows = iter_members(provider=provider, cwd=cwd)
+        if not rows:
+            raise OrchestraError(
+                f"No open orchestra membership for {normalize_provider(provider)} in this directory"
+            )
+        member = _own_member(rows)
+    if member.get("provider") == "codex" and member.get("adopted"):
+        # A retired thread may still have a queued wake from this seat.
+        thread = os.environ.get("CODEX_THREAD_ID")
+        if thread or core.agent_ancestor_pid() is not None:
+            if not member.get("session_id"):
+                raise OrchestraError("Wait for the successor's Codex thread binding")
+            if thread != member["session_id"]:
+                raise OrchestraError("Membership belongs to another Codex thread")
+    return claim_ownership(member)
 
 
 def _seat_label(row: dict[str, Any]) -> str:

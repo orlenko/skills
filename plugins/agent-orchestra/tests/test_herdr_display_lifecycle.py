@@ -88,6 +88,18 @@ class DisplayLifecycleTest(unittest.TestCase):
         self.assertEqual(result["owner_pid"], 301)
         self.assertEqual(events, ["invalidate", "bind"])
 
+    def test_adoption_retries_a_busy_display_binding(self):
+        with patch.dict(os.environ, {"ORLENKO_HERDR_DISPLAY": "1"}), \
+             patch.object(core, "agent_session_pid", return_value=301), \
+             patch.object(core, "agent_kind", return_value=None), \
+             patch.object(member, "_pid_alive", return_value=True), \
+             patch.object(herdr_display, "bind", side_effect=[False, True]) as bind, \
+             patch.object(member, "_refresh_display") as refresh:
+            result = member.adopt("mb_test", provider="test", cwd=self.tmp.name)
+        self.assertEqual(result["owner_pid"], 301)
+        self.assertEqual(bind.call_count, 2)
+        refresh.assert_called_once_with("mb_test")
+
     def test_enable_disable_parser(self):
         for action in ("enable", "disable"):
             args = cli.build_parser().parse_args(["herdr-display", action, "--member-id", "mb_test", "--json"])

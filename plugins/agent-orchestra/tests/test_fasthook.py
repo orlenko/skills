@@ -62,6 +62,18 @@ class FastHookTests(unittest.TestCase):
             "closed_at": 1.0})
         self.assertTrue(self.run_hook("hook-stop")[0])
 
+    def test_native_aiq_start_checks_for_a_predecessors_seat(self):
+        atomic_write_json(member_path("mb_here0001"), {
+            "member_id": "mb_here0001", "instance_key": core.instance_key("claude", self.cwd),
+            "cwd": str(self.cwd.resolve()),
+            "terminal_control": {"aiq_herdr": {"terminal": "herdr:fixture"}},
+        })
+        with mock.patch.dict(os.environ, {"AIQ_LONG": "1", "AIQ_TERMINAL": "herdr:fixture"}):
+            self.assertEqual(self.run_hook("hook-context", provider="codex"), (False, ""))
+            self.assertEqual(self.run_hook("hook-stop", provider="codex"), (True, "{}\n"))
+        with mock.patch.dict(os.environ, {"AIQ_LONG": "1", "AIQ_TERMINAL": "herdr:other"}):
+            self.assertEqual(self.run_hook("hook-context", provider="codex"), (True, ""))
+
     def test_an_unreadable_member_file_is_not_proof_of_absence(self):
         path = member_path("mb_broken001")
         path.parent.mkdir(parents=True, exist_ok=True)

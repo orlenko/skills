@@ -31,6 +31,8 @@ MAX_CELLS = 65536
 OP_SECONDS = 12
 CSI = re.compile(r"\x1b\[([0-?]*)([ -/]*)([@-~])")
 ADDRESS = re.compile(r"t[1-9][0-9bcdfghjkmnpqrstvwxyz]*\Z")
+_AIQ_TERMINAL = re.compile(r"herdr:[0-9a-f]{32}-[0-9a-f]{32}\Z")
+_AIQ_GENERATION = re.compile(r"[1-9][0-9]{0,19}\Z")
 KEY_ALIASES = {
     "Return": "Enter",
     "Esc": "Escape",
@@ -786,6 +788,44 @@ def render(
     )
 
 
+def aiq_herdr_context(owner: int | None) -> dict[str, Any] | None:
+    if not owner or os.environ.get("AIQ_LONG") != "1":
+        return None
+    terminal = os.environ.get("AIQ_TERMINAL", "")
+    generation = os.environ.get("AIQ_TERMINAL_GENERATION", "")
+    if not _AIQ_TERMINAL.fullmatch(terminal) or not _AIQ_GENERATION.fullmatch(generation):
+        return None
+    # The native runner atomically records the live generation and the PID it
+    # replaced. Inherited environment is a selector for that record.
+    workspace_key = terminal.removeprefix("herdr:").split("-", 1)[0]
+    xdg = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+    data = Path(os.environ.get("AIQ_DATA_DIR") or xdg / "aiq")
+    try:
+        fd = os.open(data / "herdr" / f"{workspace_key}.json",
+                     os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077 or info.st_size > 65536):
+                return None
+            record = json.loads(stream.read(65537))
+        launch = record["PID"]
+        if (record["Ref"] != terminal or record["State"] != "running"
+                or record["Generation"] != int(generation) or type(launch) is not int or launch != owner
+                or str(launch) != os.environ.get("AIQ_TERMINAL_PID")
+                or process(launch).parent != record["RunnerPID"]):
+            return None
+        # The runner proves the process it launched. A descendant can also
+        # be a separate agent started from inside the provider.
+        return {"terminal": terminal, "generation": int(generation), "launch": launch,
+                "previous_launch": record["PreviousPID"], "workspace": record["Workspace"],
+                "core": record["Core"]["ID"], "address": record["Core"]["Terminal"],
+                "pid": record["Core"]["PID"]}
+    except (OSError, ValueError, KeyError, TypeError, keys.KeysError):
+        pass
+    return None
+
+
 def capture_binding(owner: int) -> dict[str, Any] | None:
     endpoint, address = (
         os.environ.get("HC_TERMINAL_SOCKET", ""),
@@ -802,7 +842,7 @@ def capture_binding(owner: int) -> dict[str, Any] | None:
             _exclusive_consumer(owner, agent, ancestry, session.deadline)
             if terminal.get("state") != "live" or terminal.get("address") != address:
                 return None
-            return {
+            binding = {
                 "version": 1,
                 "socket": endpoint,
                 "core": session.identity,
@@ -813,6 +853,10 @@ def capture_binding(owner: int) -> dict[str, Any] | None:
                 "owner_pid": owner,
                 "owner_start": list(agent.start),
             }
+            context = aiq_herdr_context(owner)
+            if context and all(context[key] == binding[key] for key in ("core", "address", "pid")):
+                binding["aiq_herdr"] = context
+            return binding
     except (keys.KeysError, OSError, ValueError, KeyError, TypeError):
         return None
 
