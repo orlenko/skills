@@ -160,7 +160,7 @@ class AdoptTests(unittest.TestCase):
                                                "hook_event_name": "SessionStart"})
         self.assertEqual(member["member_id"], MEMBER)
         self.assertEqual(member["provider"], "codex")
-        self.assertEqual(member["cwd"], str(self.cwd))
+        self.assertEqual(member["cwd"], str(self.cwd.resolve()))
         self.assertEqual(member["session_id"], "new-codex-thread")
         self.assertEqual(member["terminal_control"], binding)
         self.assertFalse(wake.exists())

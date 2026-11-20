@@ -1257,6 +1257,33 @@ class SeatRecoveryTest(HooksTestCase):
         self.assertEqual(hooks.hook_stop(self.provider, self.payload("s1"))["decision"], "block")
         self.assertEqual(self.binding_record()["session_id"], "s1")
 
+    def test_legacy_adopted_bindings_preserve_only_the_current_session(self) -> None:
+        adopted_at = now() - 30
+        for label, owner, binding_owner, session, bound_at, accepted in (
+            ("live owner", self.owner_pid, self.owner_pid, "s1", adopted_at - 1, True),
+            ("pidless owner", None, None, "s1", adopted_at + 1, True),
+            ("resumed owner", self.owner_pid, self.dead_pid(), "s1", adopted_at + 1, True),
+            ("session write was interrupted", self.owner_pid, self.owner_pid, None, adopted_at + 1, True),
+            ("pre-adoption binding", self.owner_pid, self.owner_pid, None, adopted_at - 1, False),
+            ("different session", self.owner_pid, self.owner_pid, "s2", adopted_at + 1, False),
+            ("unverified owner", None, None, None, adopted_at + 1, False),
+        ):
+            with self.subTest(label=label):
+                self.set_ancestor(owner)
+                member = self.make_member(owner_pid=owner, session_id=session, adopted={"at": adopted_at})
+                member_id = str(member["member_id"])
+                path = self.write_binding(member_id, "s1", owner_pid=binding_owner, bound_at=bound_at)
+                self.add_message(member_id, "m_" + "a" * 16, act="ask", need="status")
+                result = hooks.hook_stop(self.provider, self.payload("s1"))
+                record = json.loads(path.read_text(encoding="utf-8"))
+                if accepted:
+                    self.assertEqual(result["decision"], "block")
+                    self.assertEqual(record["adopted_at"], adopted_at)
+                    self.assertEqual(record["owner_pid"], owner)
+                else:
+                    self.assertEqual(result, {})
+                    self.assertNotIn("adopted_at", record)
+
     def test_a_pidless_binding_is_refreshed_by_its_own_session(self) -> None:
         self.set_ancestor(None)
         member = self.make_member(owner_pid=None)

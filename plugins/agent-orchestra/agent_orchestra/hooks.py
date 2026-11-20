@@ -230,6 +230,31 @@ def _claim_candidate(
     raise OrchestraError("No membership owned by this session")
 
 
+def _binding_matches_adoption(
+    binding: dict[str, Any], member: dict[str, Any], session_id: str, owner: int | None
+) -> bool:
+    adopted_at = (member.get("adopted") or {}).get("at")
+    if "adopted_at" in binding or adopted_at is None:
+        return binding.get("adopted_at") == adopted_at
+
+    # Older bindings did not record which adoption they followed. Preserve
+    # the seat's remembered session, even if it has resumed under a new PID.
+    if binding.get("session_id") != session_id:
+        return False
+    if member.get("session_id"):
+        return member["session_id"] == session_id
+
+    # The old hook could have written its binding before it saved the session
+    # ID. In that case require the current owner and a post-adoption binding.
+    bound_at = binding.get("bound_at")
+    return (
+        owner is not None and _as_pid(binding.get("owner_pid")) == owner
+        and _as_pid(member.get("owner_pid")) == owner
+        and isinstance(bound_at, (int, float)) and isinstance(adopted_at, (int, float))
+        and bound_at >= adopted_at
+    )
+
+
 def _bound_hook_member(
     provider: str, cwd: str, session_id: str, event: str, *, wait_for_owner: bool = False
 ) -> dict[str, Any]:
@@ -240,7 +265,7 @@ def _bound_hook_member(
             binding = read_json(path)
             member = load_member(str(binding["member_id"]))
             if (member.get("instance_key") == instance_key(provider, cwd) and not member.get("closed_at")
-                    and binding.get("adopted_at") == (member.get("adopted") or {}).get("at")):
+                    and _binding_matches_adoption(binding, member, session_id, owner)):
                 return _finish_hook_binding(
                     member, provider, cwd, session_id, owner, path, binding, wait_for_owner=wait_for_owner
                 )
@@ -303,7 +328,8 @@ def _finish_hook_binding(
                 and fresh["session_id"] != session_id and current is not None
                 and current == _as_pid(candidate.get("owner_pid"))):
             raise OrchestraError("Seat belongs to another Codex thread")
-        if path is not None and (binding is None or _as_pid(binding.get("owner_pid")) != owner
+        if path is not None and (binding is None or "adopted_at" not in binding
+                                 or _as_pid(binding.get("owner_pid")) != owner
                                  or (owner is None and _age_of(binding) > _BINDING_REFRESH_SECONDS)):
             _write_binding(path, fresh, provider, cwd, session_id, owner)
         # A pidless session's UUID survives pruning of its expiring binding.
