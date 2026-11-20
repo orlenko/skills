@@ -81,13 +81,19 @@ belong to several, one session each.
   Local rollback does not restore an older hub hold. Inspect the session before
   deciding any new action.
 - `quiet` (conductor only): `quiet --to MEMBER --for SECONDS [--task T]
-  [--until started|done] --json` holds that member's mail at the hub and keeps
+[--until started|done] --json` holds that member's mail at the hub and keeps
   the orchestra silent in its session, without typing. `--until` defaults to
   `done`. `quiet --to MEMBER --off --json` lifts it, and the held mail flows.
 - `adopt`: a seat stays with the agent that joined it (Claude, Codex or agy), and
   another agent's commands cannot take it over. When a session of the other
   agent really replaces the one that joined, run `adopt --member-id M --json`
-  from that session. Pass `--provider P` only to override detection, and then
+  from that session. For a native Herdr `aiq long` rollover, the successor's
+  startup hook can do this when the provider owns the runner's launch PID and
+  Orchestra verifies the same terminal, an exited owner, and a single matching
+  seat from the previous generation. Use explicit adoption for launchers
+  that spawn the provider in a separate process.
+  After a rollover, `status --json` shows whether the successor holds the seat.
+  Pass `--provider P` only to override detection, and then
   P is the agent you are, never the provider the roster shows. It
   moves the seat to this agent and directory, so its hooks, wake, and `type`
   follow the new agent. The hub's roster keeps the provider the seat joined
@@ -145,8 +151,7 @@ belong to several, one session each.
   - `podium start --json` serves it in the background for this membership and
     prints its `url`. Give the user that URL; by default it opens only in a
     browser on this machine (from elsewhere: `ssh -L PORT:127.0.0.1:PORT
-    host`). A second start reports the running server. `--port N` (default
-    4300) and `--dir DIR` choose where; `--restart` replaces it, which an
+host`). A second start reports the running server. `--port N` (default 4300) and `--dir DIR` choose where; `--restart` replaces it, which an
     upgrade needs when `podium status` shows `stale_version`. `--plan PLAN`
     makes the server republish that work plan whenever the file changes, on
     the page's own poll; start refuses a plan that does not validate.
@@ -157,14 +162,14 @@ belong to several, one session each.
     machine joins. The page has no authentication: everyone who can reach the
     address reads the roster, the tasks, and the plan, so bind beyond
     loopback only when the user asked for it. The probe, the errors, `podium
-    status`, and the `url` follow the address; a wildcard bind prints this
+status`, and the `url` follow the address; a wildcard bind prints this
     machine's hostname. A restart without `--bind` keeps the last address;
     `--bind 127.0.0.1` goes back to loopback.
   - `podium status --json` and `podium stop --json` manage it. With `--plan`,
     `plan_state` shows the last publish, or the `error` that kept a rejected
     edit off the page; check it after editing the plan.
   - `podium check PLAN --json` validates a work plan; `podium publish PLAN
-    --json` validates it and writes `work-status.json`. Both take `--dir`;
+--json` validates it and writes `work-status.json`. Both take `--dir`;
     the default is `podium/` in the agent-orchestra state directory. Without
     PLAN, both use the plan and directory the running Podium watches. A
     rejected plan leaves the published report untouched.
@@ -327,7 +332,7 @@ Write the body under these rules:
 - Make `NEED` a shape, not an invitation. "yes/no: land before the refactor?"
   costs the member one line; "let me know what you think" costs an essay.
   Only an exact `NEED none` means no reply is expected. `NEED none — just a
-  status update` is a send-time error; write `NEED none` and put the
+status update` is a send-time error; write `NEED none` and put the
   explanation in the body.
 - Anchor claims in `REF` so the member can check them cheaply: paths with line
   ranges, commit shas, runnable commands. Neither agent can verify the other's
@@ -399,7 +404,7 @@ every `assign` once, promptly, on the same `TASK`.
 - Keep a hold specific to its target. "Do not merge PRs" holds PR merges. It
   does not hold an independently authorized pass.
 - To clear many stale tasks at once, run `close-tasks --before DATE --reason
-  TEXT --json` (or `--task T` per task, `--owner M` to limit the owners). Run
+TEXT --json` (or `--task T` per task, `--owner M` to limit the owners). Run
   it with `--dry-run` first and read the list. It cancels at the hub without
   mailing anyone, so it is safe while owners are working, and it also closes
   tasks whose owners have left. Each close is stored as a STATE cancelled
@@ -469,7 +474,7 @@ every `assign` once, promptly, on the same `TASK`.
 - Keep sub-agents inside this session. They use the native teammate channel and
   never touch the orchestra. A sub-agent that must be addressable on its own
   joins as a child with its own invite from `invite --role player --parent
-  self`.
+self`.
 - Mint child invites only for work this member owns. Hand the complete `or1.`
   string to the user or to the session that will run the child.
 

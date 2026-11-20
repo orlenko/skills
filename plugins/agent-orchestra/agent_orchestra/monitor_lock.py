@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import fcntl
 import os
+import time
 from pathlib import Path
 from typing import Iterator, TextIO
 
@@ -20,16 +21,22 @@ def _open_path(path: Path):
 
 
 @contextmanager
-def hold_path(path: Path) -> Iterator[TextIO | None]:
+def hold_path(path: Path, *, wait: float = 0) -> Iterator[TextIO | None]:
     """Hold a persistent coordination inode; a fresh descriptor owns each try."""
     # Never unlink: a contender can already have this same inode open.
     # Closing releases ownership on normal exit, exceptions and process death.
     with _open_path(path) as stream:
-        try:
-            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            yield None
-            return
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    yield None
+                    return
+                time.sleep(min(0.02, remaining))
         yield stream
 
 

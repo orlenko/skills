@@ -977,7 +977,12 @@ class HookWaitTest(HooksTestCase):
 
         with redirect_stderr(buffer):
             worker = threading.Thread(target=run, daemon=True)
-            worker.start()
+            with member_module.pid_lock(runtime_dir() / f"{member_id}.owner.lock") as held:
+                self.assertTrue(held)
+                worker.start()
+                # The other Stop hook may briefly hold the ownership lock.
+                time.sleep(0.1)
+                self.assertTrue(worker.is_alive(), "hook_wait gave up before the owner lock cleared")
             deadline = time.monotonic() + 5
             while not list(runtime_dir().glob("*.wake.*.json")) and time.monotonic() < deadline:
                 time.sleep(0.05)

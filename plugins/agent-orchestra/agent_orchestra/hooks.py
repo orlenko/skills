@@ -7,8 +7,9 @@ import re
 import shlex
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from . import codex_wake, core, jev_shadow
 from .core import (
@@ -24,6 +25,7 @@ from .core import (
 from .member import (
     _as_pid,
     _pid_alive,
+    adopt_aiq_herdr,
     agy_observed,
     claim_ownership,
     ensure_monitor,
@@ -103,7 +105,7 @@ def _hook_event(payload: dict[str, Any], default: str) -> str:
 
 
 def hook_member(
-    provider: str, payload: dict[str, Any], *, default_event: str = "Stop"
+    provider: str, payload: dict[str, Any], *, default_event: str = "Stop", wait_for_owner: bool = False
 ) -> dict[str, Any] | None:
     if _hooks_disabled():
         return None
@@ -111,13 +113,18 @@ def hook_member(
     session_id = str(payload.get("session_id") or "")
     try:
         member = _bound_hook_member(
-            provider, cwd, session_id, _hook_event(payload, default_event)
+            provider, cwd, session_id, _hook_event(payload, default_event), wait_for_owner=wait_for_owner
         )
-        if provider == "codex":
-            codex_wake.register(str(member["member_id"]), session_id=session_id,
-                                prefix="AGENT_ORCHESTRA")
-        if jev_shadow.enabled():
-            jev_shadow.record_transcript(member, provider, payload)
+        shadow = jev_shadow.enabled()
+        if provider == "codex" or shadow:
+            with _owned_hook_snapshot(member) as current:
+                if current is None:
+                    return None
+                if provider == "codex":
+                    codex_wake.register(str(member["member_id"]), session_id=session_id,
+                                        prefix="AGENT_ORCHESTRA")
+                if shadow:
+                    jev_shadow.record_transcript(current, provider, payload)
         ensure_monitor(member)
         return member
     except (OrchestraError, OSError):
@@ -177,6 +184,7 @@ def _write_binding(
             "cwd": str(Path(cwd).expanduser().resolve()),
             "session_id": session_id,
             "owner_pid": owner,
+            "adopted_at": (member.get("adopted") or {}).get("at"),
             "bound_at": now(),
         },
     )
@@ -223,7 +231,7 @@ def _claim_candidate(
 
 
 def _bound_hook_member(
-    provider: str, cwd: str, session_id: str, event: str
+    provider: str, cwd: str, session_id: str, event: str, *, wait_for_owner: bool = False
 ) -> dict[str, Any]:
     path = _binding_path(provider, cwd, session_id) if session_id else None
     owner = core.agent_ancestor_pid()
@@ -231,22 +239,20 @@ def _bound_hook_member(
         try:
             binding = read_json(path)
             member = load_member(str(binding["member_id"]))
-            if member.get("instance_key") == instance_key(provider, cwd) and not member.get(
-                "closed_at"
-            ):
-                member = claim_ownership(member)
-                if owner is not None and _as_pid(binding.get("owner_pid")) != owner:
-                    # A record from an older version carries no pid, and one
-                    # from a process this session replaced carries a dead one.
-                    # Either way the session holding it is this one, now.
-                    _write_binding(path, member, provider, cwd, session_id, owner)
-                elif owner is None and _age_of(binding) > _BINDING_REFRESH_SECONDS:
-                    _write_binding(path, member, provider, cwd, session_id, None)
-                return _remember_session(member, session_id)
+            if (member.get("instance_key") == instance_key(provider, cwd) and not member.get("closed_at")
+                    and binding.get("adopted_at") == (member.get("adopted") or {}).get("at")):
+                return _finish_hook_binding(
+                    member, provider, cwd, session_id, owner, path, binding, wait_for_owner=wait_for_owner
+                )
         except (OrchestraError, KeyError):
             pass
 
     rows = iter_members(provider=provider, cwd=cwd)
+    if (session_id and event in ("SessionStart", *_PROMPT_EVENTS)
+            and not any(_as_pid(row.get("owner_pid")) == owner for row in rows)):
+        member = adopt_aiq_herdr(provider, cwd, owner, session_id)
+        if member:
+            return _finish_hook_binding(member, provider, cwd, session_id, owner, path)
     if not rows:
         raise OrchestraError("No active membership")
     bound_ids = _bound_member_ids()
@@ -257,10 +263,8 @@ def _bound_hook_member(
     candidates = [row for row in rows if str(row["member_id"]) not in bound_ids]
     if not candidates:
         raise OrchestraError("Every active membership is bound to another session")
-    member = claim_ownership(_claim_candidate(candidates, event, owner, session_id))
-    if path is not None:
-        _write_binding(path, member, provider, cwd, session_id, owner)
-    return _remember_session(member, session_id)
+    member = _claim_candidate(candidates, event, owner, session_id)
+    return _finish_hook_binding(member, provider, cwd, session_id, owner, path, wait_for_owner=wait_for_owner)
 
 
 def _age_of(binding: dict[str, Any]) -> float:
@@ -270,31 +274,57 @@ def _age_of(binding: dict[str, Any]) -> float:
         return float("inf")
 
 
-def _remember_session(member: dict[str, Any], session_id: str) -> dict[str, Any]:
-    """Record which agent session holds this membership.
-
-    A binding with no pid is swept as stale after five minutes. Before this,
-    only a typed prompt could adopt the seat again, so an idle session with an
-    unidentifiable owner went deaf to its own mail while its monitor stayed
-    connected. The session id outlives the sweep: the same session's next hook
-    finds its seat by it, from any event.
-    """
-    if not session_id or member.get("session_id") == session_id:
-        return member
-    member_id = str(member["member_id"])
-    # claim_ownership rewrites member.json under this lock; writing beside it
-    # could put back the owner_pid it just repaired.
+def _finish_hook_binding(
+    candidate: dict[str, Any], provider: str, cwd: str, session_id: str,
+    owner: int | None, path: Path | None, binding: dict[str, Any] | None = None,
+    *, wait_for_owner: bool = False,
+) -> dict[str, Any]:
+    """Fence hook binding and context against a concurrent seat transfer."""
+    claim_ownership(candidate)
+    member_id = str(candidate["member_id"])
     lock_path = runtime_dir() / f"{member_id}.owner.lock"
-    with pid_lock(lock_path) as acquired:
+    with pid_lock(lock_path, wait=2 if wait_for_owner else 0) as acquired:
         if not acquired:
-            return member
-        try:
-            fresh = load_member(member_id)
+            raise OrchestraError("Seat ownership is changing")
+        fresh = load_member(member_id)
+        current = _as_pid(fresh.get("owner_pid"))
+        if (fresh.get("instance_key") != instance_key(provider, cwd) or fresh.get("closed_at")
+                or fresh.get("adopted") != candidate.get("adopted")):
+            raise OrchestraError("Seat belongs to another session")
+        if current != owner and _pid_alive(current or 0):
+            # An already bound Claude waiter can park through a temporary
+            # owner, but only looks for new mail once it reclaims the seat.
+            if (wait_for_owner and provider == "claude" and owner is not None and binding
+                    and _as_pid(binding.get("owner_pid")) == owner
+                    and fresh.get("session_id") in (None, session_id)):
+                return fresh
+            raise OrchestraError("Seat belongs to another session")
+        if (provider == "codex" and session_id and fresh.get("session_id")
+                and fresh["session_id"] != session_id and current is not None
+                and current == _as_pid(candidate.get("owner_pid"))):
+            raise OrchestraError("Seat belongs to another Codex thread")
+        if path is not None and (binding is None or _as_pid(binding.get("owner_pid")) != owner
+                                 or (owner is None and _age_of(binding) > _BINDING_REFRESH_SECONDS)):
+            _write_binding(path, fresh, provider, cwd, session_id, owner)
+        # A pidless session's UUID survives pruning of its expiring binding.
+        if session_id and fresh.get("session_id") != session_id:
             fresh["session_id"] = session_id
             save_member(fresh)
-            return fresh
+        return fresh
+
+
+@contextmanager
+def _owned_hook_snapshot(member: dict[str, Any]) -> Iterator[dict[str, Any] | None]:
+    member_id = str(member["member_id"])
+    with pid_lock(runtime_dir() / f"{member_id}.owner.lock") as acquired:
+        try:
+            current = load_member(member_id) if acquired else None
         except (OrchestraError, OSError):
-            return member
+            current = None
+        fields = ("adopted", "instance_key", "owner_pid", "session_id")
+        if current and (current.get("closed_at") or any(current.get(key) != member.get(key) for key in fields)):
+            current = None
+        yield current
 
 
 def _by_act(rows: list[dict[str, Any]]) -> str:
@@ -338,17 +368,20 @@ def hook_context(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
     if _later_invocation(payload):
         return {}
     member = hook_member(provider, payload, default_event="SessionStart")
-    if not member or quiet_until(str(member["member_id"])):
-        # While typed conductor text is starting its work, even context on
-        # that turn could be relayed as part of the request.
+    if not member:
         return {}
-    lines = _mail_lines(member, provider)
-    lines[1:1] = _attention_lines(member)
-    if not lines:
-        return {}
-    event = str(payload.get("hook_event_name") or "SessionStart")
-    if event in _PROMPT_EVENTS and _shown_recently(member, payload, lines):
-        return {}
+    with _owned_hook_snapshot(member) as current:
+        if not current or quiet_until(str(current["member_id"])):
+            # While typed conductor text is starting its work, even context on
+            # that turn could be relayed as part of the request.
+            return {}
+        lines = _mail_lines(current, provider)
+        lines[1:1] = _attention_lines(current)
+        if not lines:
+            return {}
+        event = str(payload.get("hook_event_name") or "SessionStart")
+        if event in _PROMPT_EVENTS and _shown_recently(current, payload, lines):
+            return {}
     if normalize_provider(provider) == "agy":
         # A system message stays in the conversation, as Claude's context does;
         # _shown_recently counts on that. An ephemeral one is gone next turn.
@@ -589,9 +622,12 @@ def hook_stop(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("stop_hook_active"):
         return {}
     member = hook_member(provider, payload)
-    if not member or quiet_until(str(member["member_id"])):
+    if not member:
         return {}
-    reason = _hook_message_nudge(member, provider, " while you were working")
+    with _owned_hook_snapshot(member) as current:
+        if not current or quiet_until(str(current["member_id"])):
+            return {}
+        reason = _hook_message_nudge(current, provider, " while you were working")
     if not reason:
         return {}
     # Antigravity continues on "continue"; any other decision lets it stop.
@@ -666,12 +702,20 @@ def hook_wait(provider: str, payload: dict[str, Any]) -> int:
     on mail already waiting, so this wakes on it after a delay instead of
     leaving it to the Stop hook.
     """
-    member = hook_member(provider, payload)
+    member = hook_member(provider, payload, wait_for_owner=True)
     if not member:
         return 0
     failed = _hook_event(payload, "Stop") == "StopFailure"
     session_id = str(payload.get("session_id") or f"cwd:{payload.get('cwd') or os.getcwd()}")
     member_id = str(member["member_id"])
+    owner = core.agent_ancestor_pid()
+    adoption = member.get("adopted")
+
+    def owns_waiting_seat(row: dict[str, Any]) -> bool:
+        return (row.get("provider") == provider and row.get("adopted") == adoption
+                and _as_pid(row.get("owner_pid")) in (None, owner)
+                and row.get("session_id") in (None, session_id))
+
     if failed:
         if str(payload.get("error") or "") in _FAILURE_NEEDS_PERSON:
             return 0
@@ -699,6 +743,8 @@ def hook_wait(provider: str, payload: dict[str, Any]) -> int:
                 return 0
         next_monitor_check = 0.0
         while not member.get("closed_at"):
+            if member.get("provider") != provider or member.get("adopted") != adoption:
+                return 0
             if time.monotonic() >= next_monitor_check:
                 try:
                     ensure_monitor(member)
@@ -714,13 +760,16 @@ def hook_wait(provider: str, payload: dict[str, Any]) -> int:
             # Events land in events/ and never in pending/, so a presence line
             # can never wake the session; only real member mail does, and of
             # that only what protocol.wakes picks. The rest waits for it.
-            fresh = _pending_ids(member_id) - seen
+            fresh = (_pending_ids(member_id) - seen) if owns_waiting_seat(member) else set()
             pending = bucket_dir(member_id, "pending")
             if fresh and not any(wakes(_read_row(pending / f"{stem}.json")) for stem in fresh):
                 seen |= fresh
                 fresh = set()
             if fresh and not quiet_until(member_id):
-                reason = _hook_message_nudge(member, provider, "")
+                with pid_lock(runtime_dir() / f"{member_id}.owner.lock") as held:
+                    current = load_member(member_id) if held else None
+                    reason = (_hook_message_nudge(current, provider, "")
+                              if current and owns_waiting_seat(current) and not current.get("closed_at") else None)
                 if reason:
                     sys.stderr.write(f"{reason}\n")
                     return 2

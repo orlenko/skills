@@ -304,7 +304,7 @@ def observed(mailbox_id: str, message_ids: list[str], *, label: str, wait: bool 
     if not binding.get("executable"):
         return
     with _session_lock(binding, wait=wait) as acquired:
-        if not acquired:
+        if not acquired or target(mailbox_id) != binding:
             return
         path, receipt = _receipt(mailbox_id, binding)
         receipt["notified"] = sorted(set(receipt.get("notified", [])) | set(message_ids))
