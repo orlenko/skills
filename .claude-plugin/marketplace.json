@@ -36,14 +36,14 @@
       "name": "agent-nudge",
       "displayName": "Agent Nudge",
       "source": "./plugins/agent-nudge",
-      "description": "A daemon that finds idle Claude, Codex and Antigravity sessions in tmux and asks them, once, whether their goal is done.",
-      "version": "0.1.13",
+      "description": "A daemon that finds idle Claude, Codex and Antigravity sessions in tmux and AIQ Herdr and asks them, once, whether their goal is done.",
+      "version": "0.2.0",
       "author": {
         "name": "Vlad Orlenko",
         "url": "https://github.com/orlenko"
       },
       "category": "productivity",
-      "tags": ["agents", "tmux", "supervision"]
+      "tags": ["agents", "tmux", "herdr", "supervision"]
     },
     {
       "name": "design-skeptic",

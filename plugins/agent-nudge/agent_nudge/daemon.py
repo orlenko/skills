@@ -1,4 +1,4 @@
-"""Find idle Claude, Codex and Antigravity sessions in tmux and ask them, once, whether they are done.
+"""Find idle Claude, Codex and Antigravity sessions in tmux and AIQ Herdr and ask them, once, whether they are done.
 
 An agent often ends its turn short of its goal: it reports and stops, or says
 it will act when a CI job finishes and then sets nothing to wake it. One line
@@ -26,10 +26,11 @@ import fcntl
 import json
 import os
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from . import judge, orchestra, screen, system
+from . import herdr, judge, orchestra, screen, system
 
 IDLE_ENV = "AGENT_NUDGE_IDLE_MINUTES"
 QUIET_ENV = "AGENT_NUDGE_HUMAN_QUIET_MINUTES"
@@ -182,6 +183,21 @@ def _judge_context(rec: dict[str, Any], at: float, idle: float, streak: int) -> 
     return "\n".join(lines)
 
 
+def agent_panes():
+    table = system.process_table()
+    for pane in system.panes():
+        system.find_agent(pane, table)
+        if pane.agent:
+            yield pane
+    yield from herdr.panes(table)
+
+
+def capture_screen(pane):
+    if "native" in pane.extra:
+        return herdr.capture(pane)
+    return screen.parse(system.capture(pane.id), pane.agent)
+
+
 class Nudger:
     def __init__(self, *, now=time.time, sleep=time.sleep):
         self.now = now
@@ -191,17 +207,13 @@ class Nudger:
     def tick(self) -> list[dict[str, Any]]:
         """One pass over every agent pane. Returns the rows it logged."""
         at = self.now()
-        table = system.process_table()
         activity = system.client_activity()
         try:
             self.seats = orchestra.seats_by_pid()
         except Exception:  # noqa: BLE001 - orchestra state is a bonus, never a requirement
             self.seats = {}
         rows, seen = [], set()
-        for pane in system.panes():
-            system.find_agent(pane, table)
-            if not pane.agent:
-                continue
+        for pane in agent_panes():
             key = f"{pane.id}:{pane.agent_pid}"
             seen.add(key)
             rec = self.state.setdefault(key, {"agent": pane.agent, "path": pane.path})
@@ -209,16 +221,26 @@ class Nudger:
             if row is not None:
                 rows.append(row)
         for gone in set(self.state) - seen:
-            del self.state[gone]
+            # Keep an ambiguous native write across discovery outages. Its key
+            # belongs to one AIQ generation and cannot suppress its successor.
+            if not self.state[gone].get("herdr_delivery_pending"):
+                del self.state[gone]
         save_state(self.state)
         return rows
 
     def _pane(self, pane: system.Pane, rec: dict[str, Any], at: float,
               activity: dict[str, float]) -> dict[str, Any] | None:
         try:
-            scr = screen.parse(system.capture(pane.id), pane.agent)
+            scr = capture_screen(pane)
         except Exception as exc:  # noqa: BLE001 - one bad pane never stops the rest
             return self._note(pane, rec, at, "skip", f"capture failed: {type(exc).__name__}")
+        if "native" in pane.extra:
+            if rec.get("herdr_delivery_pending"):
+                return self._note(pane, rec, at, "skip", "prior Herdr delivery unconfirmed")
+            cursor = list(pane.extra["cursor"])
+            if scr.typed or cursor != rec.get("cursor"):
+                rec["human_activity"] = at
+            rec["cursor"] = cursor
         if scr.body_hash != rec.get("hash"):
             quiet_before = at - rec.get("changed_at", at)
             nudged_at = rec.get("last_nudge_at")
@@ -277,8 +299,11 @@ class Nudger:
         if scr.typed:
             return self._note(pane, rec, at, "skip", "text typed in the input box")
         quiet = _minutes(QUIET_ENV, DEFAULT_QUIET_MINUTES) * 60
-        if at - activity.get(pane.session, 0.0) < quiet:
-            return self._note(pane, rec, at, "skip", "a person is active in this tmux session")
+        last_active = (rec.get("human_activity", at) if "native" in pane.extra
+                       else activity.get(pane.session, 0.0))
+        if at - last_active < quiet:
+            return self._note(pane, rec, at, "skip", ("recent Herdr composer activity" if "native" in pane.extra
+                               else "a person is active in this tmux session"))
         recent = [t for t in rec.get("nudges", []) if at - t < 86400]
         if len(recent) >= DAILY_CAP:
             return self._note(pane, rec, at, "skip", f"daily cap of {DAILY_CAP} nudges")
@@ -341,10 +366,19 @@ class Nudger:
                "orchestra": {"member": seat.name, "unread": seat.unread, "open_tasks": len(seat.open_tasks)} if seat else None}
         if live:
             try:
-                if not system.send(pane.id, text):
+                if "native" in pane.extra:
+                    def arm():
+                        rec["herdr_delivery_pending"] = True
+                        save_state(self.state)
+                    herdr.send(pane, text, scr, arm)
+                    rec.pop("herdr_delivery_pending")
+                elif not system.send(pane.id, text):
                     row["submit"] = "unsent: text still in the input box after two Enters"
             except Exception as exc:  # noqa: BLE001
-                row.update(event="skip", reason=f"send failed: {type(exc).__name__}")
+                if isinstance(exc, herdr.Unconfirmed):
+                    row.update(event="unconfirmed", reason="Herdr input may still arrive; generation held")
+                else:
+                    row.update(event="skip", reason=f"send failed: {type(exc).__name__}")
                 append_log(row)
                 return row
         # A dry run types nothing, so nothing after it can be its answer.
@@ -369,19 +403,27 @@ class Nudger:
         return row
 
     def run(self, interval: float = POLL_SECONDS) -> None:
-        lock = open(home() / "daemon.lock", "w")
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            raise SystemExit("agent-nudge is already running on this machine")
-        lock.write(str(os.getpid()))
-        lock.flush()
         while True:
             try:
                 self.tick()
             except Exception as exc:  # noqa: BLE001 - the daemon outlives one bad pass
                 append_log({"ts": self.now(), "event": "error", "reason": f"{type(exc).__name__}: {exc}"[:300]})
             self.sleep(interval)
+
+
+@contextmanager
+def run_lock():
+    # One-shot and service runs share state, including possibly delivered input.
+    with open(home() / "daemon.lock", "a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SystemExit("agent-nudge is already running on this machine") from None
+        lock.seek(0)
+        lock.truncate()
+        lock.write(str(os.getpid()))
+        lock.flush()
+        yield
 
 
 def daemon_pid() -> int | None:

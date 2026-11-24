@@ -120,15 +120,21 @@ class Screen:
     background_work: bool = False
 
 
-def _plain_and_dim(line: str) -> tuple[str, list[bool]]:
+def _styled_text(line: str) -> tuple[str, list[bool], list[bool]]:
     line = _OTHER_ESC.sub("", line)
     text, dim_mask, dim, pos = [], [], False, 0
+    reverse_mask, reverse = [], False
     for match in _SGR.finditer(line):
         chunk = line[pos:match.start()]
         text.append(chunk)
         dim_mask.extend([dim] * len(chunk))
+        reverse_mask.extend([reverse] * len(chunk))
         codes = [c for c in match.group(1).split(";") if c != ""] or ["0"]
         for code in codes:
+            if code in {"0", "27"}:
+                reverse = False
+            elif code == "7":
+                reverse = True
             if code in {"0", "22"}:
                 dim = False
             elif code == "2":
@@ -137,7 +143,13 @@ def _plain_and_dim(line: str) -> tuple[str, list[bool]]:
     chunk = line[pos:]
     text.append(chunk)
     dim_mask.extend([dim] * len(chunk))
-    return "".join(text), dim_mask
+    reverse_mask.extend([reverse] * len(chunk))
+    return "".join(text), dim_mask, reverse_mask
+
+
+def _plain_and_dim(line: str) -> tuple[str, list[bool]]:
+    text, dim, _ = _styled_text(line)
+    return text, dim
 
 
 def _count_watchers(text: str) -> int:
