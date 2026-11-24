@@ -1,6 +1,6 @@
 ---
 name: nudge
-description: "Run agent-nudge on this machine: a daemon that finds Claude Code and Codex sessions in tmux that sit idle after their turn, and types one polite question into each: is your goal done, or are you blocked? Use when the user wants to install, start, stop, check, or switch the nudger between dry-run and live, see what it nudged, or opt a tmux pane out."
+description: "Run agent-nudge on this machine: a daemon that finds Claude Code and Codex sessions in tmux and AIQ Herdr that sit idle after their turn, and types one polite question into each: is your goal done, or are you blocked? Use when the user wants to install, start, stop, check, or switch the nudger between dry-run and live, see what it nudged, or opt a terminal out."
 ---
 
 # Agent Nudge
@@ -11,7 +11,7 @@ this skill: the plugin root is two directories above this skill directory.
 Agents often stop short of their goal. They report and stop, or they say they
 will act when a CI job finishes and set nothing up to wake them. One outside
 line ("still waiting?") usually restarts them. The nudger sends that line to
-tmux panes that run `claude` or `codex`, one daemon per machine.
+tmux panes and native AIQ long sessions in Herdr, one daemon per machine.
 
 ## What it does, and when it holds back
 
@@ -24,7 +24,8 @@ all of these hold:
 - The input box is empty. Dim autosuggestions count as empty; anything a person
   has typed does not.
 - No attached tmux client in that session has had keyboard activity in the last
-  5 minutes (`AGENT_NUDGE_HUMAN_QUIET_MINUTES`).
+  5 minutes (`AGENT_NUDGE_HUMAN_QUIET_MINUTES`). Herdr exposes no last-key
+  timestamp. There the daemon waits this long after an observed draft or cursor movement.
 - There is no spinner and no dialog.
 - TypeSafe Jev reads the screen as idle, and the last message is not a question
   for the user. A quota or outage in a tool the agent calls doesn't count as a
@@ -97,7 +98,16 @@ member's files. The seat's `owner_pid` is the agent process in the pane.
    user agrees, run `mode live`. Switching to live is the user's decision: ask,
    do not assume.
 
-To keep a pane out of it: `tmux set-option -p -t <pane> @nudge off`.
+Native discovery reads AIQ’s private running descriptors under
+`$AIQ_DATA_DIR/herdr` (default `$XDG_DATA_HOME/aiq/herdr` or
+`~/.local/share/aiq/herdr`). If AIQ uses a custom data directory, set
+`AIQ_DATA_DIR` in the daemon env file. Check `panes --json` for Herdr
+terminals. A provider rollover starts a new idle interval. If a write may
+have landed but cannot be confirmed, the log reports `unconfirmed` and
+automatic delivery stops for that generation.
+
+To opt out in Herdr, run `hc label <terminal> nudge=off` on the terminal’s
+own core. Use `nudge=on` to opt back in. For tmux: `tmux set-option -p -t <pane> @nudge off`.
 
 ## Privacy
 

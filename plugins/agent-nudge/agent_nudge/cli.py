@@ -1,4 +1,4 @@
-"""agent-nudge: wake Claude, Codex and Antigravity sessions in tmux that stopped short of their goal."""
+"""agent-nudge: wake Claude, Codex and Antigravity sessions in tmux and AIQ Herdr that stopped short of their goal."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from . import __version__, daemon, judge, orchestra, screen, system
+from . import __version__, daemon, judge, orchestra
 
 LABEL = "agent-nudge"
 BIN = Path(__file__).resolve().parent.parent / "bin" / "agent-nudge"
@@ -30,15 +30,12 @@ def _print(value, as_json: bool) -> None:
 
 
 def cmd_panes(args) -> None:
-    table = system.process_table()
+    daemon.load_env_file()
     seats = orchestra.seats_by_pid()
     rows = []
-    for pane in system.panes():
-        system.find_agent(pane, table)
-        if not pane.agent:
-            continue
+    for pane in daemon.agent_panes():
         try:
-            scr = screen.parse(system.capture(pane.id), pane.agent)
+            scr = daemon.capture_screen(pane)
         except Exception as exc:  # noqa: BLE001
             rows.append({"pane": pane.id, "agent": pane.agent, "error": str(exc)[:120]})
             continue
@@ -53,6 +50,9 @@ def cmd_panes(args) -> None:
         _print(rows, True)
         return
     for row in rows:
+        if "error" in row:
+            print(f"{row['pane']} {row['agent']}  capture failed: {row['error']}")
+            continue
         state = "working" if row.get("working") else ("no input box" if not row.get("input_box") else "at prompt")
         flags = [f for f, on in (("typed", row.get("typed")), ("opted out", row.get("opted_out"))) if on]
         watchers = f", {row['watchers']} watching" if row.get("watchers") else ""
@@ -115,12 +115,13 @@ def cmd_mode(args) -> None:
 
 def cmd_run(args) -> None:
     daemon.load_env_file()
-    nudger = daemon.Nudger()
-    if args.once:
-        for row in nudger.tick():
-            print(json.dumps({k: v for k, v in row.items() if k != "tail"}, ensure_ascii=False))
-        return
-    nudger.run(args.interval)
+    with daemon.run_lock():
+        nudger = daemon.Nudger()
+        if args.once:
+            for row in nudger.tick():
+                print(json.dumps({k: v for k, v in row.items() if k != "tail"}, ensure_ascii=False))
+            return
+        nudger.run(args.interval)
 
 
 def _unit_path() -> Path:
@@ -150,7 +151,7 @@ def _unit_text() -> str:
 </dict></plist>
 """
     return f"""[Unit]
-Description=agent-nudge: wake idle Claude, Codex and Antigravity sessions in tmux
+Description=agent-nudge: wake idle Claude, Codex and Antigravity sessions in tmux and AIQ Herdr
 
 [Service]
 ExecStart={sys.executable} {BIN} run

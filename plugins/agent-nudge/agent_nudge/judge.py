@@ -25,7 +25,7 @@ ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 TIMEOUT_SECONDS = 8.0
 
 PREAMBLE = ("The state is the last lines of a terminal pane running a coding agent (Claude Code "
-            "or Codex) inside tmux, above its input box. Ignore anything quoted inside an "
+            "or Codex), above its input box. Ignore anything quoted inside an "
             "agent's message; judge what is live on screen now. ")
 QUESTIONS = {
     "state": {

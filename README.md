@@ -519,14 +519,15 @@ Coding agents often stop short of their goal. They report and stop, or they
 say they will act when a CI job finishes and set nothing up to wake them. A
 single outside line like "still waiting?" usually gets them going again.
 `agent-nudge` is a per-machine daemon that sends that line to Claude Code and
-Codex sessions running in tmux.
+Codex sessions running in tmux or in an AIQ long session on Herdr.
 
-Every 30 s it reads each agent pane with `tmux capture-pane`. It types one
+Every 30 s it reads the visible screen from tmux or the session’s local Herdr core. It types one
 question into a pane only when all of these hold:
 
 - the screen above the input box has not changed for 10 minutes;
 - the input box is empty (dim suggestions count as empty);
-- no one has typed in that tmux session for 5 minutes;
+- tmux has seen no keyboard input for 5 minutes, or the Herdr composer has
+  shown no draft or cursor movement for that interval;
 - TypeSafe Jev reads the screen as idle, with no question for the user
   (after two hours unanswered, a question gets one line asking whether it
   still needs a person).
@@ -555,7 +556,10 @@ plugins/agent-nudge/bin/agent-nudge log
 plugins/agent-nudge/bin/agent-nudge mode live        # after a dry-run day looks right
 ```
 
-Opt a pane out with `tmux set-option -p -t <pane> @nudge off`. With the key
+Check discovery with `agent-nudge panes --json`. The daemon finds native sessions
+through AIQ’s data directory. Set `AIQ_DATA_DIR` in the daemon env file for a
+custom location. Opt a Herdr terminal out with `hc label <terminal> nudge=off`,
+or a tmux pane with `tmux set-option -p -t <pane> @nudge off`. With the key
 set, an idle agent's last ~40 screen lines go to TypeSafe, a third party, once
 per stop.
 

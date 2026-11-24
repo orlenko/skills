@@ -272,7 +272,8 @@ class FakeClock:
 class NudgerTest(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.mkdtemp(prefix="agent-nudge-")
-        self.env = {k: os.environ.get(k) for k in ("AGENT_NUDGE_HOME", judge.KEY_ENV, daemon.IDLE_ENV)}
+        self.env = {k: os.environ.get(k) for k in ("AIQ_DATA_DIR", "AGENT_NUDGE_HOME", judge.KEY_ENV, daemon.IDLE_ENV)}
+        os.environ["AIQ_DATA_DIR"] = self.home
         os.environ["AGENT_NUDGE_HOME"] = self.home
         os.environ[judge.KEY_ENV] = "k"
         os.environ.pop(daemon.IDLE_ENV, None)

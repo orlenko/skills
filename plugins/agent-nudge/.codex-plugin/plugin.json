@@ -1,7 +1,7 @@
 {
   "name": "agent-nudge",
-  "version": "0.1.13+codex.20261019173442",
-  "description": "A daemon that finds idle Claude and Codex sessions in tmux and asks them, once, whether their goal is done.",
+  "version": "0.2.0+codex.20261124231855",
+  "description": "A daemon that finds idle Claude and Codex sessions in tmux and AIQ Herdr and asks them, once, whether their goal is done.",
   "author": {
     "name": "Vlad Orlenko",
     "url": "https://github.com/orlenko"
@@ -9,12 +9,12 @@
   "homepage": "https://github.com/orlenko/skills/tree/main/plugins/agent-nudge",
   "repository": "https://github.com/orlenko/skills",
   "license": "MIT",
-  "keywords": ["agents", "tmux", "supervision", "codex", "claude"],
+  "keywords": ["agents", "tmux", "herdr", "supervision", "codex", "claude"],
   "skills": "./skills/",
   "interface": {
     "displayName": "Agent Nudge",
-    "shortDescription": "Wake idle coding agents in tmux that stopped short of their goal.",
-    "longDescription": "A per-machine daemon that watches Claude Code and Codex sessions in tmux, and when one sits idle after its turn, types one polite question into it: is your goal done, or are you blocked? Dry-run by default.",
+    "shortDescription": "Wake idle coding agents in tmux and AIQ Herdr that stopped short of their goal.",
+    "longDescription": "A per-machine daemon that watches Claude Code and Codex sessions in tmux and AIQ Herdr, and when one sits idle after its turn, types one polite question into it: is your goal done, or are you blocked? Dry-run by default.",
     "developerName": "Vlad Orlenko",
     "category": "Productivity",
     "capabilities": ["Interactive"],
