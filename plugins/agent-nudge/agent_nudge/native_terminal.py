@@ -542,6 +542,31 @@ class PaintBudget:
             raise NativeError("native paint work/deadline bound reached")
 
 
+def _cell(text: str, start: int) -> tuple[str, int]:
+    """Consume one painted base and its modifiers without crossing VT controls."""
+    base = text[start]
+    width = 2 if unicodedata.east_asian_width(base) in ("W", "F") else 1
+    end = start + 1
+    if ("🇦" <= base <= "🇿" and end < len(text) and "🇦" <= text[end] <= "🇿"):
+        end += 1
+        width = 2
+    while end < len(text):
+        char = text[end]
+        if char == "\ufe0f" or char == "\u20e3" or "🏻" <= char <= "🏿":
+            width = 2
+        elif char == "\u200d":
+            if (end + 1 >= len(text) or unicodedata.category(text[end+1])[0] not in "SL"):
+                break
+            end += 1
+            width = max(width, 2 if unicodedata.east_asian_width(text[end]) in ("W", "F") else 1)
+        elif unicodedata.category(char) not in ("Mn", "Me") and not "\U000e0020" <= char <= "\U000e007f":
+            break
+        end += 1
+        if end - start > 64:
+            raise NativeError("first-paint grapheme exceeds bound")
+    return text[start:end], width
+
+
 def render(
     raw: bytes, cols: int, rows: int, status: str = "", *, deadline: float | None = None
 ) -> Screen:
@@ -663,17 +688,20 @@ def render(
                 x, y = 0, y + 1
             if y >= rows:
                 raise NativeError("first paint exceeds its grid")
-            if char in ("\u200d", "\ufe0f"):
-                raise NativeError("unsupported complex first-paint grapheme")
-            if unicodedata.combining(char):
+            if char in ("\u200d", "\ufe0e", "\ufe0f") or unicodedata.combining(char):
                 pos = y * cols + max(0, x - 1)
                 previous, style, cursor_style = grid[pos]
                 if len(previous) >= 64:
                     raise NativeError("first-paint combining run exceeds bound")
                 grid[pos] = (previous + char, style, cursor_style)
             else:
-                grid[y * cols + x] = (char, dim, reverse)
-                x += 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+                cluster, width = _cell(text, at)
+                pos = y * cols + x
+                grid[pos] = (cluster, dim, reverse)
+                if width == 2 and x + 1 < cols:
+                    grid[pos + 1] = ("", dim, reverse)
+                x += width
+                at += len(cluster) - 1
         at += 1
     styled, plain = [], []
     for row in range(rows):

@@ -78,6 +78,22 @@ class Discovery(unittest.TestCase):
                 parsed = herdr._screen(paint, "claude")
                 self.assertEqual((parsed.typed, parsed.has_prompt), (typed, prompt))
 
+    def test_transcript_graphemes_preserve_screen_and_composer(self):
+        for cluster, columns in (("⚠️", 2), ("⚠︎", 1), ("👩🏽‍💻", 2), ("🏳️‍🌈", 2),
+                                 ("🇨🇦", 2), ("1️⃣", 2), ("e\u0301", 1), ("✅", 2)):
+            for draft in ("", "real draft"):
+                with self.subTest(cluster=cluster, draft=draft):
+                    # Place a marker immediately after the cluster, then overwrite
+                    # it by absolute column. A width error leaves a stray marker.
+                    box = draft or "\x1b[2msuggestion\x1b[0m"
+                    raw = (cluster + "X" + f"\x1b[{columns+1}G!" + "\r\n› " + box
+                           + "\r\n\r\n  ? for shortcuts\x1b[2;3H").encode()
+                    paint = native_terminal.render(raw, 40, 8)
+                    parsed = herdr._screen(paint, "codex")
+                    self.assertEqual(parsed.body.rstrip(), cluster + "!")
+                    self.assertTrue(parsed.has_prompt)
+                    self.assertEqual(parsed.typed, draft)
+
     def test_second_runner_leaves_owner_and_state_alone(self):
         with tempfile.TemporaryDirectory() as data, mock.patch.dict(os.environ, AGENT_NUDGE_HOME=data):
             with daemon.run_lock():
@@ -113,7 +129,7 @@ const net = require('net');
 const conn = net.connect(process.argv[2]);
 const tty = process.stdin;
 tty.setRawMode(true);
-let body = 'Invented idle session', draft = '';
+let body = 'Invented ⚠️ idle 👩🏽‍💻 session', draft = '';
 function draw() {
     const ghost = '\x1b[2mInvent a fixture\x1b[0m';
     const width = process.stdout.columns;

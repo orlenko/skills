@@ -173,7 +173,13 @@ def _screen(paint, agent):
             # A reverse cursor on the first cell of a dim suggestion makes
             # that cell alone non-dim. Other selected cells are ambiguous.
             marked = [i for i, rev in enumerate(reverse) if rev]
-            if marked and (len(marked) != 1 or (marked[0], index) != paint.cursor):
+            column = offset = 0
+            if marked:
+                while offset < marked[0]:
+                    cluster, width = native._cell(text, offset)
+                    offset += len(cluster)
+                    column += width
+            if marked and (len(marked) != 1 or (column, index) != paint.cursor):
                 parsed.has_prompt = False
             if index == first and marked:
                 cell = marked[0]
